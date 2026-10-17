@@ -10,14 +10,9 @@
     <!-- Placeholders / UI de base -->
     <string name="nickname_hint">pseudo</string>
     <string name="message_hint">écrire un message…</string>
-    <string name="channel_password_hint">Mot de passe</string>
-    <string name="join_channel">Rejoindre le canal</string>
-    <string name="leave_channel">Quitter</string>
     <string name="send_message">Envoyer</string>
-    <string name="show_commands">Afficher les commandes</string>
     <string name="back">Retour</string>
     <string name="people">Personnes</string>
-    <string name="channels">Canaux</string>
     <string name="online_users">Utilisateurs en ligne</string>
     <string name="no_one_connected">Personne connecté</string>
     <string name="emergency_clear_hint">Tapoter 3 fois pour effacer toutes les données</string>
@@ -113,7 +108,6 @@
     <string name="cd_not_supported_battery_optimization">Optimisation non prise en charge</string>
     <string name="cd_bluetooth">Bluetooth</string>
     <string name="cd_unread_message">Message non lu</string>
-    <string name="cd_leave_channel">Quitter le canal</string>
     <string name="cd_reachable_via_nostr">Joignable via Nostr</string>
     <string name="cd_offline_favorite">Favori (hors‑ligne)</string>
     <string name="cd_scroll_to_bottom">Aller en bas</string>
@@ -244,10 +238,6 @@
     <string name="perm_type_other">Autre</string>
 
     <!-- Dialogue de mot de passe -->
-    <string name="pwd_prompt_title">Entrer le mot de passe du canal</string>
-    <string name="pwd_prompt_message">Le canal %1$s est protégé par mot de passe. Entre le mot de passe pour rejoindre.</string>
-    <string name="pwd_label">Mot de passe</string>
-    <string name="join">Rejoindre</string>
     <string name="cancel">Annuler</string>
 
     <!-- Pluriels -->
@@ -311,11 +301,6 @@
     <string name="cd_privacy_protected">Confidentialité des messages</string>
 
     <!-- Traductions françaises des ressources communes -->
-    <string name="cashu_pay_via">payer avec Cashu</string>
-    <string name="cashu_payment_description">Paiement Cashu</string>
-    <string name="cashu_copy_token">Copier le jeton</string>
-    <string name="cashu_redeem_wallet">Encaisser dans un portefeuille</string>
-    <string name="cashu_redeem_web">Encaisser sur le Web</string>
     <string name="mesh_service_channel_name">Service du réseau maillé en arrière-plan</string>
     <string name="mesh_service_channel_desc">Maintient le réseau maillé Bluetooth actif en arrière-plan</string>
     <string name="cd_favorite">Favori</string>
@@ -361,10 +346,7 @@
     <string name="about_tab_settings">Réglages</string>
     <string name="about_how_to_use_heading">Mode d’emploi</string>
     <string name="about_howto_nickname">Touchez votre pseudonyme pour le modifier</string>
-    <string name="about_howto_channels">Touchez le nom du canal pour changer de canal</string>
-    <string name="about_howto_people">Touchez l’icône des personnes pour voir qui se trouve dans le canal</string>
     <string name="about_howto_mention">Saisissez @ pour mentionner quelqu’un</string>
-    <string name="about_howto_commands">Saisissez / pour voir les commandes disponibles</string>
     <string name="about_section_about">À propos</string>
     <string name="about_section_theme">Thème</string>
     <string name="about_section_settings">Réglages</string>

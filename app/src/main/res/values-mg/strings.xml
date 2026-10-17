@@ -10,14 +10,9 @@
     <!-- Soso-kevitra / UI fototra -->
     <string name="nickname_hint">anarana kely</string>
     <string name="message_hint">soraty hafatra…</string>
-    <string name="channel_password_hint">Teny miafina</string>
-    <string name="join_channel">Hiditra amin\'ny fantsona</string>
-    <string name="leave_channel">Hiala</string>
     <string name="send_message">Handefa</string>
-    <string name="show_commands">Haneho baiko</string>
     <string name="back">Hiverina</string>
     <string name="people">Olona</string>
-    <string name="channels">Fantsona</string>
     <string name="online_users">Mpampiasa an-tserasera</string>
     <string name="no_one_connected">Tsy misy olona mifandray</string>
     <string name="emergency_clear_hint">Tsindrio in-telo mba hamafana ny angona rehetra</string>
@@ -113,7 +108,6 @@
     <string name="cd_not_supported_battery_optimization">Tsy tohanana ny Fanamafisana Bateria</string>
     <string name="cd_bluetooth">Bluetooth</string>
     <string name="cd_unread_message">Hafatra tsy voavaky</string>
-    <string name="cd_leave_channel">Hiala amin\'ny fantsona</string>
     <string name="cd_reachable_via_nostr">Azo tratrarina amin\'ny alalan\'ny Nostr</string>
     <string name="cd_offline_favorite">Ankafizina tsy an-tserasera</string>
     <string name="cd_scroll_to_bottom">Hidina any ambany</string>
@@ -246,10 +240,6 @@
     <string name="perm_type_other">Hafa</string>
 
     <!-- Fifanakalozan-dresaka fangatahana teny miafina -->
-    <string name="pwd_prompt_title">Ampidiro ny Teny Miafina Fantsona</string>
-    <string name="pwd_prompt_message">Voaaro amin\'ny teny miafina ny fantsona %1$s. Ampidiro ny teny miafina mba hidirana.</string>
-    <string name="pwd_label">Teny miafina</string>
-    <string name="join">Hiditra</string>
     <string name="cancel">Hanafoana</string>
 
     <!-- Plurals -->

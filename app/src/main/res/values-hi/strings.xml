@@ -10,14 +10,9 @@
     <!-- प्लेसहोल्डर / बुनियादी UI -->
     <string name="nickname_hint">उपनाम</string>
     <string name="message_hint">संदेश लिखें…</string>
-    <string name="channel_password_hint">पासवर्ड</string>
-    <string name="join_channel">चैनल में शामिल हों</string>
-    <string name="leave_channel">छोड़ें</string>
     <string name="send_message">भेजें</string>
-    <string name="show_commands">कमांड दिखाएँ</string>
     <string name="back">वापस</string>
     <string name="people">लोग</string>
-    <string name="channels">चैनल</string>
     <string name="online_users">ऑनलाइन उपयोगकर्ता</string>
     <string name="no_one_connected">कोई कनेक्टेड नहीं</string>
     <string name="emergency_clear_hint">सभी डेटा मिटाने के लिए तीन बार टैप करें</string>
@@ -113,7 +108,6 @@
     <string name="cd_not_supported_battery_optimization">बैटरी अनुकूलन समर्थित नहीं</string>
     <string name="cd_bluetooth">Bluetooth</string>
     <string name="cd_unread_message">अपठित संदेश</string>
-    <string name="cd_leave_channel">चैनल छोड़ें</string>
     <string name="cd_reachable_via_nostr">Nostr के माध्यम से उपलब्ध</string>
     <string name="cd_offline_favorite">पसंदीदा (ऑफ़लाइन)</string>
     <string name="cd_scroll_to_bottom">नीचे स्क्रॉल करें</string>
@@ -243,10 +237,6 @@
     <string name="perm_type_other">अन्य</string>
 
     <!-- पासवर्ड संवाद -->
-    <string name="pwd_prompt_title">चैनल पासवर्ड दर्ज करें</string>
-    <string name="pwd_prompt_message">चैनल %1$s पासवर्ड द्वारा सुरक्षित है। शामिल होने के लिए पासवर्ड दर्ज करें।</string>
-    <string name="pwd_label">पासवर्ड</string>
-    <string name="join">शामिल हों</string>
     <string name="cancel">रद्द करें</string>
 
     <!-- बहुवचन -->

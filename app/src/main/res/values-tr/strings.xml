@@ -6,14 +6,9 @@
     <string name="permission_notification_rationale">Yeni mesajlarda bildirim gönderebilmek için izin gerekir.</string>
     <string name="nickname_hint">takma ad</string>
     <string name="message_hint">mesaj yaz…</string>
-    <string name="channel_password_hint">Parola</string>
-    <string name="join_channel">Kanala katıl</string>
-    <string name="leave_channel">Ayrıl</string>
     <string name="send_message">Gönder</string>
-    <string name="show_commands">Komutları göster</string>
     <string name="back">Geri</string>
     <string name="people">Kişiler</string>
-    <string name="channels">Kanallar</string>
     <string name="online_users">Çevrimiçi kullanıcılar</string>
     <string name="no_one_connected">Bağlı kimse yok</string>
     <string name="emergency_clear_hint">Tüm verileri silmek için üç kez dokun</string>
@@ -102,7 +97,6 @@
     <string name="cd_not_supported_battery_optimization">Desteklenmiyor</string>
     <string name="cd_bluetooth">Bluetooth</string>
     <string name="cd_unread_message">Okunmamış mesaj</string>
-    <string name="cd_leave_channel">Kanaldan ayrıl</string>
     <string name="cd_reachable_via_nostr">Nostr üzerinden erişilebilir</string>
     <string name="cd_offline_favorite">Favori (çevrimdışı)</string>
     <string name="cd_scroll_to_bottom">Alta kaydır</string>
@@ -220,10 +214,6 @@
     <string name="perm_type_battery_optimization">Pil optimizasyonu</string>
     <string name="perm_type_other">Diğer</string>
 
-    <string name="pwd_prompt_title">Kanal parolasını gir</string>
-    <string name="pwd_prompt_message">%1$s kanalı parolalıdır. Katılmak için parola gir.</string>
-    <string name="pwd_label">Parola</string>
-    <string name="join">Katıl</string>
     <string name="cancel">İptal</string>
 
     <plurals name="notification_and_more">

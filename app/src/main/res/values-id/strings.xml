@@ -10,14 +10,9 @@
     <!-- Placeholder / UI dasar -->
     <string name="nickname_hint">Nama panggilan</string>
     <string name="message_hint">Ketik pesan…</string>
-    <string name="channel_password_hint">Kata sandi</string>
-    <string name="join_channel">Bergabung ke channel</string>
-    <string name="leave_channel">Keluar</string>
     <string name="send_message">Kirim</string>
-    <string name="show_commands">Tampilkan perintah</string>
     <string name="back">Kembali</string>
     <string name="people">Orang</string>
-    <string name="channels">Channel</string>
     <string name="online_users">Pengguna online</string>
     <string name="no_one_connected">Tidak ada yang terhubung</string>
     <string name="emergency_clear_hint">Ketuk tiga kali untuk menghapus semua data</string>
@@ -113,7 +108,6 @@
     <string name="cd_not_supported_battery_optimization">Optimalisasi baterai tidak didukung</string>
     <string name="cd_bluetooth">Bluetooth</string>
     <string name="cd_unread_message">Pesan yang belum dibaca</string>
-    <string name="cd_leave_channel">Keluar dari channel</string>
     <string name="cd_reachable_via_nostr">Dapat dijangkau melalui Nostr</string>
     <string name="cd_offline_favorite">Favorit (offline)</string>
     <string name="cd_scroll_to_bottom">Gulir ke bawah</string>
@@ -243,10 +237,6 @@
     <string name="perm_type_other">Lainnya</string>
 
     <!-- Dialog kata sandi -->
-    <string name="pwd_prompt_title">Masukkan kata sandi channel</string>
-    <string name="pwd_prompt_message">Channel %1$s dilindungi kata sandi. Masukkan kata sandi untuk bergabung.</string>
-    <string name="pwd_label">Kata sandi</string>
-    <string name="join">Bergabung</string>
     <string name="cancel">Batal</string>
 
     <!-- Jamak -->

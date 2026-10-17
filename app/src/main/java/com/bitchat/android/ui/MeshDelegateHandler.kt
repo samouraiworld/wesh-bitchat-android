@@ -17,18 +17,19 @@ import java.util.Date
 class MeshDelegateHandler(
     private val state: ChatState,
     private val messageManager: MessageManager,
-    private val channelManager: ChannelManager,
     private val privateChatManager: PrivateChatManager,
     private val notificationManager: NotificationManager,
     private val coroutineScope: CoroutineScope,
     private val onHapticFeedback: () -> Unit,
-    private val getMyPeerID: () -> String,
     private val getMeshService: () -> MeshService,
     private val publicNotificationsMuted: () -> Boolean = { false },
     private val markMessageReadLocally: (messageID: String) -> Unit = {}
 ) : BluetoothMeshDelegate {
 
     override fun didReceiveMessage(message: BitchatMessage) {
+        // Wesh has one public room and no named channels: a message tagged for a BitChat channel
+        // never reaches the UI (admission already drops it), and neither buzzes nor notifies.
+        if (!message.isPrivate && message.channel != null) return
         coroutineScope.launch {
             val messageKey = messageManager.generateMessageKey(message)
             if (messageManager.isMessageProcessed(messageKey)) {
@@ -71,17 +72,6 @@ class MeshDelegateHandler(
                         )
                     }
                 }
-            } else if (message.channel != null) {
-                // Channel message: AppStateStore is the source of truth for list; only manage unread
-                if (state.getJoinedChannelsValue().contains(message.channel)) {
-                    val channel = message.channel
-                    val viewingClassic = state.getCurrentChannelValue() == channel
-                    if (!viewingClassic) {
-                        val currentUnread = state.getUnreadChannelMessagesValue().toMutableMap()
-                        currentUnread[channel] = (currentUnread[channel] ?: 0) + 1
-                        state.setUnreadChannelMessages(currentUnread)
-                    }
-                }
             } else {
                 // Public mesh message: AppStateStore is the source of truth; avoid double-adding to UI state
                 // Still run mention detection/notifications
@@ -107,9 +97,6 @@ class MeshDelegateHandler(
         
         // Flush router outbox for any peers that just connected (and their noiseHex aliases)
         runCatching { com.bitchat.android.services.MessageRouter.tryGetInstance()?.onPeersUpdated(mergedPeers) }
-
-        // Clean up channel members who disconnected
-        channelManager.cleanupDisconnectedMembers(mergedPeers, getMyPeerID())
 
         runCatching { com.bitchat.android.services.AppStateStore.canonicalizePrivateChats() }
 
@@ -147,12 +134,6 @@ class MeshDelegateHandler(
         com.bitchat.android.services.ConversationAliasResolver.unifyChatsIntoPeer(state, targetPeerID, keysToMerge)
     }
 
-    override fun didReceiveChannelLeave(channel: String, fromPeer: String) {
-        coroutineScope.launch {
-            channelManager.removeChannelMember(channel, fromPeer)
-        }
-    }
-    
     override fun didReceiveDeliveryAck(messageID: String, recipientPeerID: String) {
         coroutineScope.launch {
             messageManager.updateMessageDeliveryStatus(messageID, DeliveryStatus.Delivered(recipientPeerID, Date()))
@@ -171,10 +152,6 @@ class MeshDelegateHandler(
 
     override fun didReceiveVerifyResponse(peerID: String, payload: ByteArray, timestampMs: Long) {
         // Handled by ChatViewModel for verification flow
-    }
-    
-    override fun decryptChannelMessage(encryptedContent: ByteArray, channel: String): String? {
-        return channelManager.decryptChannelMessage(encryptedContent, channel)
     }
     
     override fun getNickname(): String? = state.getNicknameValue()

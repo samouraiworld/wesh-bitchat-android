@@ -10,14 +10,9 @@
     <!-- প্লেসহোল্ডার / মৌলিক UI -->
     <string name="nickname_hint">ডাকনাম</string>
     <string name="message_hint">বার্তা টাইপ করুন…</string>
-    <string name="channel_password_hint">পাসওয়ার্ড</string>
-    <string name="join_channel">চ্যানেলে যোগ দিন</string>
-    <string name="leave_channel">ছেড়ে দিন</string>
     <string name="send_message">পাঠান</string>
-    <string name="show_commands">কমান্ড দেখান</string>
     <string name="back">ফিরে যান</string>
     <string name="people">মানুষ</string>
-    <string name="channels">চ্যানেল</string>
     <string name="online_users">অনলাইন ব্যবহারকারী</string>
     <string name="no_one_connected">কেউ সংযুক্ত নেই</string>
     <string name="emergency_clear_hint">সমস্ত ডেটা সাফ করতে তিনবার ট্যাপ করুন</string>
@@ -113,7 +108,6 @@
     <string name="cd_not_supported_battery_optimization">ব্যাটারি অপ্টিমাইজেশন সমর্থিত নয়</string>
     <string name="cd_bluetooth">ব্লুটুথ</string>
     <string name="cd_unread_message">অপঠিত বার্তা</string>
-    <string name="cd_leave_channel">চ্যানেল ছেড়ে দিন</string>
     <string name="cd_reachable_via_nostr">Nostr এর মাধ্যমে পৌঁছানো যায়</string>
     <string name="cd_offline_favorite">প্রিয় (অফলাইন)</string>
     <string name="cd_scroll_to_bottom">নিচে স্ক্রল করুন</string>
@@ -243,10 +237,6 @@
     <string name="perm_type_other">অন্যান্য</string>
 
     <!-- পাসওয়ার্ড ডায়ালগ -->
-    <string name="pwd_prompt_title">চ্যানেল পাসওয়ার্ড লিখুন</string>
-    <string name="pwd_prompt_message">চ্যানেল %1$s পাসওয়ার্ড দিয়ে সুরক্ষিত। যোগ দিতে পাসওয়ার্ড লিখুন।</string>
-    <string name="pwd_label">পাসওয়ার্ড</string>
-    <string name="join">যোগ দিন</string>
     <string name="cancel">বাতিল</string>
 
     <!-- বহুবচন -->

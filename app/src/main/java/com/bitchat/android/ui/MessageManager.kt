@@ -38,58 +38,6 @@ class MessageManager(private val state: ChatState) {
         addMessage(sys)
     }
     
-    fun clearMessages() {
-        state.setMessages(emptyList())
-        state.setChannelMessages(emptyMap())
-    }
-    
-    // MARK: - Channel Message Management
-    
-    fun addChannelMessage(channel: String, message: BitchatMessage) {
-        val currentChannelMessages = state.getChannelMessagesValue().toMutableMap()
-        if (!currentChannelMessages.containsKey(channel)) {
-            currentChannelMessages[channel] = mutableListOf()
-        }
-        
-        val channelMessageList = currentChannelMessages[channel]?.toMutableList() ?: mutableListOf()
-        channelMessageList.add(message)
-        currentChannelMessages[channel] = channelMessageList
-        state.setChannelMessages(currentChannelMessages)
-        // Reflect into process-wide store
-        try { com.bitchat.android.services.AppStateStore.addChannelMessage(channel, message) } catch (_: Exception) { }
-        
-        // Update unread count if not currently viewing this channel
-        val viewingClassicChannel = state.getCurrentChannelValue() == channel
-
-        if (!viewingClassicChannel) {
-            val currentUnread = state.getUnreadChannelMessagesValue().toMutableMap()
-            currentUnread[channel] = (currentUnread[channel] ?: 0) + 1
-            state.setUnreadChannelMessages(currentUnread)
-        }
-    }
-    
-    fun clearChannelMessages(channel: String) {
-        val updatedChannelMessages = state.getChannelMessagesValue().toMutableMap()
-        updatedChannelMessages[channel] = emptyList()
-        state.setChannelMessages(updatedChannelMessages)
-    }
-    
-    fun removeChannelMessages(channel: String) {
-        val updatedChannelMessages = state.getChannelMessagesValue().toMutableMap()
-        updatedChannelMessages.remove(channel)
-        state.setChannelMessages(updatedChannelMessages)
-        
-        val updatedUnread = state.getUnreadChannelMessagesValue().toMutableMap()
-        updatedUnread.remove(channel)
-        state.setUnreadChannelMessages(updatedUnread)
-    }
-    
-    fun clearChannelUnreadCount(channel: String) {
-        val currentUnread = state.getUnreadChannelMessagesValue().toMutableMap()
-        currentUnread.remove(channel)
-        state.setUnreadChannelMessages(currentUnread)
-    }
-    
     // MARK: - Private Message Management
 
     fun addPrivateMessage(peerID: String, message: BitchatMessage) {
@@ -175,18 +123,6 @@ class MessageManager(private val state: ChatState) {
         }
         if (!accepted) return
         publishAcceptedPrivateMessage(conversationID, message, forceRead = true)
-    }
-    
-    fun clearPrivateMessages(peerID: String) {
-        val conversationID = ContactDirectory.canonicalConversationId(peerID)
-        com.bitchat.android.services.AppStateStore.deletePrivateConversation(conversationID)
-        val updatedChats = state.getPrivateChatsValue().toMutableMap()
-        updatedChats.keys.removeAll { key ->
-            ContactDirectory.canonicalConversationId(key)
-                .equals(conversationID, ignoreCase = true)
-        }
-        state.setPrivateChats(updatedChats)
-        clearPrivateUnreadMessages(conversationID)
     }
     
     fun initializePrivateChat(peerID: String) {
@@ -330,25 +266,9 @@ class MessageManager(private val state: ChatState) {
                 state.setMessages(updatedMessages)
             }
         }
-        
-        // Update in channel messages
-        val updatedChannelMessages = state.getChannelMessagesValue().toMutableMap()
-        updatedChannelMessages.forEach { (channel, messages) ->
-            val channelMessagesList = messages.toMutableList()
-            val channelMessageIndex = channelMessagesList.indexOfFirst { it.id == messageID }
-            if (channelMessageIndex >= 0) {
-                val current = channelMessagesList[channelMessageIndex].deliveryStatus
-                val finalStatus = chooseStatus(current, status)
-                if (finalStatus !== current) {
-                    channelMessagesList[channelMessageIndex] = channelMessagesList[channelMessageIndex].copy(deliveryStatus = finalStatus)
-                    updatedChannelMessages[channel] = channelMessagesList
-                }
-            }
-        }
-        state.setChannelMessages(updatedChannelMessages)
     }
 
-    // Remove a message from all locations (main timeline, private chats, channels)
+    // Remove a message from all locations (main timeline, private chats)
     fun removeMessageById(messageID: String) {
         // Main timeline
         run {
@@ -377,42 +297,6 @@ class MessageManager(private val state: ChatState) {
                 com.bitchat.android.services.AppStateStore.removePrivateMessage(messageID)
             }
         }
-        // Channels
-        run {
-            val chans = state.getChannelMessagesValue().toMutableMap()
-            var changed = false
-            chans.keys.toList().forEach { ch ->
-                val msgs = chans[ch]?.toMutableList() ?: mutableListOf()
-                val idx = msgs.indexOfFirst { it.id == messageID }
-                if (idx >= 0) {
-                    msgs.removeAt(idx)
-                    chans[ch] = msgs
-                    changed = true
-                }
-            }
-            if (changed) state.setChannelMessages(chans)
-        }
-    }
-    
-    // MARK: - Utility Functions
-    
-    fun parseMentions(content: String, peerNicknames: Set<String>, currentNickname: String?): List<String> {
-        val mentionRegex = "@([a-zA-Z0-9_]+)".toRegex()
-        val allNicknames = peerNicknames + (currentNickname ?: "")
-        
-        return mentionRegex.findAll(content)
-            .map { it.groupValues[1] }
-            .filter { allNicknames.contains(it) }
-            .distinct()
-            .toList()
-    }
-    
-    fun parseChannels(content: String): List<String> {
-        val channelRegex = "#([a-zA-Z0-9_]+)".toRegex()
-        return channelRegex.findAll(content)
-            .map { it.groupValues[0] } // Include the #
-            .distinct()
-            .toList()
     }
     
     // MARK: - Emergency Clear
@@ -420,9 +304,7 @@ class MessageManager(private val state: ChatState) {
     fun clearAllMessages() {
         state.setMessages(emptyList())
         state.setPrivateChats(emptyMap())
-        state.setChannelMessages(emptyMap())
         state.setUnreadPrivateMessages(emptySet())
-        state.setUnreadChannelMessages(emptyMap())
         processedUIMessages.clear()
         recentSystemEvents.clear()
     }

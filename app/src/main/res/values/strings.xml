@@ -1,24 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources xmlns:tools="http://schemas.android.com/tools">
-    <string name="cashu_pay_via">pay via Cashu</string>
-    <string name="cashu_payment_description">Cashu payment</string>
-    <string name="cashu_copy_token">Copy token</string>
-    <string name="cashu_redeem_wallet">Redeem in wallet</string>
-    <string name="cashu_redeem_web">Redeem on web</string>
     <string name="app_name">Wesh</string>
     <string name="permission_bluetooth_rationale">Bluetooth permission is required for peer-to-peer messaging without internet.</string>
     <string name="permission_location_rationale">Location permission is required to discover nearby devices via Bluetooth.</string>
     <string name="permission_notification_rationale">Notification permission is required to alert you of new messages.</string>
     <string name="nickname_hint">Nickname</string>
     <string name="message_hint">Type a message…</string>
-    <string name="channel_password_hint">Password</string>
-    <string name="join_channel">Join Channel</string>
-    <string name="leave_channel">Leave</string>
     <string name="send_message">Send</string>
-    <string name="show_commands">Show commands</string>
     <string name="back">Back</string>
     <string name="people">People</string>
-    <string name="channels">Channels</string>
     <string name="online_users">Online Users</string>
     <string name="no_one_connected">No one connected</string>
     <string name="emergency_clear_hint">Triple tap to clear all data</string>
@@ -127,10 +117,7 @@
   <!-- About sheet: how-to-use instructions -->
   <string name="about_how_to_use_heading">How To Use</string>
   <string name="about_howto_nickname">Set your nickname by tapping it</string>
-  <string name="about_howto_channels">Tap the channel name to change channels</string>
-  <string name="about_howto_people">Tap the people icon to see who\'s in the channel</string>
   <string name="about_howto_mention">Type @ to mention someone</string>
-  <string name="about_howto_commands">Type / to see the available commands</string>
 
   <!-- About sheet: section labels -->
   <string name="about_section_about">About</string>
@@ -219,7 +206,6 @@
   <string name="notification_action_quit_bitchat">Quit Wesh</string>
   <string name="about_background_title">Run in Background</string>
   <string name="about_background_desc">Keep mesh active when app is closed (foreground service)</string>
-  <string name="cd_leave_channel">Leave channel</string>
   <string name="cd_reachable_via_nostr">Reachable via Nostr</string>
   <string name="cd_offline_favorite">Offline favorite</string>
   <string name="cd_scroll_to_bottom">Scroll to bottom</string>
@@ -372,7 +358,6 @@
   <string name="location_tracking_warning">Wesh does NOT track your location</string>
   <string name="at_symbol" translatable="false">@</string>
   <string name="cd_open_about">Open About</string>
-  <string name="channel_count_prefix" translatable="false"> · ⧉ </string>
   <string name="nobody_around">Nobody around…</string>
   <string name="you_suffix"> (you)</string>
   <string name="pan_zoom_instruction">Drag to spin · Pinch to zoom · Tap to focus</string>
@@ -403,11 +388,6 @@
   <string name="perm_type_battery_optimization">Battery Optimization</string>
   <string name="perm_type_other">Other</string>
 
-  <!-- Password prompt dialog -->
-  <string name="pwd_prompt_title">Enter Channel Password</string>
-  <string name="pwd_prompt_message">Channel %1$s is password protected. Enter the password to join.</string>
-  <string name="pwd_label">Password</string>
-  <string name="join">Join</string>
   <string name="cancel">Cancel</string>
     <string name="tor_not_available_in_this_build">Tor not available in this build</string>
     <string name="checking">Checking…</string>

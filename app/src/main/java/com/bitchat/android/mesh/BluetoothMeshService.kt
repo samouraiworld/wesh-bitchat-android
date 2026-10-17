@@ -470,11 +470,6 @@ class BluetoothMeshService(
                 authenticatedPeerState.receive(peerID, state, authenticatedSession)
             }
             
-            // Message operations  
-            override fun decryptChannelMessage(encryptedContent: ByteArray, channel: String): String? {
-                return delegate?.decryptChannelMessage(encryptedContent, channel)
-            }
-            
             // Callbacks
             override fun onPrivateMessageReceived(message: BitchatMessage): Boolean {
                 val admitted = deliverIncoming(message)
@@ -511,10 +506,6 @@ class BluetoothMeshService(
                     } catch (_: Exception) { }
                 }
                 return true
-            }
-            
-            override fun onChannelLeave(channel: String, fromPeer: String) {
-                delegate?.didReceiveChannelLeave(channel, fromPeer)
             }
             
             override fun onDeliveryAckReceived(messageID: String, peerID: String) {
@@ -908,7 +899,7 @@ class BluetoothMeshService(
     /**
      * Send public message
      */
-    fun sendMessage(content: String, mentions: List<String> = emptyList(), channel: String? = null) {
+    fun sendMessage(content: String, mentions: List<String> = emptyList()) {
         if (content.isEmpty()) return
         
         serviceScope.launch {

@@ -7,14 +7,9 @@
     <string name="permission_notification_rationale">Kebenaran pemberitahuan diperlukan untuk memaklumkan anda tentang mesej baharu.</string>
     <string name="nickname_hint">nama samaran</string>
     <string name="message_hint">taip mesej…</string>
-    <string name="channel_password_hint">Kata Laluan</string>
-    <string name="join_channel">Sertai Saluran</string>
-    <string name="leave_channel">Keluar</string>
     <string name="send_message">Hantar</string>
-    <string name="show_commands">Tunjukkan arahan</string>
     <string name="back">Kembali</string>
     <string name="people">Orang</string>
-    <string name="channels">Saluran</string>
     <string name="online_users">Pengguna Dalam Talian</string>
     <string name="no_one_connected">Tiada sesiapa yang disambungkan</string>
     <string name="emergency_clear_hint">Ketik tiga kali untuk memadam semua data</string>
@@ -119,7 +114,6 @@
   <string name="notification_action_quit_bitchat">Keluar Wesh</string>
   <string name="about_background_title">jalankan di latar belakang</string>
   <string name="about_background_desc">kekalkan mesh aktif apabila apl ditutup (perkhidmatan latar depan)</string>
-  <string name="cd_leave_channel">Keluar saluran</string>
   <string name="cd_reachable_via_nostr">Boleh dihubungi melalui Nostr</string>
   <string name="cd_offline_favorite">Kegemaran luar talian</string>
   <string name="cd_scroll_to_bottom">Tatal ke bawah</string>
@@ -291,11 +285,6 @@
   <string name="perm_type_battery_optimization">Pengoptimuman Bateri</string>
   <string name="perm_type_other">Lain-lain</string>
 
-  <!-- Password prompt dialog -->
-  <string name="pwd_prompt_title">Masukkan Kata Laluan Saluran</string>
-  <string name="pwd_prompt_message">Saluran %1$s dilindungi kata laluan. Masukkan kata laluan untuk menyertai.</string>
-  <string name="pwd_label">Kata Laluan</string>
-  <string name="join">Sertai</string>
   <string name="cancel">Batal</string>
     <string name="tor_not_available_in_this_build">Tor tidak tersedia dalam binaan ini</string>
 

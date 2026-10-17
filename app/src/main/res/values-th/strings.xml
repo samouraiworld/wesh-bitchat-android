@@ -10,14 +10,9 @@
     <!-- ตัวยึดตำแหน่ง / UI พื้นฐาน -->
     <string name="nickname_hint">ชื่อเล่น</string>
     <string name="message_hint">พิมพ์ข้อความ…</string>
-    <string name="channel_password_hint">รหัสผ่าน</string>
-    <string name="join_channel">เข้าร่วมช่อง</string>
-    <string name="leave_channel">ออก</string>
     <string name="send_message">ส่ง</string>
-    <string name="show_commands">แสดงคำสั่ง</string>
     <string name="back">กลับ</string>
     <string name="people">ผู้คน</string>
-    <string name="channels">ช่อง</string>
     <string name="online_users">ผู้ใช้ที่ออนไลน์</string>
     <string name="no_one_connected">ไม่มีการเชื่อมต่อ</string>
     <string name="emergency_clear_hint">แตะสามครั้งเพื่อลบข้อมูลทั้งหมด</string>
@@ -113,7 +108,6 @@
     <string name="cd_not_supported_battery_optimization">ไม่รองรับการเพิ่มประสิทธิภาพแบตเตอรี่</string>
     <string name="cd_bluetooth">Bluetooth</string>
     <string name="cd_unread_message">ข้อความที่ยังไม่ได้อ่าน</string>
-    <string name="cd_leave_channel">ออกจากช่อง</string>
     <string name="cd_reachable_via_nostr">ติดต่อได้ผ่าน Nostr</string>
     <string name="cd_offline_favorite">รายการโปรด (ออฟไลน์)</string>
     <string name="cd_scroll_to_bottom">เลื่อนไปด้านล่างสุด</string>
@@ -243,10 +237,6 @@
     <string name="perm_type_other">อื่น ๆ</string>
 
     <!-- กล่องโต้ตอบรหัสผ่าน -->
-    <string name="pwd_prompt_title">ป้อนรหัสผ่านของช่อง</string>
-    <string name="pwd_prompt_message">ช่อง %1$s มีการป้องกันด้วยรหัสผ่าน ป้อนรหัสผ่านเพื่อเข้าร่วม</string>
-    <string name="pwd_label">รหัสผ่าน</string>
-    <string name="join">เข้าร่วม</string>
     <string name="cancel">ยกเลิก</string>
 
     <!-- พหูพจน์ -->

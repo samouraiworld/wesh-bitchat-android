@@ -10,14 +10,9 @@
     <!-- نگهدارنده‌ها / رابط کاربری پایه -->
     <string name="nickname_hint">نام مستعار</string>
     <string name="message_hint">نوشتن پیام…</string>
-    <string name="channel_password_hint">گذرواژه</string>
-    <string name="join_channel">پیوستن به کانال</string>
-    <string name="leave_channel">خروج</string>
     <string name="send_message">ارسال</string>
-    <string name="show_commands">نمایش دستورات</string>
     <string name="back">بازگشت</string>
     <string name="people">افراد</string>
-    <string name="channels">کانال‌ها</string>
     <string name="online_users">کاربران آنلاین</string>
     <string name="no_one_connected">هیچ‌کس متصل نیست</string>
     <string name="emergency_clear_hint">برای پاک کردن همهٔ داده‌ها سه بار ضربه بزنید</string>
@@ -113,7 +108,6 @@
     <string name="cd_not_supported_battery_optimization">بهینه‌سازی باتری پشتیبانی نمی‌شود</string>
     <string name="cd_bluetooth">بلوتوث</string>
     <string name="cd_unread_message">پیام خوانده‌نشده</string>
-    <string name="cd_leave_channel">خروج از کانال</string>
     <string name="cd_reachable_via_nostr">قابل دسترس از طریق Nostr</string>
     <string name="cd_offline_favorite">دلخواه (آفلاین)</string>
     <string name="cd_scroll_to_bottom">اسکرول به پایین</string>
@@ -243,10 +237,6 @@
     <string name="perm_type_other">سایر</string>
 
     <!-- گفت‌وگوی گذرواژه -->
-    <string name="pwd_prompt_title">گذرواژهٔ کانال را وارد کنید</string>
-    <string name="pwd_prompt_message">کانال %1$s با گذرواژه محافظت می‌شود. برای پیوستن، گذرواژه را وارد کنید.</string>
-    <string name="pwd_label">گذرواژه</string>
-    <string name="join">پیوستن</string>
     <string name="cancel">لغو</string>
 
     <!-- حالت جمع -->

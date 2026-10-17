@@ -1373,10 +1373,9 @@ class WifiAwareMeshService(private val context: Context) : MeshService, Transpor
      * Sends a broadcast message to all peers.
      * @param content   Text content of the message
      * @param mentions  Optional list of mentioned peer IDs
-     * @param channel   Optional channel name
      */
-    override fun sendMessage(content: String, mentions: List<String>, channel: String?) {
-        meshCore.sendMessage(content, mentions, channel)
+    override fun sendMessage(content: String, mentions: List<String>) {
+        meshCore.sendMessage(content, mentions)
     }
 
     /**

@@ -10,14 +10,9 @@
     <!-- Placeholder / UI cơ bản -->
     <string name="nickname_hint">Biệt danh</string>
     <string name="message_hint">Nhập tin nhắn…</string>
-    <string name="channel_password_hint">Mật khẩu</string>
-    <string name="join_channel">Tham gia kênh</string>
-    <string name="leave_channel">Rời khỏi</string>
     <string name="send_message">Gửi</string>
-    <string name="show_commands">Hiển thị lệnh</string>
     <string name="back">Quay lại</string>
     <string name="people">Mọi người</string>
-    <string name="channels">Kênh</string>
     <string name="online_users">Người dùng trực tuyến</string>
     <string name="no_one_connected">Không có ai kết nối</string>
     <string name="emergency_clear_hint">Nhấn ba lần để xóa tất cả dữ liệu</string>
@@ -113,7 +108,6 @@
     <string name="cd_not_supported_battery_optimization">Tối ưu hóa pin không được hỗ trợ</string>
     <string name="cd_bluetooth">Bluetooth</string>
     <string name="cd_unread_message">Tin nhắn chưa đọc</string>
-    <string name="cd_leave_channel">Rời khỏi kênh</string>
     <string name="cd_reachable_via_nostr">Có thể tiếp cận qua Nostr</string>
     <string name="cd_offline_favorite">Yêu thích (ngoại tuyến)</string>
     <string name="cd_scroll_to_bottom">Cuộn xuống dưới</string>
@@ -243,10 +237,6 @@
     <string name="perm_type_other">Khác</string>
 
     <!-- Dialog mật khẩu -->
-    <string name="pwd_prompt_title">Nhập mật khẩu kênh</string>
-    <string name="pwd_prompt_message">Kênh %1$s được bảo vệ bằng mật khẩu. Nhập mật khẩu để tham gia.</string>
-    <string name="pwd_label">Mật khẩu</string>
-    <string name="join">Tham gia</string>
     <string name="cancel">Hủy</string>
 
     <!-- Số nhiều -->

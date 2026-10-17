@@ -3,7 +3,6 @@ package com.bitchat.android.ui
 import android.content.Context
 import android.content.SharedPreferences
 import android.util.Log
-import com.google.gson.Gson
 import kotlin.random.Random
 
 /**
@@ -16,18 +15,12 @@ class DataManager(private val context: Context) {
     }
     
     private val prefs: SharedPreferences = context.getSharedPreferences("bitchat_prefs", Context.MODE_PRIVATE)
-    private val gson = Gson()
     
-    // Channel-related maps that need to persist state
-    private val _channelCreators = mutableMapOf<String, String>()
     private val _favoritePeers = mutableSetOf<String>()
     private val _blockedUsers = mutableSetOf<String>()
-    private val _channelMembers = mutableMapOf<String, MutableSet<String>>()
     
-    val channelCreators: Map<String, String> get() = _channelCreators
     val favoritePeers: Set<String> get() = _favoritePeers
     val blockedUsers: Set<String> get() = _blockedUsers
-    val channelMembers: Map<String, MutableSet<String>> get() = _channelMembers
     
     // MARK: - Nickname Management
     
@@ -44,86 +37,6 @@ class DataManager(private val context: Context) {
     
     fun saveNickname(nickname: String) {
         prefs.edit().putString("nickname", nickname).apply()
-    }
-    
-    // MARK: - Channel Data Management
-    
-    fun loadChannelData(): Pair<Set<String>, Set<String>> {
-        // Load joined channels
-        val savedChannels = prefs.getStringSet("joined_channels", emptySet()) ?: emptySet()
-        
-        // Load password protected channels
-        val savedProtectedChannels = prefs.getStringSet("password_protected_channels", emptySet()) ?: emptySet()
-        
-        // Load channel creators
-        val creatorsJson = prefs.getString("channel_creators", "{}")
-        try {
-            val creatorsMap = gson.fromJson(creatorsJson, Map::class.java) as? Map<String, String>
-            creatorsMap?.let { _channelCreators.putAll(it) }
-        } catch (e: Exception) {
-            // Ignore parsing errors
-        }
-        
-        // Initialize channel members for loaded channels
-        savedChannels.forEach { channel ->
-            if (!_channelMembers.containsKey(channel)) {
-                _channelMembers[channel] = mutableSetOf()
-            }
-        }
-        
-        return Pair(savedChannels, savedProtectedChannels)
-    }
-    
-    fun saveChannelData(joinedChannels: Set<String>, passwordProtectedChannels: Set<String>) {
-        prefs.edit().apply {
-            putStringSet("joined_channels", joinedChannels)
-            putStringSet("password_protected_channels", passwordProtectedChannels)
-            putString("channel_creators", gson.toJson(_channelCreators))
-            apply()
-        }
-    }
-    
-    fun addChannelCreator(channel: String, creatorID: String) {
-        _channelCreators[channel] = creatorID
-    }
-    
-    fun removeChannelCreator(channel: String) {
-        _channelCreators.remove(channel)
-    }
-    
-    fun isChannelCreator(channel: String, peerID: String): Boolean {
-        return _channelCreators[channel] == peerID
-    }
-    
-    // MARK: - Channel Members Management
-    
-    fun addChannelMember(channel: String, peerID: String) {
-        if (!_channelMembers.containsKey(channel)) {
-            _channelMembers[channel] = mutableSetOf()
-        }
-        _channelMembers[channel]?.add(peerID)
-    }
-    
-    fun removeChannelMember(channel: String, peerID: String) {
-        _channelMembers[channel]?.remove(peerID)
-    }
-    
-    fun removeChannelMembers(channel: String) {
-        _channelMembers.remove(channel)
-    }
-    
-    fun cleanupDisconnectedMembers(channel: String, connectedPeers: List<String>, myPeerID: String) {
-        _channelMembers[channel]?.removeAll { memberID ->
-            memberID != myPeerID && !connectedPeers.contains(memberID)
-        }
-    }
-    
-    fun cleanupAllDisconnectedMembers(connectedPeers: List<String>, myPeerID: String) {
-        _channelMembers.values.forEach { members ->
-            members.removeAll { memberID ->
-                memberID != myPeerID && !connectedPeers.contains(memberID)
-            }
-        }
     }
     
     // MARK: - Favorites Management
@@ -199,10 +112,10 @@ class DataManager(private val context: Context) {
     // MARK: - Emergency Clear
     
     fun clearAllData() {
-        _channelCreators.clear()
         _favoritePeers.clear()
         _blockedUsers.clear()
-        _channelMembers.clear()
+        // Clears the whole file, including joined_channels, password_protected_channels and
+        // channel_creators that an older build may still hold.
         prefs.edit().clear().apply()
     }
 }

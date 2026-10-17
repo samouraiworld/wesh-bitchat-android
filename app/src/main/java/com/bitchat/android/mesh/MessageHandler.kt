@@ -543,13 +543,12 @@ class MessageHandler(
         val peerID = routed.peerID ?: "unknown"
         val content = String(packet.payload, Charsets.UTF_8)
         
-        if (content.startsWith("#")) {
-            // Channel leave
-            delegate?.onChannelLeave(content, peerID)
-        } else {
-            // Peer disconnect
-            delegate?.removePeer(peerID)
-        }
+        // A BitChat peer leaving a named "#channel" is not leaving the mesh, and Wesh has no
+        // channels: ignore it without touching presence or any state.
+        if (content.startsWith("#")) return
+
+        // Peer disconnect
+        delegate?.removePeer(peerID)
         
         // Leave message relay is now handled by centralized PacketRelayManager
     }
@@ -705,9 +704,6 @@ interface MessageHandlerDelegate {
         authenticatedSession: com.bitchat.android.noise.AuthenticatedNoiseSession
     ) {}
     
-    // Message operations
-    fun decryptChannelMessage(encryptedContent: ByteArray, channel: String): String?
-
     // Callbacks
     fun onMessageReceived(message: BitchatMessage)
     /**
@@ -719,7 +715,6 @@ interface MessageHandlerDelegate {
         onMessageReceived(message)
         return false
     }
-    fun onChannelLeave(channel: String, fromPeer: String)
     fun onDeliveryAckReceived(messageID: String, peerID: String)
     fun onReadReceiptReceived(messageID: String, peerID: String)
     fun onVerifyChallengeReceived(peerID: String, payload: ByteArray, timestampMs: Long)

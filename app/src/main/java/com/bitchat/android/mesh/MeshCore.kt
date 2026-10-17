@@ -363,10 +363,6 @@ class MeshCore(
                 authenticatedPeerState.receive(peerID, state, authenticatedSession)
             }
 
-            override fun decryptChannelMessage(encryptedContent: ByteArray, channel: String): String? {
-                return delegate?.decryptChannelMessage(encryptedContent, channel)
-            }
-
             override fun onMessageReceived(message: BitchatMessage) {
                 if (hooks.onMessageReceived?.invoke(message) == false) return
                 delegate?.didReceiveMessage(message)
@@ -382,10 +378,6 @@ class MeshCore(
                 if (!admit(message)) return false
                 delegate?.didReceiveMessage(message)
                 return true
-            }
-
-            override fun onChannelLeave(channel: String, fromPeer: String) {
-                delegate?.didReceiveChannelLeave(channel, fromPeer)
             }
 
             override fun onDeliveryAckReceived(messageID: String, peerID: String) {
@@ -508,7 +500,7 @@ class MeshCore(
         }
     }
 
-    fun sendMessage(content: String, mentions: List<String> = emptyList(), channel: String? = null) {
+    fun sendMessage(content: String, mentions: List<String> = emptyList()) {
         if (content.isEmpty()) return
         scope.launch {
             val packet = BitchatPacket(

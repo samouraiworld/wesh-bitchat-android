@@ -54,10 +54,6 @@ object AppStateStore {
     private val _selectedPrivateChatPeer = MutableStateFlow<String?>(null)
     val selectedPrivateChatPeer: StateFlow<String?> = _selectedPrivateChatPeer.asStateFlow()
 
-    // Channel messages by channel name
-    private val _channelMessages = MutableStateFlow<Map<String, List<BitchatMessage>>>(emptyMap())
-    val channelMessages: StateFlow<Map<String, List<BitchatMessage>>> = _channelMessages.asStateFlow()
-
     fun setPeers(ids: List<String>) {
         synchronized(this) {
             _peers.value = ids.distinct()
@@ -786,17 +782,6 @@ object AppStateStore {
         }
     }
 
-    fun addChannelMessage(channel: String, msg: BitchatMessage) {
-        synchronized(this) {
-            if (seenMessageIds.contains(msg.id)) return
-            seenMessageIds.add(msg.id)
-            val map = _channelMessages.value.toMutableMap()
-            val list = (map[channel] ?: emptyList()) + msg
-            map[channel] = list
-            _channelMessages.value = map
-        }
-    }
-
     // Clear all in-memory state (used for full app shutdown)
     fun clear() {
         synchronized(this) {
@@ -815,7 +800,6 @@ object AppStateStore {
             _readPrivateMessageIDs.value = emptySet()
             _unreadPrivateMessageCounts.value = emptyMap()
             _privateConversationDisplayNames.value = emptyMap()
-            _channelMessages.value = emptyMap()
             _nickname.value = ""
             _selectedPrivateChatPeer.value = null
         }

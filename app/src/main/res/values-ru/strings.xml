@@ -6,14 +6,9 @@
     <string name="permission_notification_rationale">Требуется доступ к уведомлениям для оповещения о новых сообщениях.</string>
     <string name="nickname_hint">ник</string>
     <string name="message_hint">введите сообщение…</string>
-    <string name="channel_password_hint">Пароль</string>
-    <string name="join_channel">Войти в канал</string>
-    <string name="leave_channel">Покинуть</string>
     <string name="send_message">Отправить</string>
-    <string name="show_commands">Показать команды</string>
     <string name="back">Назад</string>
     <string name="people">Люди</string>
-    <string name="channels">Каналы</string>
     <string name="online_users">Пользователи онлайн</string>
     <string name="no_one_connected">Нет подключённых</string>
     <string name="emergency_clear_hint">Тройной тап для удаления всех данных</string>
@@ -102,7 +97,6 @@
     <string name="cd_not_supported_battery_optimization">Не поддерживается</string>
     <string name="cd_bluetooth">Bluetooth</string>
     <string name="cd_unread_message">Непрочитанное сообщение</string>
-    <string name="cd_leave_channel">Покинуть канал</string>
     <string name="cd_reachable_via_nostr">Доступен через Nostr</string>
     <string name="cd_offline_favorite">Избранное (оффлайн)</string>
     <string name="cd_scroll_to_bottom">Прокрутить вниз</string>
@@ -220,10 +214,6 @@
     <string name="perm_type_battery_optimization">Оптимизация батареи</string>
     <string name="perm_type_other">Другое</string>
 
-    <string name="pwd_prompt_title">Введите пароль канала</string>
-    <string name="pwd_prompt_message">Канал %1$s защищён паролем. Введите пароль, чтобы присоединиться.</string>
-    <string name="pwd_label">Пароль</string>
-    <string name="join">Войти</string>
     <string name="cancel">Отмена</string>
 
     <plurals name="notification_and_more">

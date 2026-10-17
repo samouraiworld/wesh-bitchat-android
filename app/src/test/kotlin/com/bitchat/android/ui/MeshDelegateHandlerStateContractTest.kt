@@ -26,7 +26,6 @@ import java.util.concurrent.atomic.AtomicInteger
 class MeshDelegateHandlerStateContractTest {
     private lateinit var state: ChatState
     private lateinit var messages: MessageManager
-    private lateinit var channels: ChannelManager
     private lateinit var privateChats: PrivateChatManager
     private lateinit var notifications: NotificationManager
     private lateinit var mesh: MeshService
@@ -40,7 +39,6 @@ class MeshDelegateHandlerStateContractTest {
         state = ChatState(scope)
         state.setNickname("Résumé")
         messages = MessageManager(state)
-        channels = mock()
         privateChats = mock()
         notifications = mock()
         mesh = mock()
@@ -49,12 +47,10 @@ class MeshDelegateHandlerStateContractTest {
         handler = MeshDelegateHandler(
             state = state,
             messageManager = messages,
-            channelManager = channels,
             privateChatManager = privateChats,
             notificationManager = notifications,
             coroutineScope = scope,
             onHapticFeedback = { haptics.incrementAndGet() },
-            getMyPeerID = { "self" },
             getMeshService = { mesh },
             markMessageReadLocally = locallyReadMessageIDs::add
         )
@@ -66,7 +62,6 @@ class MeshDelegateHandlerStateContractTest {
 
         assertEquals(listOf("peer-a", "peer-b"), state.connectedPeers.value)
         assertTrue(state.isConnected.value)
-        verify(channels).cleanupDisconnectedMembers(listOf("peer-a", "peer-b"), "self")
 
         handler.didUpdatePeerList(emptyList())
 
@@ -179,16 +174,19 @@ class MeshDelegateHandlerStateContractTest {
     }
 
     @Test
-    fun `channel inbound increments unread only when conversation is not focused`() {
-        state.setJoinedChannels(setOf("#room"))
-        val incoming = message(id = "channel-1", channel = "#room")
+    fun `a BitChat channel message neither buzzes nor notifies nor reaches the public room`() {
+        val incoming = message(
+            id = "channel-1",
+            content = "hello @résumé",
+            senderPeerID = "peer-a",
+            channel = "#room"
+        )
 
         handler.didReceiveMessage(incoming)
-        assertEquals(1, state.unreadChannelMessages.value["#room"])
 
-        state.setCurrentChannel("#room")
-        handler.didReceiveMessage(incoming.copy(id = "channel-2"))
-        assertEquals(1, state.unreadChannelMessages.value["#room"])
+        assertEquals(0, haptics.get())
+        verify(notifications, never()).showMeshMentionNotification(any(), any(), any())
+        assertTrue(state.messages.value.isEmpty())
     }
 
     private fun message(

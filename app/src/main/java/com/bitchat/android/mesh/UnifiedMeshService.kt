@@ -93,10 +93,10 @@ class UnifiedMeshService(
             }
     }
 
-    override fun sendMessage(content: String, mentions: List<String>, channel: String?) {
+    override fun sendMessage(content: String, mentions: List<String>) {
         when {
-            isBleEnabled() -> bluetooth.sendMessage(content, mentions, channel)
-            else -> wifiService()?.sendMessage(content, mentions, channel)
+            isBleEnabled() -> bluetooth.sendMessage(content, mentions)
+            else -> wifiService()?.sendMessage(content, mentions)
         }
     }
 
@@ -324,10 +324,6 @@ class UnifiedMeshService(
         delegate?.didUpdatePeerList(mergedPeerIDs().ifEmpty { peers.distinct() })
     }
 
-    override fun didReceiveChannelLeave(channel: String, fromPeer: String) {
-        delegate?.didReceiveChannelLeave(channel, fromPeer)
-    }
-
     override fun didReceiveDeliveryAck(messageID: String, recipientPeerID: String) {
         delegate?.didReceiveDeliveryAck(messageID, recipientPeerID)
     }
@@ -342,10 +338,6 @@ class UnifiedMeshService(
 
     override fun didReceiveVerifyResponse(peerID: String, payload: ByteArray, timestampMs: Long) {
         delegate?.didReceiveVerifyResponse(peerID, payload, timestampMs)
-    }
-
-    override fun decryptChannelMessage(encryptedContent: ByteArray, channel: String): String? {
-        return delegate?.decryptChannelMessage(encryptedContent, channel)
     }
 
     override fun getNickname(): String? = delegate?.getNickname()

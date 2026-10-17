@@ -41,8 +41,8 @@ class SessionHiddenPeersGateTest {
         val messages = MessageManager(state)
         privateChats = PrivateChatManager(state, messages, DataManager(RuntimeEnvironment.getApplication()), mock<NoiseSessionDelegate>())
         notifications = mock()
-        handler = MeshDelegateHandler(state, messages, mock(), privateChats, notifications, scope,
-            onHapticFeedback = { haptics.incrementAndGet() }, getMyPeerID = { "self" }, getMeshService = { mock() })
+        handler = MeshDelegateHandler(state, messages, privateChats, notifications, scope,
+            onHapticFeedback = { haptics.incrementAndGet() }, getMeshService = { mock() })
     }
 
     @After

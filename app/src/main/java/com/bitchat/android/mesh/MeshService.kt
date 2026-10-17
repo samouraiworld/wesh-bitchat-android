@@ -10,7 +10,7 @@ interface MeshService {
     fun startServices()
     fun stopServices()
 
-    fun sendMessage(content: String, mentions: List<String> = emptyList(), channel: String? = null)
+    fun sendMessage(content: String, mentions: List<String> = emptyList())
     fun sendPrivateMessage(content: String, recipientPeerID: String, recipientNickname: String, messageID: String? = null)
     /** Fail closed by default; implementations must pin the actual encryption generation. */
     suspend fun sendPrivateMessageBound(content: String, recipientPeerID: String, expectedKey: ByteArray,

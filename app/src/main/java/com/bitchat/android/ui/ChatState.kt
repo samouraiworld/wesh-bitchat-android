@@ -17,14 +17,6 @@ import kotlinx.coroutines.flow.stateIn
  * Centralized state definitions and data classes for the chat system
  */
 
-// Command suggestion data class
-data class CommandSuggestion(
-    val command: String,
-    val aliases: List<String> = emptyList(),
-    val syntax: String? = null,
-    val description: String
-)
-
 /**
  * Contains all the observable state for the chat system
  */
@@ -54,42 +46,6 @@ class ChatState(
     
     private val _unreadPrivateMessages = MutableStateFlow<Set<String>>(emptySet())
     val unreadPrivateMessages: StateFlow<Set<String>> = _unreadPrivateMessages.asStateFlow()
-    
-    // Channels
-    private val _joinedChannels = MutableStateFlow<Set<String>>(emptySet())
-    val joinedChannels: StateFlow<Set<String>> = _joinedChannels.asStateFlow()
-    
-    private val _currentChannel = MutableStateFlow<String?>(null)
-    val currentChannel: StateFlow<String?> = _currentChannel.asStateFlow()
-    
-    private val _channelMessages = MutableStateFlow<Map<String, List<BitchatMessage>>>(emptyMap())
-    val channelMessages: StateFlow<Map<String, List<BitchatMessage>>> = _channelMessages.asStateFlow()
-    
-    private val _unreadChannelMessages = MutableStateFlow<Map<String, Int>>(emptyMap())
-    val unreadChannelMessages: StateFlow<Map<String, Int>> = _unreadChannelMessages.asStateFlow()
-    
-    private val _passwordProtectedChannels = MutableStateFlow<Set<String>>(emptySet())
-    val passwordProtectedChannels: StateFlow<Set<String>> = _passwordProtectedChannels.asStateFlow()
-    
-    private val _showPasswordPrompt = MutableStateFlow<Boolean>(false)
-    val showPasswordPrompt: StateFlow<Boolean> = _showPasswordPrompt.asStateFlow()
-    
-    private val _passwordPromptChannel = MutableStateFlow<String?>(null)
-    val passwordPromptChannel: StateFlow<String?> = _passwordPromptChannel.asStateFlow()
-
-    // Command autocomplete
-    private val _showCommandSuggestions = MutableStateFlow(false)
-    val showCommandSuggestions: StateFlow<Boolean> = _showCommandSuggestions.asStateFlow()
-    
-    private val _commandSuggestions = MutableStateFlow<List<CommandSuggestion>>(emptyList())
-    val commandSuggestions: StateFlow<List<CommandSuggestion>> = _commandSuggestions.asStateFlow()
-    
-    // Mention autocomplete
-    private val _showMentionSuggestions = MutableStateFlow(false)
-    val showMentionSuggestions: StateFlow<Boolean> = _showMentionSuggestions.asStateFlow()
-    
-    private val _mentionSuggestions = MutableStateFlow<List<String>>(emptyList())
-    val mentionSuggestions: StateFlow<List<String>> = _mentionSuggestions.asStateFlow()
     
     // Favorites
     private val _favoritePeers = MutableStateFlow<Set<String>>(emptySet())
@@ -135,14 +91,6 @@ class ChatState(
     private val _showSecurityVerificationSheet = MutableStateFlow(false)
     val showSecurityVerificationSheet: StateFlow<Boolean> = _showSecurityVerificationSheet.asStateFlow()
     
-    val hasUnreadChannels: StateFlow<Boolean> = _unreadChannelMessages
-        .map { unreadMap -> unreadMap.values.any { it > 0 } }
-        .stateIn(
-            scope = scope,
-            started = WhileSubscribed(5_000),
-            initialValue = false
-        )
-
     val hasUnreadPrivateMessages: StateFlow<Boolean> = _unreadPrivateMessages
         .map { unreadSet -> unreadSet.isNotEmpty() }
         .stateIn(
@@ -158,18 +106,7 @@ class ChatState(
     fun getPrivateChatsValue() = _privateChats.value
     fun getSelectedPrivateChatPeerValue() = _selectedPrivateChatPeer.value
     fun getUnreadPrivateMessagesValue() = _unreadPrivateMessages.value
-    fun getJoinedChannelsValue() = _joinedChannels.value
     fun getPeerFavoritedUsValue() = _peerFavoritedUs.value
-    fun getCurrentChannelValue() = _currentChannel.value
-    fun getChannelMessagesValue() = _channelMessages.value
-    fun getUnreadChannelMessagesValue() = _unreadChannelMessages.value
-    fun getPasswordProtectedChannelsValue() = _passwordProtectedChannels.value
-    fun getShowPasswordPromptValue() = _showPasswordPrompt.value
-    fun getPasswordPromptChannelValue() = _passwordPromptChannel.value
-    fun getShowCommandSuggestionsValue() = _showCommandSuggestions.value
-    fun getCommandSuggestionsValue() = _commandSuggestions.value
-    fun getShowMentionSuggestionsValue() = _showMentionSuggestions.value
-    fun getMentionSuggestionsValue() = _mentionSuggestions.value
     fun getFavoritePeersValue() = _favoritePeers.value
     fun getPeerSessionStatesValue() = _peerSessionStates.value
     fun getPeerFingerprintsValue() = _peerFingerprints.value
@@ -209,50 +146,6 @@ class ChatState(
         _unreadPrivateMessages.value = unread
     }
     
-    fun setJoinedChannels(channels: Set<String>) {
-        _joinedChannels.value = channels
-    }
-    
-    fun setCurrentChannel(channel: String?) {
-        _currentChannel.value = channel
-    }
-    
-    fun setChannelMessages(messages: Map<String, List<BitchatMessage>>) {
-        _channelMessages.value = messages
-    }
-    
-    fun setUnreadChannelMessages(unread: Map<String, Int>) {
-        _unreadChannelMessages.value = unread
-    }
-    
-    fun setPasswordProtectedChannels(channels: Set<String>) {
-        _passwordProtectedChannels.value = channels
-    }
-    
-    fun setShowPasswordPrompt(show: Boolean) {
-        _showPasswordPrompt.value = show
-    }
-    
-    fun setPasswordPromptChannel(channel: String?) {
-        _passwordPromptChannel.value = channel
-    }
-
-    fun setShowCommandSuggestions(show: Boolean) {
-        _showCommandSuggestions.value = show
-    }
-    
-    fun setCommandSuggestions(suggestions: List<CommandSuggestion>) {
-        _commandSuggestions.value = suggestions
-    }
-    
-    fun setShowMentionSuggestions(show: Boolean) {
-        _showMentionSuggestions.value = show
-    }
-    
-    fun setMentionSuggestions(suggestions: List<String>) {
-        _mentionSuggestions.value = suggestions
-    }
-
     fun setFavoritePeers(favorites: Set<String>) {
         val currentValue = _favoritePeers.value
         Log.d("ChatState", "setFavoritePeers called with ${favorites.size} favorites: $favorites")
