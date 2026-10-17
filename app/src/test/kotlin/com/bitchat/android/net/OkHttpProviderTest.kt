@@ -71,6 +71,13 @@ class OkHttpProviderTest {
     }
 
     @Test
+    fun `relay sockets send pings so an idle stream through Tor stays open`() {
+        OkHttpProvider.socksAddressProvider = { InetSocketAddress(InetAddress.getLoopbackAddress(), 9060) }
+        OkHttpProvider.reset()
+        assertEquals(20_000, OkHttpProvider.webSocketClient().pingIntervalMillis)
+    }
+
+    @Test
     fun `reset clears cached clients without changing the route`() {
         OkHttpProvider.socksAddressProvider = { InetSocketAddress(InetAddress.getLoopbackAddress(), 9060) }
         OkHttpProvider.reset()

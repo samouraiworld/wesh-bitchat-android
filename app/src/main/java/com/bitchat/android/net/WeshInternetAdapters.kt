@@ -156,7 +156,7 @@ internal class ArtiTorControl(
 
 internal class NostrRelayControl(private val context: Context) : WeshRelayControl {
     private val manager: NostrRelayManager get() = NostrRelayManager.getInstance(context)
-    override val connectedCount: Flow<Int> = NostrRelayManager.shared.relays.map { relays -> relays.count { it.isConnected } }
+    override val connectedCount: Flow<Int> = NostrRelayManager.shared.connectedCount
     override fun connect() = manager.connect()
     override fun disconnect() = manager.disconnect()
     override fun clearOnPanic() = manager.clearAllOnPanic()

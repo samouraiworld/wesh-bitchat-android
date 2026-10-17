@@ -81,6 +81,8 @@ object OkHttpProvider {
                 .connectTimeout(10, TimeUnit.SECONDS)
                 .readTimeout(0, TimeUnit.SECONDS)
                 .writeTimeout(10, TimeUnit.SECONDS)
+                // A relay seen through Tor dropped idle sockets after about 30 s.
+                .pingInterval(20, TimeUnit.SECONDS)
                 .build()
                 .also(wsClientRef::set)
         }

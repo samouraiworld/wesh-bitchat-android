@@ -51,7 +51,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import java.text.DateFormat
 import java.util.Locale
@@ -174,7 +173,7 @@ private fun PaveNavHost(viewModel: ChatViewModel, appearance: WeshAppearance, on
     val internet = remember {
         LiveWeshInternetModeState(
             WeshInternetMode.get(context),
-            NostrRelayManager.shared.relays.map { relays -> relays.count { it.isConnected } },
+            NostrRelayManager.shared.connectedCount,
             scope,
         )
     }

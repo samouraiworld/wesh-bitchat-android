@@ -1,6 +1,7 @@
 package com.bitchat.android.nostr
 
 import android.util.Log
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -80,6 +81,8 @@ class NostrRelayManager private constructor() {
     // Published state
     private val _relays = MutableStateFlow<List<Relay>>(emptyList())
     val relays: StateFlow<List<Relay>> = _relays.asStateFlow()
+    /** Relays with an open socket; the Internet state machine and the Pave screen both read it. */
+    val connectedCount: Flow<Int> = relays.map { list -> list.count { it.isConnected } }.distinctUntilChanged()
     
     private val _isConnected = MutableStateFlow<Boolean>(false)
     val isConnected: StateFlow<Boolean> = _isConnected.asStateFlow()
@@ -88,6 +91,10 @@ class NostrRelayManager private constructor() {
     private val relaysList = mutableListOf<Relay>()
     private val connections = ConcurrentHashMap<String, WebSocket>()
     private val reconnectJobs = ConcurrentHashMap<String, Job>()
+    /** Relays with a socket being created; Tor ready and the Internet toggle can both connect. */
+    private val connecting = ConcurrentHashMap.newKeySet<String>()
+    /** Relays asked for again while an attempt was in flight; that attempt re-runs once it ends. */
+    private val connectAgain = ConcurrentHashMap.newKeySet<String>()
     private val desiredConnected = AtomicBoolean(false)
     private val subscriptions = ConcurrentHashMap<String, Set<String>>() // relay URL -> subscription IDs
     private val messageHandlers = ConcurrentHashMap<String, (NostrEvent) -> Unit>()
@@ -126,6 +133,11 @@ class NostrRelayManager private constructor() {
     private val httpClient: OkHttpClient
         get() = com.bitchat.android.net.OkHttpProvider.webSocketClient()
     
+    /** Opens a relay socket; tests replace it to observe connection attempts. */
+    internal var openWebSocket: (Request, WebSocketListener) -> WebSocket = { request, listener ->
+        httpClient.newWebSocket(request, listener)
+    }
+
     private val gson by lazy { NostrRequest.createGson() }
     
     // --- Internal helpers ---
@@ -175,7 +187,7 @@ class NostrRelayManager private constructor() {
         try {
             val defaultRelayUrls = WESH_PINNED_RELAYS
             relaysList.addAll(defaultRelayUrls.map { Relay(it) })
-            _relays.value = relaysList.toList()
+            updateRelaysList()
             updateConnectionStatus()
         } catch (e: Exception) {
             Log.e(TAG, "Failed to initialize NostrRelayManager: ${e.message}", e)
@@ -602,20 +614,23 @@ class NostrRelayManager private constructor() {
     ) {
         if (urlString !in WESH_PINNED_RELAYS || !com.bitchat.android.net.WeshNetworkPolicy.allowsNetwork()) return
         if (!desiredConnected.get()) return
-        // Skip if we already have a connection
-        if (connections.containsKey(urlString)) {
-            return
+        // One attempt per relay. A caller that finds one in flight is not dropped: the attempt may
+        // be abandoned (a disconnect closed its socket), so it is asked to run once more.
+        if (!connecting.add(urlString)) {
+            connectAgain.add(urlString)
+            // The attempt may have ended between the two calls; then this caller takes over.
+            if (!connecting.add(urlString)) return
+            connectAgain.remove(urlString)
         }
-
         try {
+            // Skip if we already have a connection
+            if (connections.containsKey(urlString)) return
+
             val request = Request.Builder()
                 .url(urlString)
                 .build()
             
-            val webSocket = httpClient.newWebSocket(
-                request,
-                RelayWebSocketListener(urlString)
-            )
+            val webSocket = openWebSocket(request, RelayWebSocketListener(urlString))
             val existing = connections.putIfAbsent(urlString, webSocket)
             when {
                 existing != null -> webSocket.close(1000, "Duplicate connection")
@@ -628,6 +643,11 @@ class NostrRelayManager private constructor() {
         } catch (e: Exception) {
             Log.e(TAG, "Failed to create WebSocket connection")
             handleConnectionCreationFailure(urlString, e)
+        } finally {
+            connecting.remove(urlString)
+            if (connectAgain.remove(urlString) && desiredConnected.get() && !connections.containsKey(urlString)) {
+                scope.launch { connectToRelay(urlString) }
+            }
         }
     }
     
@@ -787,7 +807,7 @@ class NostrRelayManager private constructor() {
         }
     }
     
-    private fun updateRelayStatus(url: String, isConnected: Boolean, error: Throwable? = null) {
+    internal fun updateRelayStatus(url: String, isConnected: Boolean, error: Throwable? = null) {
         val relay = relaysList.find { it.url == url } ?: return
         
         relay.isConnected = isConnected
@@ -806,7 +826,9 @@ class NostrRelayManager private constructor() {
     }
     
     private fun updateRelaysList() {
-        _relays.value = relaysList.toList()
+        // Relay is mutated in place: a list of the same instances equals the previous value and
+        // StateFlow would drop the update, so collectors never saw a relay connect.
+        _relays.value = relaysList.map { it.copy() }
     }
     
     private fun updateConnectionStatus() {
