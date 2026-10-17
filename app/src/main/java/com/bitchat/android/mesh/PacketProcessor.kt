@@ -215,10 +215,15 @@ class PacketProcessor(
                 isDirectedToAnotherPeer(packet) -> Unit
                 else -> validPacket = false
             }
-            MessageType.VOICE_FRAME -> validPacket = delegate?.handleVoiceFrame(routed) ?: false
+            // Wesh has no voice: a BitChat live voice frame is never handled, never relayed and
+            // never refreshes liveness, whoever sent it and whoever it is addressed to.
+            MessageType.VOICE_FRAME -> validPacket = false
             MessageType.LEAVE -> handleLeave(routed)
             MessageType.FRAGMENT -> {
-                if (isFileTransferFragment(packet)) {
+                if (isVoiceFrameFragment(packet)) {
+                    // Same for a voice frame split into fragments: neither reassembled nor relayed.
+                    validPacket = false
+                } else if (isFileTransferFragment(packet)) {
                     // No media is reassembled here. Fragments of a file for another peer are relayed
                     // as before; those addressed to us or broadcast are dropped.
                     validPacket = isDirectedToAnotherPeer(packet)
@@ -331,9 +336,15 @@ class PacketProcessor(
     }
 
     private fun isFileTransferFragment(packet: BitchatPacket): Boolean =
-        packet.payload.size >= com.bitchat.android.model.FragmentPayload.HEADER_SIZE &&
-            packet.payload[com.bitchat.android.model.FragmentPayload.HEADER_SIZE - 1].toUByte() ==
-            MessageType.FILE_TRANSFER.value
+        fragmentOriginalType(packet) == MessageType.FILE_TRANSFER.value
+
+    private fun isVoiceFrameFragment(packet: BitchatPacket): Boolean =
+        fragmentOriginalType(packet) == MessageType.VOICE_FRAME.value
+
+    private fun fragmentOriginalType(packet: BitchatPacket): UByte? =
+        if (packet.payload.size >= com.bitchat.android.model.FragmentPayload.HEADER_SIZE) {
+            packet.payload[com.bitchat.android.model.FragmentPayload.HEADER_SIZE - 1].toUByte()
+        } else null
 
     /**
      * Handle REQUEST_SYNC packets (public, TTL=1)
@@ -408,7 +419,6 @@ interface PacketProcessorDelegate {
     fun handleNoiseEncrypted(routed: RoutedPacket): Boolean
     suspend fun handleAnnounce(routed: RoutedPacket): Boolean
     fun handleMessage(routed: RoutedPacket)
-    fun handleVoiceFrame(routed: RoutedPacket): Boolean = false
     fun isRelaySuppressed(packet: BitchatPacket, peerID: String): Boolean = false
     fun handleLeave(routed: RoutedPacket)
     fun handleFragment(packet: BitchatPacket): FragmentResult

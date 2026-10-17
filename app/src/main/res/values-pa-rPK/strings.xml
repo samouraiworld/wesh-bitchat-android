@@ -10,14 +10,9 @@
     <!-- پلیس ہولڈر / بنیادی UI -->
     <string name="nickname_hint">عرفی ناں</string>
     <string name="message_hint">پیغام لکھو…</string>
-    <string name="channel_password_hint">پاس ورڈ</string>
-    <string name="join_channel">چینل وچ شامل ہوو</string>
-    <string name="leave_channel">باہر آؤ</string>
     <string name="send_message">پھجو</string>
-    <string name="show_commands">کمانڈ وکھاؤ</string>
     <string name="back">واپس</string>
     <string name="people">لوگ</string>
-    <string name="channels">چینل</string>
     <string name="online_users">آن لائن یوزر</string>
     <string name="no_one_connected">کوئی وی منسلک نہیں</string>
     <string name="emergency_clear_hint">ساری ڈیٹا مٹاون لئی تین وار ٹیپ کرو</string>
@@ -113,14 +108,12 @@
     <string name="cd_not_supported_battery_optimization">بیٹری آپٹمائزیشن سپورٹڈ نئیں</string>
     <string name="cd_bluetooth">بلوٹوتھ</string>
     <string name="cd_unread_message">انہ پڑھیا پیغام</string>
-    <string name="cd_leave_channel">چینل چھوڑو</string>
     <string name="cd_reachable_via_nostr">Nostr راہین پہنچ ممکن اے</string>
     <string name="cd_offline_favorite">پسندیدہ (آف لائن)</string>
     <string name="cd_scroll_to_bottom">تھلے سکرول کرو</string>
     <string name="cd_cancel">منسوخ</string>
     <string name="cd_link">لنک</string>
     <string name="cd_privacy_protected">About message privacy</string>
-    <string name="cd_record_voice">وائس پیغام ریکارڈ کرو</string>
     <string name="cd_offline_mesh_chat">آف لائن میش چیٹ</string>
     <string name="cd_end_to_end_encryption">اینڈ ٹو اینڈ انکرپشن</string>
 
@@ -239,16 +232,11 @@
     <!-- اجازت دیاں قسماں -->
     <string name="perm_type_nearby_devices">نیڑے ڈیوائس</string>
     <string name="perm_type_precise_location">ٹھیک لوکیشن</string>
-    <string name="perm_type_microphone">مائیکروفون</string>
     <string name="perm_type_notifications">نوٹیفکیشن</string>
     <string name="perm_type_battery_optimization">بیٹری آپٹمائزیشن</string>
     <string name="perm_type_other">ہور</string>
 
     <!-- پاس ورڈ ڈائیلاگ -->
-    <string name="pwd_prompt_title">چینل دا پاس ورڈ لکھو</string>
-    <string name="pwd_prompt_message">چینل %1$s پاس ورڈ نال محفوظ اے۔ شامل ہون لئی پاس ورڈ لکھو۔</string>
-    <string name="pwd_label">پاس ورڈ</string>
-    <string name="join">شامل ہوو</string>
     <string name="cancel">منسوخ</string>
 
     <!-- جمع -->

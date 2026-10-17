@@ -10,8 +10,6 @@ import com.bitchat.android.protocol.BitchatPacket
 import com.bitchat.android.protocol.MessageType
 import com.bitchat.android.sync.PacketIdUtil
 import com.bitchat.android.util.toHexString
-import com.bitchat.android.features.voice.LiveVoiceManager
-import com.bitchat.android.features.voice.LiveVoiceScope
 import kotlinx.coroutines.*
 import java.util.*
 
@@ -39,22 +37,15 @@ class MessageHandler(
     // Delegate for callbacks
     var delegate: MessageHandlerDelegate? = null
 
-    /**
-     * When false, live voice frames are dropped before any assembly or state. Media files are
-     * never accepted whatever this says: Wesh keeps no file, see [unsupportedMediaPlaceholder].
-     */
-    var acceptIncomingMedia: Boolean = true
-
     /** When false, unencrypted directed text is dropped: private messages travel only over Noise. */
     var acceptDirectedPlaintext: Boolean = true
 
     /** When false, favorite control notices are ignored and never acknowledged. */
     var acceptFavoriteNotices: Boolean = true
 
-    /** Wesh accepts no incoming voice, plaintext private text or favorite notices, on any transport. */
+    /** Wesh accepts no incoming plaintext private text or favorite notices, on any transport. */
     fun applyInboundPolicy(weshLocalOnly: Boolean) {
-        acceptIncomingMedia = !weshLocalOnly
-        com.bitchat.android.protocol.PacketPayloadLimits.acceptCompressedMedia = !weshLocalOnly
+        com.bitchat.android.protocol.PacketPayloadLimits.acceptCompressedMedia = false
         acceptDirectedPlaintext = !weshLocalOnly
         acceptFavoriteNotices = !weshLocalOnly
     }
@@ -178,15 +169,7 @@ class MessageHandler(
                 }
 
                 com.bitchat.android.model.NoisePayloadType.VOICE_FRAME -> {
-                    // Wesh has no voice: drop before any assembly, file or state.
-                    if (!acceptIncomingMedia) return true
-                    return LiveVoiceManager.getInstance(appContext).handleFrame(
-                        peerID = peerID,
-                        nickname = delegate?.getPeerNickname(peerID) ?: peerID,
-                        scope = LiveVoiceScope.DIRECT_MESSAGE,
-                        payload = noisePayload.data,
-                        timestampMs = packet.timestamp.toLong()
-                    )
+                    // Wesh has no voice: dropped from anyone, with no message, state or ACK.
                 }
 
                 com.bitchat.android.model.NoisePayloadType.PEER_STATE -> {
@@ -454,28 +437,6 @@ class MessageHandler(
         // Message relay is now handled by centralized PacketRelayManager
         return true
     }
-
-    /** Validate and ingest an ephemeral public push-to-talk frame. */
-    fun handlePublicVoiceFrame(routed: RoutedPacket): Boolean {
-        if (!acceptIncomingMedia) return false
-        val packet = routed.packet
-        val peerID = routed.peerID ?: return false
-        if (peerID == myPeerID) return true
-        val recipient = packet.recipientID
-        if (recipient != null && !recipient.contentEquals(delegate?.getBroadcastRecipient())) return false
-        if (packet.timestamp > Long.MAX_VALUE.toULong()) return false
-        val ageMs = System.currentTimeMillis() - packet.timestamp.toLong()
-        if (ageMs !in -30_000L..30_000L) return false
-        val peerInfo = delegate?.getPeerInfo(peerID)
-        if (peerInfo == null || !peerInfo.isVerifiedNickname) return false
-        return LiveVoiceManager.getInstance(appContext).handleFrame(
-            peerID = peerID,
-            nickname = delegate?.getPeerNickname(peerID) ?: peerID,
-            scope = LiveVoiceScope.PUBLIC_MESH,
-            payload = packet.payload,
-            timestampMs = packet.timestamp.toLong()
-        )
-    }
     
     /**
      * Handle broadcast message with verification enforcement
@@ -582,13 +543,12 @@ class MessageHandler(
         val peerID = routed.peerID ?: "unknown"
         val content = String(packet.payload, Charsets.UTF_8)
         
-        if (content.startsWith("#")) {
-            // Channel leave
-            delegate?.onChannelLeave(content, peerID)
-        } else {
-            // Peer disconnect
-            delegate?.removePeer(peerID)
-        }
+        // A BitChat peer leaving a named "#channel" is not leaving the mesh, and Wesh has no
+        // channels: ignore it without touching presence or any state.
+        if (content.startsWith("#")) return
+
+        // Peer disconnect
+        delegate?.removePeer(peerID)
         
         // Leave message relay is now handled by centralized PacketRelayManager
     }
@@ -744,9 +704,6 @@ interface MessageHandlerDelegate {
         authenticatedSession: com.bitchat.android.noise.AuthenticatedNoiseSession
     ) {}
     
-    // Message operations
-    fun decryptChannelMessage(encryptedContent: ByteArray, channel: String): String?
-
     // Callbacks
     fun onMessageReceived(message: BitchatMessage)
     /**
@@ -758,7 +715,6 @@ interface MessageHandlerDelegate {
         onMessageReceived(message)
         return false
     }
-    fun onChannelLeave(channel: String, fromPeer: String)
     fun onDeliveryAckReceived(messageID: String, peerID: String)
     fun onReadReceiptReceived(messageID: String, peerID: String)
     fun onVerifyChallengeReceived(peerID: String, payload: ByteArray, timestampMs: Long)

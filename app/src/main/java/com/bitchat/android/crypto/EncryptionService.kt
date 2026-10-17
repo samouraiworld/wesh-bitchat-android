@@ -350,36 +350,6 @@ open class EncryptionService(private val context: Context) {
         noiseService.updatePeerIDMapping(oldPeerID, newPeerID, fingerprint)
     }
     
-    // MARK: - Channel Encryption
-    
-    /**
-     * Set password for a channel (derives encryption key using Argon2id)
-     */
-    fun setChannelPassword(password: String, channel: String) {
-        noiseService.setChannelPassword(password, channel)
-    }
-    
-    /**
-     * Encrypt message for a password-protected channel
-     */
-    fun encryptChannelMessage(message: String, channel: String): ByteArray? {
-        return noiseService.encryptChannelMessage(message, channel)
-    }
-    
-    /**
-     * Decrypt channel message
-     */
-    fun decryptChannelMessage(encryptedData: ByteArray, channel: String): String? {
-        return noiseService.decryptChannelMessage(encryptedData, channel)
-    }
-    
-    /**
-     * Remove channel password (when leaving channel)
-     */
-    fun removeChannelPassword(channel: String) {
-        noiseService.removeChannelPassword(channel)
-    }
-    
     // MARK: - Session Management
     
     /**

@@ -10,14 +10,9 @@
     <!-- Placeholder / आधार UI -->
     <string name="nickname_hint">उपनाम</string>
     <string name="message_hint">सन्देश टाइप गर्नुहोस्…</string>
-    <string name="channel_password_hint">पासवर्ड</string>
-    <string name="join_channel">च्यानलमा जोडिनुहोस्</string>
-    <string name="leave_channel">छोड्नुहोस्</string>
     <string name="send_message">पठाउनुहोस्</string>
-    <string name="show_commands">आज्ञाहरू देखाउनुहोस्</string>
     <string name="back">पछाडि</string>
     <string name="people">मानिसहरू</string>
-    <string name="channels">च्यानलहरू</string>
     <string name="online_users">अनलाइन प्रयोगकर्ता</string>
     <string name="no_one_connected">कसैसँग जडान छैन</string>
     <string name="emergency_clear_hint">सबै डेटा मेटाउन तीन पटक ट्याप गर्नुहोस्</string>
@@ -113,13 +108,11 @@
     <string name="cd_not_supported_battery_optimization">समर्थन छैन</string>
     <string name="cd_bluetooth">ब्लुटुथ</string>
     <string name="cd_unread_message">नपढिएको सन्देश</string>
-    <string name="cd_leave_channel">च्यानल छोड्नुहोस्</string>
     <string name="cd_reachable_via_nostr">Nostr बाट पहुँचयोग्य</string>
     <string name="cd_offline_favorite">मनपर्ने (अफलाइन)</string>
     <string name="cd_scroll_to_bottom">तल स्क्रोल गर्नुहोस्</string>
     <string name="cd_cancel">रद्द</string>
     <string name="cd_link">लिङ्क</string>
-    <string name="cd_record_voice">भ्वाइस नोट रेकर्ड</string>
     <string name="cd_offline_mesh_chat">अफलाइन मेष च्याट</string>
     <string name="cd_end_to_end_encryption">एन्ड‑टु‑एन्ड इन्क्रिप्सन</string>
 
@@ -239,16 +232,11 @@
     <!-- अनुमति प्रकार -->
     <string name="perm_type_nearby_devices">नजिकका यन्त्रहरू</string>
     <string name="perm_type_precise_location">ठ्याक्कै स्थान</string>
-    <string name="perm_type_microphone">माइक</string>
     <string name="perm_type_notifications">सूचना</string>
     <string name="perm_type_battery_optimization">ब्याट्री अनुकूलन</string>
     <string name="perm_type_other">अन्य</string>
 
     <!-- पासवर्ड संवाद -->
-    <string name="pwd_prompt_title">च्यानल पासवर्ड प्रविष्ट गर्नुहोस्</string>
-    <string name="pwd_prompt_message">%1$s च्यानल पासवर्ड सुरक्षित छ। जडान हुन पासवर्ड लेख्नुहोस्।</string>
-    <string name="pwd_label">पासवर्ड</string>
-    <string name="join">जोडिनुहोस्</string>
     <string name="cancel">रद्द</string>
 
     <!-- Plurals -->

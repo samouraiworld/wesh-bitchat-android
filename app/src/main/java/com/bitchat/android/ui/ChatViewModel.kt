@@ -38,9 +38,6 @@ import com.bitchat.android.noise.NoiseSession
 import com.bitchat.android.services.ContactDirectory
 import com.bitchat.android.services.ContactIdentityResolver
 import com.bitchat.android.util.hexEncodedString
-import com.bitchat.android.features.voice.LiveVoicePreferences
-import com.bitchat.android.features.voice.LiveVoiceTarget
-import com.bitchat.android.features.voice.VoiceRecorder
 
 private data class ConversationLiveIdentityState(
     val connectedPeerIDs: List<String>,
@@ -69,22 +66,6 @@ class ChatViewModel(
     companion object {
         private const val TAG = "ChatViewModel"
         private const val CONVERSATION_DISCONNECT_GRACE_MS = 3_000L
-    }
-
-    fun createVoiceRecorder(toPeerIDOrNull: String?, channelOrNull: String?): VoiceRecorder {
-        val context = getApplication<Application>().applicationContext
-        if (!LiveVoicePreferences.isEnabled(context)) return VoiceRecorder(context)
-        val recipientPeerID = toPeerIDOrNull?.let {
-            ConversationPeerResolver.resolve(it, mesh)?.meshPeerID
-        }
-        val liveTarget = when {
-            toPeerIDOrNull != null && recipientPeerID != null && mesh.hasEstablishedSession(recipientPeerID) ->
-                LiveVoiceTarget { payload -> mesh.sendVoiceFrame(recipientPeerID, payload) }
-            toPeerIDOrNull == null && channelOrNull == null && mesh.getActivePeerCount() > 0 ->
-                LiveVoiceTarget { payload -> mesh.sendVoiceFrame(null, payload) }
-            else -> null
-        }
-        return VoiceRecorder(context, liveTarget)
     }
 
     fun getCurrentNpub(): String? {
@@ -116,12 +97,6 @@ class ChatViewModel(
     private val conversationListPreferences =
         com.bitchat.android.services.ConversationListPreferences.getInstance(getApplication())
     private val messageManager = MessageManager(state)
-    private val channelManager = ChannelManager(
-        state,
-        messageManager,
-        dataManager,
-        viewModelScope
-    )
 
     // Create Noise session delegate for clean dependency injection
     private val noiseSessionDelegate = object : NoiseSessionDelegate {
@@ -141,13 +116,6 @@ class ChatViewModel(
         markMessageReadLocally = { messageID ->
             seenMessageStore.markReadLocally(messageID)
         }
-    )
-    private val commandProcessor = CommandProcessor(
-        state,
-        messageManager,
-        channelManager,
-        privateChatManager,
-        viewModelScope
     )
     private val notificationManager = NotificationManager(
       application.applicationContext,
@@ -183,12 +151,10 @@ class ChatViewModel(
     private val meshDelegateHandler = MeshDelegateHandler(
         state = state,
         messageManager = messageManager,
-        channelManager = channelManager,
         privateChatManager = privateChatManager,
         notificationManager = notificationManager,
         coroutineScope = viewModelScope,
         onHapticFeedback = { ChatViewModelUtils.triggerHapticFeedback(application.applicationContext) },
-        getMyPeerID = { mesh.myPeerID },
         getMeshService = { mesh },
         publicNotificationsMuted = { weshPreferences.publicMuted },
         markMessageReadLocally = { messageID ->
@@ -343,19 +309,7 @@ class ChatViewModel(
             started = SharingStarted.Eagerly,
             initialValue = emptyList()
         )
-    val joinedChannels: StateFlow<Set<String>> = state.joinedChannels
-    val currentChannel: StateFlow<String?> = state.currentChannel
-    val channelMessages: StateFlow<Map<String, List<BitchatMessage>>> = state.channelMessages
-    val unreadChannelMessages: StateFlow<Map<String, Int>> = state.unreadChannelMessages
-    val passwordProtectedChannels: StateFlow<Set<String>> = state.passwordProtectedChannels
-    val showPasswordPrompt: StateFlow<Boolean> = state.showPasswordPrompt
-    val passwordPromptChannel: StateFlow<String?> = state.passwordPromptChannel
-    val hasUnreadChannels = state.hasUnreadChannels
     val hasUnreadPrivateMessages = state.hasUnreadPrivateMessages
-    val showCommandSuggestions: StateFlow<Boolean> = state.showCommandSuggestions
-    val commandSuggestions: StateFlow<List<CommandSuggestion>> = state.commandSuggestions
-    val showMentionSuggestions: StateFlow<Boolean> = state.showMentionSuggestions
-    val mentionSuggestions: StateFlow<List<String>> = state.mentionSuggestions
     val favoritePeers: StateFlow<Set<String>> = state.favoritePeers
     val peerFavoritedUs: StateFlow<Set<String>> = state.peerFavoritedUs
     val peerSessionStates: StateFlow<Map<String, String>> = state.peerSessionStates
@@ -463,12 +417,6 @@ class ChatViewModel(
                 state.setUnreadPrivateMessages(unreadConversationIDs)
             } } catch (_: Exception) { }
         }
-        viewModelScope.launch {
-            try { com.bitchat.android.services.AppStateStore.channelMessages.collect { byChannel ->
-                // Replace with store snapshot
-                state.setChannelMessages(byChannel)
-            } } catch (_: Exception) { }
-        }
     }
 
     /**
@@ -530,20 +478,6 @@ class ChatViewModel(
         val nickname = dataManager.loadNickname()
         state.setNickname(nickname)
         
-        // Load data
-        val (joinedChannels, protectedChannels) = channelManager.loadChannelData()
-        state.setJoinedChannels(joinedChannels)
-        state.setPasswordProtectedChannels(protectedChannels)
-        
-        // Initialize channel messages
-        joinedChannels.forEach { channel ->
-            if (!state.getChannelMessagesValue().containsKey(channel)) {
-                val updatedChannelMessages = state.getChannelMessagesValue().toMutableMap()
-                updatedChannelMessages[channel] = emptyList()
-                state.setChannelMessages(updatedChannelMessages)
-            }
-        }
-        
         // Load other data
         dataManager.loadFavorites()
         state.setFavoritePeers(dataManager.favoritePeers.toSet())
@@ -593,7 +527,7 @@ class ChatViewModel(
 
         // Note: Mesh service is now started by MainActivity
 
-        // BLE receives are inserted by MessageHandler path; no VoiceNoteBus for Tor in this branch.
+        // BLE receives are inserted by MessageHandler path.
     }
     
     override fun onCleared() {
@@ -615,21 +549,6 @@ class ChatViewModel(
         state.setNickname(newNickname)
         dataManager.saveNickname(newNickname)
         mesh.sendBroadcastAnnounce()
-    }
-    
-    // MARK: - Channel Management (delegated)
-    
-    fun joinChannel(channel: String, password: String? = null): Boolean {
-        return channelManager.joinChannel(channel, password, mesh.myPeerID)
-    }
-    
-    fun switchToChannel(channel: String?) {
-        channelManager.switchToChannel(channel)
-    }
-    
-    fun leaveChannel(channel: String) {
-        channelManager.leaveChannel(channel)
-        mesh.sendMessage("left $channel", emptyList(), null)
     }
     
     // MARK: - Private Chat Management (delegated)
@@ -868,136 +787,8 @@ class ChatViewModel(
 
     
     // MARK: - Message Sending
-    
-    fun sendMessage(
-        content: String,
-        onAccepted: (Boolean) -> Unit = {}
-    ) {
-        if (content.isEmpty()) {
-            onAccepted(false)
-            return
-        }
-        
-        // Check for commands
-        if (content.startsWith("/")) {
-            commandProcessor.processCommand(content, mesh, mesh.myPeerID, { messageContent, mentions, channel ->
-                if (channel != null && channelManager.hasChannelKey(channel)) {
-                    channelManager.sendEncryptedChannelMessage(
-                        messageContent,
-                        mentions,
-                        channel,
-                        state.getNicknameValue(),
-                        mesh.myPeerID,
-                        onEncryptedPayload = {
-                            mesh.sendMessage(messageContent, mentions, channel)
-                        },
-                        onFallback = {
-                            mesh.sendMessage(messageContent, mentions, channel)
-                        }
-                    )
-                } else {
-                    mesh.sendMessage(messageContent, mentions, channel)
-                }
-            }, this)
-            onAccepted(true)
-            return
-        }
-        
-        val mentions = messageManager.parseMentions(content, mesh.getPeerNicknames().values.toSet(), state.getNicknameValue())
-        var selectedPeer = state.getSelectedPrivateChatPeerValue()
-        val currentChannelValue = state.getCurrentChannelValue()
-        
-        if (selectedPeer != null) {
-            // If the selected peer is a temporary Nostr alias or a noise-hex identity, resolve to a canonical target
-            selectedPeer = ContactDirectory.canonicalConversationId(
-                com.bitchat.android.services.ConversationAliasResolver.resolveCanonicalPeerID(
-                selectedPeerID = selectedPeer,
-                connectedPeers = state.getConnectedPeersValue(),
-                meshNoiseKeyForPeer = { pid -> mesh.getPeerInfo(pid)?.noisePublicKey },
-                nostrPubHexForAlias = { alias -> com.bitchat.android.nostr.GeohashAliasRegistry.get(alias) },
-                findNoiseKeyForNostr = { key -> com.bitchat.android.favorites.FavoritesPersistenceService.shared.findNoiseKey(key) }
-                )
-            ).also { canonical ->
-                if (canonical != state.getSelectedPrivateChatPeerValue()) {
-                    privateChatManager.startPrivateChat(canonical, mesh)
-                    // If we're in the private chat sheet, update its active peer too
-                    if (state.getPrivateChatSheetPeerValue() != null) {
-                        showPrivateChatSheet(canonical)
-                    }
-                }
-            }
-            // Send private message
-            val recipientNickname = nicknameForPeer(selectedPeer)
-            val destination = selectedPeer
-            viewModelScope.launch {
-                val accepted = privateChatManager.sendPrivateMessageDurably(
-                    content,
-                    destination,
-                    recipientNickname,
-                    state.getNicknameValue(),
-                    mesh.myPeerID
-                ) { messageContent, peerID, recipientNicknameParam, messageId ->
-                    val router = com.bitchat.android.services.MessageRouter.getInstance(
-                        getApplication(),
-                        mesh
-                    )
-                    val route = router.sendPrivate(
-                        messageContent,
-                        peerID,
-                        recipientNicknameParam,
-                        messageId
-                    )
-                    if (route == com.bitchat.android.services.MessageRouter.RouteResult.NOSTR) {
-                        messageManager.updateMessageDeliveryStatus(
-                            messageId,
-                            com.bitchat.android.model.DeliveryStatus.Sent
-                        )
-                    }
-                }
-                onAccepted(accepted)
-            }
-        } else {
-            // Send public/channel message via mesh
-            val message = BitchatMessage(
-                sender = state.getNicknameValue() ?: mesh.myPeerID,
-                content = content,
-                timestamp = Date(),
-                isRelay = false,
-                senderPeerID = mesh.myPeerID,
-                mentions = if (mentions.isNotEmpty()) mentions else null,
-                channel = currentChannelValue
-            )
 
-            if (currentChannelValue != null) {
-                channelManager.addChannelMessage(currentChannelValue, message, mesh.myPeerID)
-
-                // Check if encrypted channel
-                if (channelManager.hasChannelKey(currentChannelValue)) {
-                    channelManager.sendEncryptedChannelMessage(
-                        content,
-                        mentions,
-                        currentChannelValue,
-                        state.getNicknameValue(),
-                        mesh.myPeerID,
-                        onEncryptedPayload = { encryptedData ->
-                            mesh.sendMessage(content, mentions, currentChannelValue)
-                        },
-                        onFallback = {
-                            mesh.sendMessage(content, mentions, currentChannelValue)
-                        }
-                    )
-                } else {
-                    mesh.sendMessage(content, mentions, currentChannelValue)
-                }
-            } else {
-                messageManager.addMessage(message)
-                mesh.sendMessage(content, mentions, null)
-            }
-            onAccepted(true)
-        }
-    }
-
-    /** Explicit Wesh routes bypass slash commands, location channels and public internet relays. */
+    /** Wesh public text is sent verbatim to the local mesh: no commands, no named channels, no internet relay. */
     internal val weshPublicSending = MutableStateFlow(false)
 
     fun sendWeshPublic(content: String, onAccepted: (Boolean) -> Unit) {
@@ -1407,30 +1198,6 @@ class ChatViewModel(
         verificationHandler.unverifyFingerprintValue(fingerprint)
     }
 
-    // MARK: - Command Autocomplete (delegated)
-    
-    fun updateCommandSuggestions(input: String) {
-        commandProcessor.updateCommandSuggestions(input)
-    }
-
-    fun clearSuggestions() {
-        commandProcessor.clearSuggestions()
-    }
-
-    fun selectCommandSuggestion(suggestion: CommandSuggestion): String {
-        return commandProcessor.selectCommandSuggestion(suggestion)
-    }
-    
-    // MARK: - Mention Autocomplete
-    
-    fun updateMentionSuggestions(input: String) {
-        commandProcessor.updateMentionSuggestions(input, mesh, this)
-    }
-    
-    fun selectMentionSuggestion(nickname: String, currentText: String): String {
-        return commandProcessor.selectMentionSuggestion(nickname, currentText)
-    }
-    
     // MARK: - BluetoothMeshDelegate Implementation (delegated)
     
     override fun didReceiveMessage(message: BitchatMessage) {
@@ -1441,10 +1208,6 @@ class ChatViewModel(
         meshDelegateHandler.didUpdatePeerList(peers)
     }
 
-    override fun didReceiveChannelLeave(channel: String, fromPeer: String) {
-        meshDelegateHandler.didReceiveChannelLeave(channel, fromPeer)
-    }
-    
     override fun didReceiveDeliveryAck(messageID: String, recipientPeerID: String) {
         meshDelegateHandler.didReceiveDeliveryAck(messageID, recipientPeerID)
     }
@@ -1461,10 +1224,6 @@ class ChatViewModel(
         verificationHandler.didReceiveVerifyResponse(peerID, payload)
     }
 
-    override fun decryptChannelMessage(encryptedContent: ByteArray, channel: String): String? {
-        return meshDelegateHandler.decryptChannelMessage(encryptedContent, channel)
-    }
-    
     override fun getNickname(): String? {
         return meshDelegateHandler.getNickname()
     }
@@ -1511,7 +1270,6 @@ class ChatViewModel(
         // Clear all UI managers
         com.bitchat.android.services.AppStateStore.clear()
         messageManager.clearAllMessages()
-        channelManager.clearAllChannels()
         privateChatManager.clearAllPrivateChats()
         dataManager.clearAllData()
         conversationListPreferences.clearAll()
@@ -1677,20 +1435,9 @@ class ChatViewModel(
                 hideAppInfo()
                 true
             }
-            // Close password dialog
-            state.getShowPasswordPromptValue() -> {
-                state.setShowPasswordPrompt(false)
-                state.setPasswordPromptChannel(null)
-                true
-            }
             // Exit private chat
             state.getSelectedPrivateChatPeerValue() != null || state.getPrivateChatSheetPeerValue() != null -> {
                 endPrivateChat()
-                true
-            }
-            // Exit channel view
-            state.getCurrentChannelValue() != null -> {
-                switchToChannel(null)
                 true
             }
             // No special navigation state - let system handle (usually exits app)

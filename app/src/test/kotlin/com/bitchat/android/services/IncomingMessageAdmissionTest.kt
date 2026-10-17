@@ -148,18 +148,26 @@ class IncomingMessageAdmissionTest {
     }
 
     @Test
-    fun `public and channel messages preserve best effort admission`() {
+    fun `public messages are admitted and BitChat channel messages are dropped`() {
         val public = BitchatMessage(
             id = "public",
             sender = "alice",
             content = "hello",
             timestamp = Date(1L)
         )
-        val channel = public.copy(id = "channel", channel = "#mesh")
+        val channel = public.copy(id = "channel", content = "in a room", channel = "#mesh")
+        val encryptedChannel = channel.copy(
+            id = "encrypted-channel",
+            content = "",
+            encryptedContent = byteArrayOf(1, 2, 3),
+            isEncrypted = true
+        )
 
         assertTrue(IncomingMessageAdmission.admitToAppState(public, null) { null })
-        assertTrue(IncomingMessageAdmission.admitToAppState(channel, null) { null })
+        assertFalse(IncomingMessageAdmission.admitToAppState(channel, null) { null })
+        assertFalse(IncomingMessageAdmission.admitToAppState(encryptedChannel, null) { null })
         assertTrue(AppStateStore.publicMessages.value.contains(public))
+        assertTrue(AppStateStore.publicMessages.value.none { it.id == channel.id || it.id == encryptedChannel.id })
     }
 
     @Test

@@ -51,14 +51,9 @@
     <string name="permission_notification_rationale">Uprawnienie powiadomień jest wymagane, aby informować Cię o nowych wiadomościach.</string>
     <string name="nickname_hint">pseudonim</string>
     <string name="message_hint">napisz wiadomość…</string>
-    <string name="channel_password_hint">Hasło</string>
-    <string name="join_channel">Dołącz do kanału</string>
-    <string name="leave_channel">Opuść</string>
     <string name="send_message">Wyślij</string>
-    <string name="show_commands">Pokaż komendy</string>
     <string name="back">Wstecz</string>
     <string name="people">Osoby</string>
-    <string name="channels">Kanały</string>
     <string name="online_users">Użytkownicy online</string>
     <string name="no_one_connected">Nikt nie jest połączony</string>
     <string name="emergency_clear_hint">Stuknij trzykrotnie, aby wyczyścić wszystkie dane</string>
@@ -145,13 +140,11 @@
     <string name="notification_action_quit_bitchat">Zamknij Wesh</string>
     <string name="about_background_title">działaj w tle</string>
     <string name="about_background_desc">utrzymuj sieć mesh aktywną po zamknięciu aplikacji (usługa pierwszoplanowa)</string>
-    <string name="cd_leave_channel">Opuść kanał</string>
     <string name="cd_reachable_via_nostr">Dostępny przez Nostr</string>
     <string name="cd_offline_favorite">Ulubiony offline</string>
     <string name="cd_scroll_to_bottom">Przewiń na dół</string>
     <string name="cd_cancel">Anuluj</string>
     <string name="cd_link">Link</string>
-    <string name="cd_record_voice">Nagraj notatkę głosową</string>
     <string name="cd_offline_mesh_chat">Czat mesh offline</string>
     <string name="cd_end_to_end_encryption">Szyfrowanie end-to-end</string>
     <string name="location_bluetooth_subtitle">#bluetooth • %1$s</string>
@@ -257,14 +250,9 @@
     <string name="perm_battery_system">Allow Wesh to run without battery restrictions.</string>
     <string name="perm_type_nearby_devices">Pobliskie urządzenia</string>
     <string name="perm_type_precise_location">Precyzyjna lokalizacja</string>
-    <string name="perm_type_microphone">Mikrofon</string>
     <string name="perm_type_notifications">Powiadomienia</string>
     <string name="perm_type_battery_optimization">Optymalizacja baterii</string>
     <string name="perm_type_other">Inne</string>
-    <string name="pwd_prompt_title">Wprowadź hasło kanału</string>
-    <string name="pwd_prompt_message">Kanał %1$s jest chroniony hasłem. Wprowadź hasło, aby dołączyć.</string>
-    <string name="pwd_label">Hasło</string>
-    <string name="join">Dołącz</string>
     <string name="cancel">Anuluj</string>
     <string name="tor_not_available_in_this_build">Tor niedostępny w tej wersji</string>
 

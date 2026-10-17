@@ -10,14 +10,9 @@
     <!-- Placeholder-ები / საბაზისო UI -->
     <string name="nickname_hint">მეტსახელი</string>
     <string name="message_hint">შეიყვანეთ შეტყობინება…</string>
-    <string name="channel_password_hint">პაროლი</string>
-    <string name="join_channel">არხში შეუერთება</string>
-    <string name="leave_channel">გამოსვლა</string>
     <string name="send_message">გაგზავნა</string>
-    <string name="show_commands">ბრძანებების ჩვენება</string>
     <string name="back">უკან</string>
     <string name="people">ხალხი</string>
-    <string name="channels">არხები</string>
     <string name="online_users">ონლაინ მომხმარებლები</string>
     <string name="no_one_connected">არავინ არის დაკავშირებული</string>
     <string name="emergency_clear_hint">სამჯერ დააჭირეთ ყველა მონაცემის წასაშლელად</string>
@@ -113,14 +108,12 @@
     <string name="cd_not_supported_battery_optimization">ბატარეის ოპტიმიზაცია მხარდაჭერილი არ არის</string>
     <string name="cd_bluetooth">Bluetooth</string>
     <string name="cd_unread_message">წაუკითხავი შეტყობინება</string>
-    <string name="cd_leave_channel">არხიდან გამოსვლა</string>
     <string name="cd_reachable_via_nostr">მისაწვდომია Nostr-ით</string>
     <string name="cd_offline_favorite">რჩეული (ოფლაინ)</string>
     <string name="cd_scroll_to_bottom">ქვემოთ გადახვევა</string>
     <string name="cd_cancel">გაუქმება</string>
     <string name="cd_link">ბმული</string>
     <string name="cd_privacy_protected">About message privacy</string>
-    <string name="cd_record_voice">ხმოვანი ჩანაწერის ჩაწერა</string>
     <string name="cd_offline_mesh_chat">ოფლაინ mesh-ჩათი</string>
     <string name="cd_end_to_end_encryption">ბოლო-მდე დაშიფვრა</string>
 
@@ -239,16 +232,11 @@
     <!-- ნებართვების ტიპები -->
     <string name="perm_type_nearby_devices">ახლომდებარე მოწყობილობები</string>
     <string name="perm_type_precise_location">ზუსტი მდებარეობა</string>
-    <string name="perm_type_microphone">მიკროფონი</string>
     <string name="perm_type_notifications">შეტყობინებები</string>
     <string name="perm_type_battery_optimization">ბატარეის ოპტიმიზაცია</string>
     <string name="perm_type_other">სხვა</string>
 
     <!-- პაროლის დიალოგი -->
-    <string name="pwd_prompt_title">შეიყვანეთ არხის პაროლი</string>
-    <string name="pwd_prompt_message">არხი %1$s დაცულია პაროლით. შეიყვანეთ პაროლი შესაერთებლად.</string>
-    <string name="pwd_label">პაროლი</string>
-    <string name="join">შეუერთდი</string>
     <string name="cancel">გაუქმება</string>
 
     <!-- მრავლობითი რიცხვები -->

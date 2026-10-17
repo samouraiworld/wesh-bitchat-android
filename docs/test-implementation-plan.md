@@ -519,7 +519,6 @@ Bluetooth, battery, and background-execution rules.
 - [ ] Test partial Bluetooth permission grants by Android version.
 - [ ] Test location-disabled and Bluetooth-disabled states.
 - [ ] Test notification permission denial.
-- [ ] Test microphone permission denial during voice recording.
 - [ ] Test background-location preferences where applicable.
 - [ ] Test battery-optimization accepted, declined, and unavailable paths.
 - [ ] Test configuration changes during onboarding.
@@ -624,7 +623,7 @@ interaction and rendering contracts.
 - [ ] Test screen-reader labels, traversal order, and minimum touch targets.
 - [ ] Test reduced-motion behavior where animations are nonessential.
 
-#### Files, images, and voice
+#### Files and images
 
 - [ ] Test zero-byte, small, maximum-size, and oversized files.
 - [ ] Test unsupported and misleading MIME types.
@@ -632,9 +631,6 @@ interaction and rendering contracts.
 - [ ] Test file read/write failures and insufficient storage.
 - [ ] Test image decode failures, orientation metadata, and large-image memory
   limits.
-- [ ] Test voice-recording start, pause/stop, cancellation, and microphone loss.
-- [ ] Test corrupt and unsupported audio playback.
-- [ ] Test waveform generation boundaries.
 - [ ] Test interrupted private-media preparation and commit rollback.
 - [ ] Test cleanup of temporary files after success, failure, and cancellation.
 

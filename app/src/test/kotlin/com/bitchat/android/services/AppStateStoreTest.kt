@@ -421,7 +421,6 @@ class AppStateStoreTest {
         )
         AppStateStore.addPublicMessage(message("peer-a", "bonjour"))
         AppStateStore.addPublicMessage(message("peer-b", "faux"))
-        AppStateStore.upsertPublicMessage(message("peer-b", "remplacé"))
         assertEquals(listOf("peer-a" to "bonjour"), AppStateStore.publicMessages.value.map { it.senderPeerID to it.content })
     }
 }

@@ -49,14 +49,9 @@
   <string name="permission_notification_rationale">需要通知權限才能提醒你有新訊息。</string>
   <string name="nickname_hint">暱稱</string>
   <string name="message_hint">輸入訊息…</string>
-  <string name="channel_password_hint">密碼</string>
-  <string name="join_channel">加入頻道</string>
-  <string name="leave_channel">離開</string>
   <string name="send_message">傳送</string>
-  <string name="show_commands">顯示指令</string>
   <string name="back">返回</string>
   <string name="people">使用者</string>
-  <string name="channels">頻道</string>
   <string name="online_users">線上使用者</string>
   <string name="no_one_connected">目前沒有人連線</string>
   <string name="emergency_clear_hint">連續點三下以清除所有資料</string>
@@ -146,13 +141,11 @@
   <string name="notification_action_quit_bitchat">結束 Wesh</string>
   <string name="about_background_title">在背景執行</string>
   <string name="about_background_desc">應用程式關閉時保持 mesh 網路運作中（前景服務）</string>
-  <string name="cd_leave_channel">離開頻道</string>
   <string name="cd_reachable_via_nostr">可透過 Nostr 連線</string>
   <string name="cd_offline_favorite">離線最愛</string>
   <string name="cd_scroll_to_bottom">捲動到底部</string>
   <string name="cd_cancel">取消</string>
   <string name="cd_link">連結</string>
-  <string name="cd_record_voice">錄製語音訊息</string>
   <string name="cd_offline_mesh_chat">離線 Mesh 聊天</string>
   <string name="cd_end_to_end_encryption">端對端加密</string>
   <string name="location_bluetooth_subtitle">#藍牙 • %1$s</string>
@@ -258,14 +251,9 @@
   <string name="perm_battery_system">Allow Wesh to run without battery restrictions.</string>
   <string name="perm_type_nearby_devices">附近的裝置</string>
   <string name="perm_type_precise_location">精確位置</string>
-  <string name="perm_type_microphone">麥克風</string>
   <string name="perm_type_notifications">通知</string>
   <string name="perm_type_battery_optimization">電池最佳化</string>
   <string name="perm_type_other">其他</string>
-  <string name="pwd_prompt_title">輸入頻道密碼</string>
-  <string name="pwd_prompt_message">頻道 %1$s 受密碼保護。請輸入密碼以加入。</string>
-  <string name="pwd_label">密碼</string>
-  <string name="join">加入</string>
   <string name="cancel">取消</string>
   <string name="tor_not_available_in_this_build">此版本不支援 Tor</string>
 

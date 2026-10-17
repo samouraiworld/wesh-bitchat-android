@@ -8,7 +8,8 @@ import kotlinx.coroutines.runBlocking
  *
  * Private-message admission is authoritative: a duplicate or a message rejected while panic mode
  * is wiping state must not continue to UI delegates, unread tracking, haptics, or notifications.
- * Public and channel messages retain their existing best-effort behavior if state reflection fails.
+ * Public messages retain their existing best-effort behavior if state reflection fails. Wesh has a
+ * single public room: a message a BitChat peer tagged for a named channel is dropped, never shown.
  */
 internal object IncomingMessageAdmission {
     /** Wesh admits private messages only from identities enrolled by QR on this phone. */
@@ -86,10 +87,7 @@ internal object IncomingMessageAdmission {
                 }
             }
 
-            message.channel != null -> {
-                AppStateStore.addChannelMessage(message.channel, message)
-                true
-            }
+            message.channel != null -> false
 
             else -> {
                 AppStateStore.addPublicMessage(message)
@@ -97,7 +95,7 @@ internal object IncomingMessageAdmission {
             }
         }
     } catch (_: Exception) {
-        // Preserve the pre-existing best-effort dispatch for public/channel messages, but never
+        // Preserve the pre-existing best-effort dispatch for public messages, but never
         // bypass private-message admission when persistence or canonicalization fails.
         !message.isPrivate
     }

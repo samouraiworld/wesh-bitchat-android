@@ -10,14 +10,9 @@
     <!-- 플레이스홀더 / 기본 UI -->
     <string name="nickname_hint">닉네임</string>
     <string name="message_hint">메시지 입력…</string>
-    <string name="channel_password_hint">비밀번호</string>
-    <string name="join_channel">채널 참가</string>
-    <string name="leave_channel">나가기</string>
     <string name="send_message">보내기</string>
-    <string name="show_commands">명령 보기</string>
     <string name="back">뒤로</string>
     <string name="people">사람들</string>
-    <string name="channels">채널</string>
     <string name="online_users">온라인 사용자</string>
     <string name="no_one_connected">연결된 사람이 없음</string>
     <string name="emergency_clear_hint">모든 데이터를 지우려면 세 번 탭하세요</string>
@@ -113,14 +108,12 @@
     <string name="cd_not_supported_battery_optimization">배터리 최적화 미지원</string>
     <string name="cd_bluetooth">블루투스</string>
     <string name="cd_unread_message">읽지 않은 메시지</string>
-    <string name="cd_leave_channel">채널 나가기</string>
     <string name="cd_reachable_via_nostr">Nostr로 연결 가능</string>
     <string name="cd_offline_favorite">즐겨찾기 (오프라인)</string>
     <string name="cd_scroll_to_bottom">아래로 스크롤</string>
     <string name="cd_cancel">취소</string>
     <string name="cd_link">링크</string>
     <string name="cd_privacy_protected">About message privacy</string>
-    <string name="cd_record_voice">음성 메시지 녹음</string>
     <string name="cd_offline_mesh_chat">오프라인 메쉬 채팅</string>
     <string name="cd_end_to_end_encryption">종단간 암호화</string>
 
@@ -239,16 +232,11 @@
     <!-- 권한 유형 -->
     <string name="perm_type_nearby_devices">근처 기기</string>
     <string name="perm_type_precise_location">정확한 위치</string>
-    <string name="perm_type_microphone">마이크</string>
     <string name="perm_type_notifications">알림</string>
     <string name="perm_type_battery_optimization">배터리 최적화</string>
     <string name="perm_type_other">기타</string>
 
     <!-- 비밀번호 대화상자 -->
-    <string name="pwd_prompt_title">채널 비밀번호 입력</string>
-    <string name="pwd_prompt_message">채널 %1$s은 비밀번호로 보호됩니다. 참여하려면 비밀번호를 입력하세요.</string>
-    <string name="pwd_label">비밀번호</string>
-    <string name="join">참가</string>
     <string name="cancel">취소</string>
 
     <!-- 복수형 -->

@@ -93,10 +93,10 @@ class UnifiedMeshService(
             }
     }
 
-    override fun sendMessage(content: String, mentions: List<String>, channel: String?) {
+    override fun sendMessage(content: String, mentions: List<String>) {
         when {
-            isBleEnabled() -> bluetooth.sendMessage(content, mentions, channel)
-            else -> wifiService()?.sendMessage(content, mentions, channel)
+            isBleEnabled() -> bluetooth.sendMessage(content, mentions)
+            else -> wifiService()?.sendMessage(content, mentions)
         }
     }
 
@@ -150,23 +150,6 @@ class UnifiedMeshService(
         when {
             isBleReady(peerID) -> bluetooth.sendVerifyResponse(peerID, noiseKeyHex, nonceA)
             isWifiReady(peerID) -> wifiService()?.sendVerifyResponse(peerID, noiseKeyHex, nonceA)
-        }
-    }
-
-    override fun sendVoiceFrame(recipientPeerID: String?, payload: ByteArray) {
-        if (recipientPeerID == null) {
-            when {
-                isBleEnabled() -> bluetooth.sendVoiceFrame(null, payload)
-                else -> wifiService()?.sendVoiceFrame(null, payload)
-            }
-            return
-        }
-        when {
-            isBleReady(recipientPeerID) -> bluetooth.sendVoiceFrame(recipientPeerID, payload)
-            isWifiReady(recipientPeerID) -> wifiService()?.sendVoiceFrame(recipientPeerID, payload)
-            isBleConnected(recipientPeerID) || (isBleEnabled() && !isWifiConnected(recipientPeerID)) ->
-                bluetooth.sendVoiceFrame(recipientPeerID, payload)
-            else -> wifiService()?.sendVoiceFrame(recipientPeerID, payload)
         }
     }
 
@@ -341,10 +324,6 @@ class UnifiedMeshService(
         delegate?.didUpdatePeerList(mergedPeerIDs().ifEmpty { peers.distinct() })
     }
 
-    override fun didReceiveChannelLeave(channel: String, fromPeer: String) {
-        delegate?.didReceiveChannelLeave(channel, fromPeer)
-    }
-
     override fun didReceiveDeliveryAck(messageID: String, recipientPeerID: String) {
         delegate?.didReceiveDeliveryAck(messageID, recipientPeerID)
     }
@@ -359,10 +338,6 @@ class UnifiedMeshService(
 
     override fun didReceiveVerifyResponse(peerID: String, payload: ByteArray, timestampMs: Long) {
         delegate?.didReceiveVerifyResponse(peerID, payload, timestampMs)
-    }
-
-    override fun decryptChannelMessage(encryptedContent: ByteArray, channel: String): String? {
-        return delegate?.decryptChannelMessage(encryptedContent, channel)
     }
 
     override fun getNickname(): String? = delegate?.getNickname()

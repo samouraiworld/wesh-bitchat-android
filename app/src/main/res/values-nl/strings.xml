@@ -10,14 +10,9 @@
     <!-- Tijdelijke aanduidingen / basis UI -->
     <string name="nickname_hint">bijnaam</string>
     <string name="message_hint">typ een bericht…</string>
-    <string name="channel_password_hint">Wachtwoord</string>
-    <string name="join_channel">Kanaal deelnemen</string>
-    <string name="leave_channel">Verlaten</string>
     <string name="send_message">Verzenden</string>
-    <string name="show_commands">Commando\'s weergeven</string>
     <string name="back">Terug</string>
     <string name="people">Personen</string>
-    <string name="channels">Kanalen</string>
     <string name="online_users">Online gebruikers</string>
     <string name="no_one_connected">Niemand verbonden</string>
     <string name="emergency_clear_hint">Tik drie keer om alle gegevens te wissen</string>
@@ -113,14 +108,12 @@
     <string name="cd_not_supported_battery_optimization">Batterijoptimalisatie niet ondersteund</string>
     <string name="cd_bluetooth">Bluetooth</string>
     <string name="cd_unread_message">Ongelezen bericht</string>
-    <string name="cd_leave_channel">Kanaal verlaten</string>
     <string name="cd_reachable_via_nostr">Bereikbaar via Nostr</string>
     <string name="cd_offline_favorite">Offline favoriet</string>
     <string name="cd_scroll_to_bottom">Naar beneden scrollen</string>
     <string name="cd_cancel">Annuleren</string>
     <string name="cd_link">Link</string>
     <string name="cd_privacy_protected">About message privacy</string>
-    <string name="cd_record_voice">Spraaknotitie opnemen</string>
     <string name="cd_offline_mesh_chat">Offline meshchat</string>
     <string name="cd_end_to_end_encryption">End-to-end-versleuteling</string>
 
@@ -239,16 +232,11 @@
     <!-- Toestemmingstypen -->
     <string name="perm_type_nearby_devices">Apparaten in de buurt</string>
     <string name="perm_type_precise_location">Precieze locatie</string>
-    <string name="perm_type_microphone">Microfoon</string>
     <string name="perm_type_notifications">Meldingen</string>
     <string name="perm_type_battery_optimization">Batterijoptimalisatie</string>
     <string name="perm_type_other">Overig</string>
 
     <!-- Wachtwoord-dialoog -->
-    <string name="pwd_prompt_title">Kanaalwachtwoord invoeren</string>
-    <string name="pwd_prompt_message">Kanaal %1$s is met een wachtwoord beveiligd. Voer het wachtwoord in om deel te nemen.</string>
-    <string name="pwd_label">Wachtwoord</string>
-    <string name="join">Deelnemen</string>
     <string name="cancel">Annuleren</string>
 
     <!-- Symbolen &amp; speciale strings -->

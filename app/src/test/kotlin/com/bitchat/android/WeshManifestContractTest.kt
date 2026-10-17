@@ -62,6 +62,25 @@ class WeshManifestContractTest {
     }
 
     @Test
+    fun `the microphone can never be requested and no audio capture code ships`() {
+        // RECORD_AUDIO and MODIFY_AUDIO_SETTINGS may appear only as tools:node="remove" guards.
+        val audio = Regex("""<uses-permission(?:-sdk-23)?[^>]*android:name="android\.permission\.(RECORD_AUDIO|MODIFY_AUDIO_SETTINGS)"[^>]*/>""")
+            .findAll(manifest).map { it.value }.toList()
+        assertEquals(1, declarations("RECORD_AUDIO").size)
+        audio.forEach { assertTrue("$it must use tools:node=remove", it.contains("""tools:node="remove"""")) }
+        val debugManifest = File("src/debug/AndroidManifest.xml").readText()
+        assertFalse(debugManifest.contains("RECORD_AUDIO") || debugManifest.contains("MODIFY_AUDIO_SETTINGS"))
+        assertFalse(File("src/main/java/com/bitchat/android/features/voice").exists())
+        val sources = listOf("src/main/java", "src/debug/java")
+            .flatMap { root -> File(root).walkTopDown().filter { it.extension == "kt" || it.extension == "java" }.toList() }
+        assertTrue(sources.isNotEmpty())
+        listOf("permission.RECORD_AUDIO", "MODIFY_AUDIO_SETTINGS", "MediaRecorder", "AudioRecord").forEach { needle ->
+            val offenders = sources.filter { it.readText().contains(needle) }.map { it.name }
+            assertTrue("$needle still referenced by $offenders", offenders.isEmpty())
+        }
+    }
+
+    @Test
     fun `no location SDK or location feature ships and background location is never requested`() {
         assertFalse(File("build.gradle.kts").readText().contains("gms"))
         assertFalse(File("gradle.lockfile").readText().contains("com.google.android.gms:"))

@@ -1,8 +1,7 @@
 package com.bitchat.android.mesh
 
 import android.os.Build
-import com.bitchat.android.features.voice.LiveVoiceManager
-import com.bitchat.android.features.voice.LiveVoicePreferences
+import com.bitchat.android.model.FragmentPayload
 import com.bitchat.android.model.NoisePayload
 import com.bitchat.android.model.NoisePayloadType
 import com.bitchat.android.model.PrivateMessagePacket
@@ -12,8 +11,11 @@ import com.bitchat.android.noise.NoiseDecryptionResult
 import com.bitchat.android.protocol.BitchatPacket
 import com.bitchat.android.protocol.MessageType
 import com.bitchat.android.protocol.SpecialRecipients
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.After
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -28,7 +30,7 @@ import org.mockito.kotlin.whenever
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
-import java.io.File
+import java.util.concurrent.CopyOnWriteArrayList
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [Build.VERSION_CODES.P], manifest = Config.NONE)
@@ -42,7 +44,6 @@ class WeshAckAndVoiceTest {
     @Before
     fun setup() {
         handler = MessageHandler(myPeerID, RuntimeEnvironment.getApplication())
-        handler.acceptIncomingMedia = false
         delegate = mock()
         handler.delegate = delegate
         whenever(delegate.getBroadcastRecipient()).thenReturn(SpecialRecipients.BROADCAST)
@@ -51,11 +52,10 @@ class WeshAckAndVoiceTest {
         whenever(delegate.encryptForPeer(any(), eq(peerID))).thenReturn(byteArrayOf(0x55))
     }
 
+    private val processors = mutableListOf<PacketProcessor>()
+
     @After
-    fun tearDown() {
-        LiveVoicePreferences.forceDisabled = false
-        LiveVoiceManager.getInstance(RuntimeEnvironment.getApplication()).reset()
-    }
+    fun tearDown() { processors.forEach(PacketProcessor::shutdown) }
 
     private fun encrypted(plaintext: ByteArray): RoutedPacket {
         val ciphertext = byteArrayOf(0x41, 0x42)
@@ -116,23 +116,78 @@ class WeshAckAndVoiceTest {
     }
 
     @Test
-    fun `private and public voice frames are dropped before any assembly`() = runBlocking<Unit> {
+    fun `a private voice frame from an enrolled contact produces no message and no ACK`() = runBlocking<Unit> {
+        // Enrolled and admitted: a private text in this state would be shown and acknowledged.
+        whenever(delegate.getAuthenticatedRemoteStaticKey(peerID)).thenReturn(session.remoteStaticKey)
+        whenever(delegate.isEnrolledContactKey(any())).thenReturn(true)
+        whenever(delegate.onPrivateMessageReceived(any())).thenReturn(true)
         val cacheBefore = RuntimeEnvironment.getApplication().cacheDir.walkTopDown().count()
-        assertTrue(handler.handleNoiseEncrypted(encrypted(NoisePayload(NoisePayloadType.VOICE_FRAME, ByteArray(40) { 7 }).encode())))
-        val publicFrame = BitchatPacket(version = 2u, type = MessageType.VOICE_FRAME.value, senderID = peerID.hexToBytes(),
-            recipientID = SpecialRecipients.BROADCAST, timestamp = System.currentTimeMillis().toULong(),
-            payload = ByteArray(40) { 7 }, signature = ByteArray(64) { 1 }, ttl = 7u)
-        assertFalse(handler.handlePublicVoiceFrame(RoutedPacket(publicFrame, peerID, "link")))
-        verify(delegate, never()).getPeerInfo(any())
+        val filesBefore = RuntimeEnvironment.getApplication().filesDir.walkTopDown().count()
+
+        val voice = NoisePayload(NoisePayloadType.VOICE_FRAME, ByteArray(40) { 7 }).encode()
+        assertTrue(handler.handleNoiseEncrypted(encrypted(voice)))
+
+        verify(delegate, never()).onPrivateMessageReceived(any())
         verify(delegate, never()).onMessageReceived(any())
-        assertTrue(cacheBefore == RuntimeEnvironment.getApplication().cacheDir.walkTopDown().count())
+        verify(delegate, never()).encryptForPeer(any(), any())
+        verify(delegate, never()).sendPacket(any())
+        assertEquals(cacheBefore, RuntimeEnvironment.getApplication().cacheDir.walkTopDown().count())
+        assertEquals(filesBefore, RuntimeEnvironment.getApplication().filesDir.walkTopDown().count())
     }
 
     @Test
-    fun `live voice preference is off when forced by the Wesh build`() {
-        LiveVoicePreferences.setEnabled(RuntimeEnvironment.getApplication(), true)
-        LiveVoicePreferences.forceDisabled = true
-        assertFalse(LiveVoicePreferences.isEnabled(RuntimeEnvironment.getApplication()))
+    fun `a public voice frame is neither handled nor relayed by the packet processor`() = runBlocking<Unit> {
+        val recorder = RelayRecorder()
+        val processor = PacketProcessor(myPeerID).also { it.delegate = recorder; processors += it }
+        fun packet(type: MessageType, recipient: ByteArray, payload: ByteArray) = RoutedPacket(BitchatPacket(
+            version = 2u, type = type.value, senderID = peerID.hexToBytes(), recipientID = recipient,
+            timestamp = System.currentTimeMillis().toULong(), payload = payload, signature = ByteArray(64) { 1 },
+            ttl = 7u), peerID, "link")
+        val voiceFragment = FragmentPayload(
+            fragmentID = ByteArray(8) { 3 }, index = 0, total = 2,
+            originalType = MessageType.VOICE_FRAME.value, data = ByteArray(40) { 7 }
+        ).encode()
+
+        processor.processPacket(packet(MessageType.VOICE_FRAME, SpecialRecipients.BROADCAST, ByteArray(40) { 7 }))
+        processor.processPacket(packet(MessageType.VOICE_FRAME, "9999888877776666".hexToBytes(), ByteArray(40) { 7 }))
+        processor.processPacket(packet(MessageType.VOICE_FRAME, myPeerID.hexToBytes(), ByteArray(40) { 7 }))
+        processor.processPacket(packet(MessageType.FRAGMENT, SpecialRecipients.BROADCAST, voiceFragment))
+        // One actor per peer handles packets in order: once this text is relayed, the voice was handled.
+        processor.processPacket(packet(MessageType.MESSAGE, SpecialRecipients.BROADCAST, "after".toByteArray()))
+        withTimeout(5_000) { recorder.textRelayed.await() }
+
+        assertEquals(listOf(MessageType.MESSAGE.value), recorder.relayed.map { it.packet.type })
+        assertEquals(listOf(MessageType.MESSAGE.value), recorder.handled.map { it.packet.type })
+        assertEquals(0, recorder.fragmentsHandled)
+        assertEquals(1, recorder.lastSeenUpdates)
+    }
+
+    private class RelayRecorder : PacketProcessorDelegate {
+        val relayed = CopyOnWriteArrayList<RoutedPacket>()
+        val handled = CopyOnWriteArrayList<RoutedPacket>()
+        val textRelayed = CompletableDeferred<Unit>()
+        @Volatile var fragmentsHandled = 0
+        @Volatile var lastSeenUpdates = 0
+
+        override fun validatePacketSecurity(packet: BitchatPacket, peerID: String) = true
+        override fun updatePeerLastSeen(peerID: String) { lastSeenUpdates += 1 }
+        override fun getPeerNickname(peerID: String): String? = null
+        override fun getNetworkSize() = 1
+        override fun getBroadcastRecipient(): ByteArray = SpecialRecipients.BROADCAST
+        override fun handleNoiseHandshake(routed: RoutedPacket): Boolean { handled += routed; return true }
+        override fun handleNoiseEncrypted(routed: RoutedPacket): Boolean { handled += routed; return true }
+        override suspend fun handleAnnounce(routed: RoutedPacket): Boolean { handled += routed; return true }
+        override fun handleMessage(routed: RoutedPacket) { handled += routed }
+        override fun handleLeave(routed: RoutedPacket) { handled += routed }
+        override fun handleFragment(packet: BitchatPacket): FragmentResult { fragmentsHandled += 1; return FragmentResult.Pending }
+        override fun handleRequestSync(routed: RoutedPacket) { handled += routed }
+        override fun sendAnnouncementToPeer(peerID: String) = Unit
+        override fun sendCachedMessages(peerID: String) = Unit
+        override fun relayPacket(routed: RoutedPacket) {
+            relayed += routed
+            if (routed.packet.type == MessageType.MESSAGE.value) textRelayed.complete(Unit)
+        }
+        override fun sendToPeer(peerID: String, routed: RoutedPacket): Boolean { relayed += routed; return false }
     }
 
     @Test

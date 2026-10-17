@@ -10,14 +10,9 @@
     <!-- Placeholders / UI básica -->
     <string name="nickname_hint">Apelido</string>
     <string name="message_hint">Digite uma mensagem…</string>
-    <string name="channel_password_hint">Palavra-passe</string>
-    <string name="join_channel">Juntar-se ao canal</string>
-    <string name="leave_channel">Sair</string>
     <string name="send_message">Enviar</string>
-    <string name="show_commands">Mostrar comandos</string>
     <string name="back">Voltar</string>
     <string name="people">Pessoas</string>
-    <string name="channels">Canais</string>
     <string name="online_users">Utilizadores online</string>
     <string name="no_one_connected">Ninguém ligado</string>
     <string name="emergency_clear_hint">Toque três vezes para apagar todos os dados</string>
@@ -113,14 +108,12 @@
     <string name="cd_not_supported_battery_optimization">Otimização da bateria não suportada</string>
     <string name="cd_bluetooth">Bluetooth</string>
     <string name="cd_unread_message">Mensagem não lida</string>
-    <string name="cd_leave_channel">Sair do canal</string>
     <string name="cd_reachable_via_nostr">Alcançável via Nostr</string>
     <string name="cd_offline_favorite">Favorito (offline)</string>
     <string name="cd_scroll_to_bottom">Deslocar para baixo</string>
     <string name="cd_cancel">Cancelar</string>
     <string name="cd_link">Ligação</string>
     <string name="cd_privacy_protected">About message privacy</string>
-    <string name="cd_record_voice">Gravar nota de voz</string>
     <string name="cd_offline_mesh_chat">Chat mesh offline</string>
     <string name="cd_end_to_end_encryption">Encriptação ponto a ponto</string>
 
@@ -239,16 +232,11 @@
     <!-- Tipos de permissões -->
     <string name="perm_type_nearby_devices">Dispositivos próximos</string>
     <string name="perm_type_precise_location">Localização precisa</string>
-    <string name="perm_type_microphone">Microfone</string>
     <string name="perm_type_notifications">Notificações</string>
     <string name="perm_type_battery_optimization">Otimização da bateria</string>
     <string name="perm_type_other">Outro</string>
 
     <!-- Diálogo de palavra-passe -->
-    <string name="pwd_prompt_title">Inserir palavra-passe do canal</string>
-    <string name="pwd_prompt_message">O canal %1$s está protegido por palavra-passe. Insira a palavra-passe para entrar.</string>
-    <string name="pwd_label">Palavra-passe</string>
-    <string name="join">Entrar</string>
     <string name="cancel">Cancelar</string>
 
     <!-- Plurais -->

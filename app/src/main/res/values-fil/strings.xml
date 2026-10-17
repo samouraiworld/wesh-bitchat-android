@@ -10,14 +10,9 @@
     <!-- Mga placeholder / batayang UI -->
     <string name="nickname_hint">palayaw</string>
     <string name="message_hint">magtype ng mensahe…</string>
-    <string name="channel_password_hint">Password</string>
-    <string name="join_channel">Sumali sa Channel</string>
-    <string name="leave_channel">Umalis</string>
     <string name="send_message">Ipadala</string>
-    <string name="show_commands">Ipakita ang mga utos</string>
     <string name="back">Bumalik</string>
     <string name="people">Tao</string>
-    <string name="channels">Mga Channel</string>
     <string name="online_users">Mga Online na User</string>
     <string name="no_one_connected">Walang nakakonekta</string>
     <string name="emergency_clear_hint">I‑tap nang tatlong beses para burahin ang lahat ng data</string>
@@ -113,13 +108,11 @@
     <string name="cd_not_supported_battery_optimization">Hindi suportado</string>
     <string name="cd_bluetooth">Bluetooth</string>
     <string name="cd_unread_message">Hindi nabasang mensahe</string>
-    <string name="cd_leave_channel">Umalis sa channel</string>
     <string name="cd_reachable_via_nostr">Maabot sa Nostr</string>
     <string name="cd_offline_favorite">Paborito (offline)</string>
     <string name="cd_scroll_to_bottom">Mag‑scroll pababa</string>
     <string name="cd_cancel">Kanselahin</string>
     <string name="cd_link">Link</string>
-    <string name="cd_record_voice">Mag‑record ng voice note</string>
     <string name="cd_offline_mesh_chat">Offline Mesh Chat</string>
     <string name="cd_end_to_end_encryption">End‑to‑End Encryption</string>
 
@@ -223,8 +216,6 @@
 
     <!-- Tulong na text sa abiso -->
 
-    <!-- Voice player a11y -->
-
     <!-- Mga paglalarawan ng permiso -->
     <string name="perm_nearby_devices_desc">Connect to people on the Wesh Bluetooth mesh.</string>
     <string name="perm_nearby_devices_system">Allow Wesh to connect to nearby devices.</string>
@@ -238,16 +229,11 @@
     <!-- Mga uri ng permiso -->
     <string name="perm_type_nearby_devices">Kalapit na device</string>
     <string name="perm_type_precise_location">Eksaktong lokasyon</string>
-    <string name="perm_type_microphone">Mikropono</string>
     <string name="perm_type_notifications">Mga abiso</string>
     <string name="perm_type_battery_optimization">Pag‑optimize ng baterya</string>
     <string name="perm_type_other">Iba pa</string>
 
     <!-- Dialog ng password -->
-    <string name="pwd_prompt_title">Ilagay ang password ng channel</string>
-    <string name="pwd_prompt_message">Ang channel na %1$s ay protektado. Ilagay ang password para sumali.</string>
-    <string name="pwd_label">Password</string>
-    <string name="join">Sumali</string>
     <string name="cancel">Kanselahin</string>
 
     <!-- Plurals -->

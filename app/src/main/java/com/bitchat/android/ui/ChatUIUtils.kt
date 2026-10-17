@@ -407,16 +407,6 @@ internal fun colorForMention(
 }
 
 /**
- * A bare `anon` label means the peer has not announced a username yet. The transport
- * may append a `#abcd` disambiguator, which does not turn it into an announced name. Names such as
- * `anon1234`, `anonymous`, and `anonracer` are real announced usernames.
- */
-internal fun isUnannouncedNickname(displayName: String): Boolean {
-    val base = splitSuffix(displayName.trim()).first
-    return base.equals("anon", ignoreCase = true)
-}
-
-/**
  * iOS-style content formatting with proper hashtag and mention handling.
  *
  * Redesign notes:

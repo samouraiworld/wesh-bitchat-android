@@ -267,105 +267,6 @@ class PrivateChatManager(
         return fingerprintManager.getAllPeerFingerprints()
     }
 
-    // MARK: - Block/Unblock Operations
-
-    fun blockPeer(peerID: String, meshService: MeshService): Boolean {
-        val fingerprint = fingerprintManager.getFingerprintForPeer(peerID)
-        if (fingerprint != null) {
-            dataManager.addBlockedUser(fingerprint)
-
-            val peerNickname = getPeerNickname(peerID, meshService)
-            val systemMessage = BitchatMessage(
-                sender = "system",
-                content = "blocked user $peerNickname",
-                timestamp = Date(),
-                isRelay = false
-            )
-            messageManager.addMessage(systemMessage)
-
-            // End private chat if currently in one with this peer
-            if (state.getSelectedPrivateChatPeerValue() == peerID) {
-                endPrivateChat()
-            }
-
-            return true
-        }
-        return false
-    }
-
-    fun unblockPeer(peerID: String, meshService: MeshService): Boolean {
-        val fingerprint = fingerprintManager.getFingerprintForPeer(peerID)
-        if (fingerprint != null && dataManager.isUserBlocked(fingerprint)) {
-            dataManager.removeBlockedUser(fingerprint)
-
-            val peerNickname = getPeerNickname(peerID, meshService)
-            val systemMessage = BitchatMessage(
-                sender = "system",
-                content = "unblocked user $peerNickname",
-                timestamp = Date(),
-                isRelay = false
-            )
-            messageManager.addMessage(systemMessage)
-            return true
-        }
-        return false
-    }
-
-    fun blockPeerByNickname(targetName: String, meshService: MeshService): Boolean {
-        val peerID = getPeerIDForNickname(targetName, meshService)
-
-        if (peerID != null) {
-            return blockPeer(peerID, meshService)
-        } else {
-            val systemMessage = BitchatMessage(
-                sender = "system",
-                content = "user '$targetName' not found",
-                timestamp = Date(),
-                isRelay = false
-            )
-            messageManager.addMessage(systemMessage)
-            return false
-        }
-    }
-
-    fun unblockPeerByNickname(targetName: String, meshService: MeshService): Boolean {
-        val peerID = getPeerIDForNickname(targetName, meshService)
-
-        if (peerID != null) {
-            val fingerprint = fingerprintManager.getFingerprintForPeer(peerID)
-            if (fingerprint != null && dataManager.isUserBlocked(fingerprint)) {
-                return unblockPeer(peerID, meshService)
-            } else {
-                val systemMessage = BitchatMessage(
-                    sender = "system",
-                    content = "user '$targetName' is not blocked",
-                    timestamp = Date(),
-                    isRelay = false
-                )
-                messageManager.addMessage(systemMessage)
-                return false
-            }
-        } else {
-            val systemMessage = BitchatMessage(
-                sender = "system",
-                content = "user '$targetName' not found",
-                timestamp = Date(),
-                isRelay = false
-            )
-            messageManager.addMessage(systemMessage)
-            return false
-        }
-    }
-
-    fun listBlockedUsers(): String {
-        val blockedCount = dataManager.blockedUsers.size
-        return if (blockedCount == 0) {
-            "no blocked users"
-        } else {
-            "blocked users: $blockedCount fingerprints"
-        }
-    }
-
     // MARK: - Message Handling
 
     fun handleIncomingPrivateMessage(message: BitchatMessage) {
@@ -581,10 +482,6 @@ class PrivateChatManager(
     }
 
     // MARK: - Utility Functions
-
-    private fun getPeerIDForNickname(nickname: String, meshService: MeshService): String? {
-        return meshService.getPeerNicknames().entries.find { it.value == nickname }?.key
-    }
 
     private fun getPeerNickname(peerID: String, meshService: MeshService): String {
         return meshService.getPeerNicknames()[peerID] ?: peerID

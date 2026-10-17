@@ -4,12 +4,6 @@ import android.content.Context
 import android.content.Intent
 import android.util.Log
 import com.bitchat.android.favorites.FavoritesPersistenceService
-import com.bitchat.android.features.voice.LiveVoiceEvent
-import com.bitchat.android.features.voice.LiveVoiceManager
-import com.bitchat.android.features.voice.LiveVoicePreferences
-import com.bitchat.android.features.voice.LiveVoiceScope
-import com.bitchat.android.features.voice.LiveVoiceTarget
-import com.bitchat.android.features.voice.LiveVoiceCapture
 import com.bitchat.android.identity.SecureIdentityStateManager
 import com.bitchat.android.mesh.MeshService
 import com.bitchat.android.model.RoutedPacket
@@ -20,11 +14,8 @@ import com.bitchat.android.service.MeshServiceHolder
 import com.bitchat.android.service.TransportBridgeService
 import com.bitchat.android.services.AppStateStore
 import com.bitchat.android.ui.DataManager
-import com.bitchat.android.ui.ConversationPeerResolver
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
@@ -43,7 +34,6 @@ object TestHookDriver {
     private const val DEFAULT_CONNECT_TIMEOUT_MS = 30_000L
     private const val DEFAULT_HANDSHAKE_TIMEOUT_MS = 30_000L
     private const val DEFAULT_RECV_TIMEOUT_MS = 60_000L
-    private const val DEFAULT_PTT_TIMEOUT_MS = 180_000L
 
     suspend fun execute(context: Context, cmd: String, intent: Intent): JSONObject {
         Log.d(TAG, "execute cmd=$cmd")
@@ -59,7 +49,7 @@ object TestHookDriver {
             "handshake" -> handshake(context, intent.requiredString("peer"), intent)
             "session" -> session(context, intent.requiredString("peer"))
             "announce" -> announce(context)
-            "broadcast_msg" -> broadcastMsg(context, intent.requiredString("content"), intent.getStringExtra("channel"))
+            "broadcast_msg" -> broadcastMsg(context, intent.requiredString("content"))
             "dm_send" -> dmSend(context, intent.requiredString("peer"), intent.requiredString("content"), intent.getStringExtra("msg_id"))
             "dm_recv" -> dmRecv(context, intent)
             "msg_recv" -> msgRecv(context, intent)
@@ -75,8 +65,6 @@ object TestHookDriver {
                 intent.getBooleanExtra("enabled", true)
             )
             "verification_status" -> verificationStatus(context, intent.requiredString("peer"))
-            "ptt_send" -> pttSend(context, intent)
-            "ptt_recv" -> pttRecv(context, intent)
             "raw_send" -> rawSend(context, intent)
             "ble" -> setBle(intent.getBooleanExtra("enabled", true))
             "inject_peers" -> injectPeers(intent.getStringExtra("peers"))
@@ -219,9 +207,9 @@ object TestHookDriver {
         return ok("announce")
     }
 
-    private fun broadcastMsg(context: Context, content: String, channel: String?): JSONObject {
-        mesh(context).sendMessage(content, emptyList(), channel)
-        return ok("broadcast_msg").put("content", content).put("channel", channel)
+    private fun broadcastMsg(context: Context, content: String): JSONObject {
+        mesh(context).sendMessage(content, emptyList())
+        return ok("broadcast_msg").put("content", content)
     }
 
     private fun dmSend(context: Context, peerID: String, content: String, msgID: String?): JSONObject {
@@ -264,28 +252,20 @@ object TestHookDriver {
     private suspend fun msgRecv(context: Context, intent: Intent): JSONObject {
         val timeoutMs = intent.getLongExtra("timeout_ms", DEFAULT_RECV_TIMEOUT_MS)
         val contains = intent.getStringExtra("contains")
-        val channel = intent.getStringExtra("channel")
         val startTime = System.currentTimeMillis()
         val mesh = mesh(context)
         val matches: (com.bitchat.android.model.BitchatMessage) -> Boolean = { msg ->
             msg.timestamp.time >= startTime &&
                 msg.senderPeerID != mesh.myPeerID &&
-                (contains == null || msg.content.contains(contains)) &&
-                (channel == null || msg.channel == channel)
+                (contains == null || msg.content.contains(contains))
         }
         val found = withTimeoutOrNull(timeoutMs) {
-            if (channel != null) {
-                AppStateStore.channelMessages.first { m -> m.values.flatten().any(matches) }
-                    .values.flatten().first(matches)
-            } else {
-                AppStateStore.publicMessages.first { l -> l.any(matches) }.first(matches)
-            }
+            AppStateStore.publicMessages.first { l -> l.any(matches) }.first(matches)
         } ?: return err("msg_recv", "timeout after ${timeoutMs}ms")
         return ok("msg_recv")
             .put("from", found.senderPeerID)
             .put("sender", found.sender)
             .put("content", found.content)
-            .put("channel", found.channel)
             .put("msg_id", found.id)
     }
 
@@ -349,101 +329,6 @@ object TestHookDriver {
             .put("peer", peerID)
             .put("fingerprint", fingerprint ?: JSONObject.NULL)
             .put("verified", verified)
-    }
-
-    // MARK: - Live push-to-talk
-
-    private suspend fun pttSend(context: Context, intent: Intent): JSONObject {
-        val requestedPeer = intent.getStringExtra("peer")
-        val durationMs = intent.getIntExtra("duration_ms", 1_500).toLong().coerceIn(700L, 10_000L)
-        val mesh = mesh(context)
-        LiveVoicePreferences.setEnabled(context, true)
-        val recipient = requestedPeer?.let {
-            ConversationPeerResolver.resolve(it, mesh)
-                ?: return err("ptt_send", "no active mesh route for private conversation")
-        }
-        if (recipient != null && !mesh.hasEstablishedSession(recipient.meshPeerID)) {
-            val handshake = handshake(context, recipient.meshPeerID, intent)
-            if (handshake.optString("status") != "ok") return handshake.put("cmd", "ptt_send")
-        }
-        val target = LiveVoiceTarget { payload -> mesh.sendVoiceFrame(recipient?.meshPeerID, payload) }
-        val recorder = LiveVoiceCapture(
-            File(context.filesDir, "voicenotes/outgoing"),
-            target,
-            syntheticPcm = true
-        )
-        val pendingFile = recorder.start() ?: return err("ptt_send", "live codec failed to start")
-        delay(durationMs)
-        val finalFile = recorder.stop(canceled = false)
-            ?: return err("ptt_send", "capture did not produce a finalized note")
-        val captureStats = recorder.stats()
-        if (finalFile != pendingFile || !finalFile.isFile) {
-            return err("ptt_send", "finalized note is unavailable")
-        }
-        // Live frames only: the finalized note is a file, and Wesh sends no files.
-        return ok("ptt_send")
-            .put("live", true)
-            .put("scope", if (recipient == null) "public" else "dm")
-            .put("duration_ms", durationMs)
-            .put("burst_id", LiveVoiceManager.burstIDFromVoiceFileName(finalFile.name))
-            .put("bytes", finalFile.length())
-            .put("queued_pcm_frames", captureStats.queuedPcmFrames)
-            .put("encoded_frames", captureStats.encodedFrames)
-            .put("data_packets", captureStats.dataPackets)
-            .put("dropped_oversize_frames", captureStats.droppedOversizeFrames)
-            .put("outbound_packets", captureStats.outboundPackets)
-            .put("delivered_packets", captureStats.deliveredPackets)
-    }
-
-    private suspend fun pttRecv(context: Context, intent: Intent): JSONObject {
-        val timeoutMs = intent.getLongExtra("timeout_ms", DEFAULT_PTT_TIMEOUT_MS)
-        val fromPeer = intent.getStringExtra("peer")
-        val expectedScope = if (intent.getStringExtra("scope") == "public") {
-            LiveVoiceScope.PUBLIC_MESH
-        } else {
-            LiveVoiceScope.DIRECT_MESSAGE
-        }
-        LiveVoicePreferences.setEnabled(context, true)
-        var finished: LiveVoiceEvent.Finished? = null
-        var liveSnapshot: File? = null
-        val absorbed = withTimeoutOrNull(timeoutMs) {
-            LiveVoiceManager.getInstance(context).events.first { event ->
-                val matches = event.scope == expectedScope &&
-                    (fromPeer == null || event.peerID == fromPeer)
-                if (matches && event is LiveVoiceEvent.Finished) {
-                    finished = event
-                    liveSnapshot = runCatching {
-                        File(context.cacheDir, "testhook/ptt-${event.burstID}.aac").also { snapshot ->
-                            snapshot.parentFile?.mkdirs()
-                            File(event.path).copyTo(snapshot, overwrite = true)
-                        }
-                    }.getOrNull()
-                }
-                matches && event is LiveVoiceEvent.Absorbed
-            } as LiveVoiceEvent.Absorbed
-        } ?: return err("ptt_recv", "timeout waiting for live burst and finalized note")
-        val analysis = liveSnapshot?.let { snapshot ->
-            try {
-                withContext(Dispatchers.IO) { PttTestAudioAnalyzer.analyze(snapshot) }
-            } finally {
-                snapshot.delete()
-            }
-        } ?: return err("ptt_recv", "live AAC snapshot was unavailable")
-        return ok("ptt_recv")
-            .put("live_observed", finished != null)
-            .put("scope", if (expectedScope == LiveVoiceScope.PUBLIC_MESH) "public" else "dm")
-            .put("from", absorbed.peerID)
-            .put("burst_id", absorbed.burstID)
-            .put("frames", finished?.frames ?: 0)
-            .put("data_packets", finished?.dataPackets ?: 0)
-            .put("bytes", finished?.bytes ?: 0)
-            .put("expected_packets", finished?.expectedPackets ?: 0)
-            .put("missing_packets", finished?.missingPackets ?: 0)
-            .put("decoded_samples", analysis.decodedSamples)
-            .put("rms", analysis.rms)
-            .put("silent_block_fraction", analysis.silentBlockFraction)
-            .put("longest_silent_block_run", analysis.longestSilentBlockRun)
-            .put("zero_crossings_per_second", analysis.zeroCrossingsPerSecond)
     }
 
     // MARK: - Raw packet injection

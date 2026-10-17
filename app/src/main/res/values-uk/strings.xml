@@ -48,14 +48,9 @@
     <string name="permission_notification_rationale">Дозвіл на сповіщення потрібен, щоб повідомляти вас про нові повідомлення.</string>
     <string name="nickname_hint">нікнейм</string>
     <string name="message_hint">введіть повідомлення…</string>
-    <string name="channel_password_hint">Пароль</string>
-    <string name="join_channel">Приєднатися до каналу</string>
-    <string name="leave_channel">Вийти</string>
     <string name="send_message">Надіслати</string>
-    <string name="show_commands">Показати команди</string>
     <string name="back">Назад</string>
     <string name="people">Люди</string>
-    <string name="channels">Канали</string>
     <string name="online_users">Користувачі онлайн</string>
     <string name="no_one_connected">Немає підключених</string>
     <string name="emergency_clear_hint">Потрійний дотик, щоб очистити всі дані</string>
@@ -142,13 +137,11 @@
     <string name="notification_action_quit_bitchat">Закрити Wesh</string>
     <string name="about_background_title">працювати у фоновому режимі</string>
     <string name="about_background_desc">підтримувати mesh активним, коли додаток закрито (фонова служба)</string>
-    <string name="cd_leave_channel">Вийти з каналу</string>
     <string name="cd_reachable_via_nostr">Доступний через Nostr</string>
     <string name="cd_offline_favorite">Офлайн обране</string>
     <string name="cd_scroll_to_bottom">Прогорнути донизу</string>
     <string name="cd_cancel">Скасувати</string>
     <string name="cd_link">Посилання</string>
-    <string name="cd_record_voice">Записати голосове повідомлення</string>
     <string name="cd_offline_mesh_chat">Офлайн Mesh-чат</string>
     <string name="cd_end_to_end_encryption">Наскрізне шифрування</string>
     <string name="location_bluetooth_subtitle">#bluetooth • %1$s</string>
@@ -255,14 +248,9 @@
     <string name="perm_battery_system">Allow Wesh to run without battery restrictions.</string>
     <string name="perm_type_nearby_devices">Пристрої поруч</string>
     <string name="perm_type_precise_location">Точна геолокація</string>
-    <string name="perm_type_microphone">Мікрофон</string>
     <string name="perm_type_notifications">Сповіщення</string>
     <string name="perm_type_battery_optimization">Оптимізація батареї</string>
     <string name="perm_type_other">Інше</string>
-    <string name="pwd_prompt_title">Введіть пароль каналу</string>
-    <string name="pwd_prompt_message">Канал %1$s захищений паролем. Введіть пароль, щоб приєднатися.</string>
-    <string name="pwd_label">Пароль</string>
-    <string name="join">Приєднатися</string>
     <string name="cancel">Скасувати</string>
     <string name="tor_not_available_in_this_build">Tor недоступний у цій збірці</string>
 

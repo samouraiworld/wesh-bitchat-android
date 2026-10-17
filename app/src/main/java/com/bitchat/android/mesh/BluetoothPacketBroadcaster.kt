@@ -558,7 +558,7 @@ class BluetoothPacketBroadcaster(
 
     /**
      * Android permits only one outstanding GATT operation per link. Queueing here mirrors the
-     * readiness-driven iOS transport and prevents later voice frames from overwriting an operation
+     * readiness-driven iOS transport and prevents a later write from overwriting an operation
      * that the controller has not completed yet.
      */
     private fun enqueueSend(key: SendKey, request: PendingSend): Boolean {

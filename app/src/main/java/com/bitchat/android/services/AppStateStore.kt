@@ -54,10 +54,6 @@ object AppStateStore {
     private val _selectedPrivateChatPeer = MutableStateFlow<String?>(null)
     val selectedPrivateChatPeer: StateFlow<String?> = _selectedPrivateChatPeer.asStateFlow()
 
-    // Channel messages by channel name
-    private val _channelMessages = MutableStateFlow<Map<String, List<BitchatMessage>>>(emptyMap())
-    val channelMessages: StateFlow<Map<String, List<BitchatMessage>>> = _channelMessages.asStateFlow()
-
     fun setPeers(ids: List<String>) {
         synchronized(this) {
             _peers.value = ids.distinct()
@@ -199,71 +195,12 @@ object AppStateStore {
         }
     }
 
-    /**
-     * Replace a live media row by ID, or append it if the row was not admitted yet. IDs are chosen
-     * by the sender: a row from another sender is never replaced.
-     */
-    fun upsertPublicMessage(msg: BitchatMessage) {
-        synchronized(this) {
-            val index = _publicMessages.value.indexOfFirst { it.id == msg.id }
-            if (index >= 0 && _publicMessages.value[index].senderPeerID != msg.senderPeerID) return
-            if (index >= 0) {
-                _publicMessages.value = _publicMessages.value.toMutableList().also { it[index] = msg }
-            } else {
-                seenMessageIds.add(msg.id)
-                seenPublicMessageKeys.add(publicMessageKey(msg))
-                _publicMessages.value = _publicMessages.value + msg
-            }
-        }
-    }
-
-    fun removePublicMessage(messageID: String) {
-        synchronized(this) {
-            val existing = _publicMessages.value.firstOrNull { it.id == messageID } ?: return
-            _publicMessages.value = _publicMessages.value.filterNot { it.id == messageID }
-            seenMessageIds.remove(messageID)
-            seenPublicMessageKeys.remove(publicMessageKey(existing))
-        }
-    }
-
     fun addPrivateMessage(
         peerID: String,
         msg: BitchatMessage,
         forceRead: Boolean = false
     ): Boolean = synchronized(this) {
         addPrivateMessageLocked(peerID, msg, forceRead, persistAsynchronously = true)
-    }
-
-    /** Replace-or-append used by a live voice row as its partial file becomes final media. */
-    fun upsertPrivateMessage(peerID: String, msg: BitchatMessage, forceRead: Boolean = false) {
-        synchronized(this) {
-            if (privateConversationWritesSuspended) return
-            val canonicalID = ContactDirectory.canonicalConversationId(peerID)
-            val map = _privateMessages.value.toMutableMap()
-            val matchingKey = map.keys.firstOrNull {
-                ContactDirectory.canonicalConversationId(it).equals(canonicalID, ignoreCase = true)
-            } ?: canonicalID
-            val messages = map[matchingKey].orEmpty().toMutableList()
-            val index = messages.indexOfFirst { it.id == msg.id }
-            if (index >= 0) {
-                messages[index] = msg
-            } else {
-                messages += msg
-                seenMessageIds.add(msg.id)
-            }
-            map[matchingKey] = messages
-            _privateMessages.value = ContactDirectory.canonicalizePrivateChats(map)
-            if (forceRead) {
-                _readPrivateMessageIDs.value = _readPrivateMessageIDs.value + msg.id
-            }
-            conversationRepository?.upsertMessage(
-                conversationID = canonicalID,
-                aliases = privateConversationAliases(peerID, canonicalID),
-                displayName = ContactDirectory.resolve(canonicalID).displayName,
-                message = msg,
-                isRead = forceRead
-            )
-        }
     }
 
     /**
@@ -845,17 +782,6 @@ object AppStateStore {
         }
     }
 
-    fun addChannelMessage(channel: String, msg: BitchatMessage) {
-        synchronized(this) {
-            if (seenMessageIds.contains(msg.id)) return
-            seenMessageIds.add(msg.id)
-            val map = _channelMessages.value.toMutableMap()
-            val list = (map[channel] ?: emptyList()) + msg
-            map[channel] = list
-            _channelMessages.value = map
-        }
-    }
-
     // Clear all in-memory state (used for full app shutdown)
     fun clear() {
         synchronized(this) {
@@ -874,7 +800,6 @@ object AppStateStore {
             _readPrivateMessageIDs.value = emptySet()
             _unreadPrivateMessageCounts.value = emptyMap()
             _privateConversationDisplayNames.value = emptyMap()
-            _channelMessages.value = emptyMap()
             _nickname.value = ""
             _selectedPrivateChatPeer.value = null
         }

@@ -6,14 +6,9 @@
     <string name="permission_notification_rationale">Aviseringsbehörighet krävs för att meddela nya meddelanden.</string>
     <string name="nickname_hint">smeknamn</string>
     <string name="message_hint">skriv ett meddelande…</string>
-    <string name="channel_password_hint">Lösenord</string>
-    <string name="join_channel">Gå med i kanal</string>
-    <string name="leave_channel">Lämna</string>
     <string name="send_message">Skicka</string>
-    <string name="show_commands">Visa kommandon</string>
     <string name="back">Tillbaka</string>
     <string name="people">Personer</string>
-    <string name="channels">Kanaler</string>
     <string name="online_users">Användare online</string>
     <string name="no_one_connected">Ingen ansluten</string>
     <string name="emergency_clear_hint">Tryck tre gånger för att rensa all data</string>
@@ -102,13 +97,11 @@
     <string name="cd_not_supported_battery_optimization">Stöds ej</string>
     <string name="cd_bluetooth">Bluetooth</string>
     <string name="cd_unread_message">Oläst meddelande</string>
-    <string name="cd_leave_channel">Lämna kanal</string>
     <string name="cd_reachable_via_nostr">Nås via Nostr</string>
     <string name="cd_offline_favorite">Favorit (offline)</string>
     <string name="cd_scroll_to_bottom">Rulla längst ned</string>
     <string name="cd_cancel">Avbryt</string>
     <string name="cd_link">Länk</string>
-    <string name="cd_record_voice">Spela in röstanteckning</string>
     <string name="cd_offline_mesh_chat">Offline Mesh‑chatt</string>
     <string name="cd_end_to_end_encryption">Ända‑till‑ända‑kryptering</string>
 
@@ -217,15 +210,10 @@
 
     <string name="perm_type_nearby_devices">Enheter i närheten</string>
     <string name="perm_type_precise_location">Exakt plats</string>
-    <string name="perm_type_microphone">Mikrofon</string>
     <string name="perm_type_notifications">Aviseringar</string>
     <string name="perm_type_battery_optimization">Batterioptimering</string>
     <string name="perm_type_other">Övrigt</string>
 
-    <string name="pwd_prompt_title">Ange kanalens lösenord</string>
-    <string name="pwd_prompt_message">Kanal %1$s är lösenordsskyddad. Ange lösenordet för att gå med.</string>
-    <string name="pwd_label">Lösenord</string>
-    <string name="join">Gå med</string>
     <string name="cancel">Avbryt</string>
 
     <plurals name="notification_and_more">

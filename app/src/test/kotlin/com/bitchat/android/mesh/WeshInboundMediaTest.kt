@@ -53,7 +53,6 @@ class WeshInboundMediaTest {
             PublicInboundBudget(global = PublicInboundBudget.Rate(100.0, 100.0),
                 perAuthenticatedSource = PublicInboundBudget.Rate(0.0, 5.0), perLink = PublicInboundBudget.Rate(100.0, 100.0),
                 unauthenticated = PublicInboundBudget.Rate(0.0, 5.0)))
-        handler.acceptIncomingMedia = false
         delegate = mock()
         handler.delegate = delegate
         whenever(delegate.getBroadcastRecipient()).thenReturn(SpecialRecipients.BROADCAST)
@@ -322,12 +321,14 @@ class WeshInboundMediaTest {
     }
 
     @Test
-    fun `the Wesh inbound policy closes voice, plaintext private text and favorite notices`() {
+    fun `the Wesh inbound policy closes plaintext private text and favorite notices`() {
         val fresh = MessageHandler(myPeerID, RuntimeEnvironment.getApplication())
         fresh.applyInboundPolicy(weshLocalOnly = true)
-        assertFalse(fresh.acceptIncomingMedia || fresh.acceptDirectedPlaintext || fresh.acceptFavoriteNotices)
+        assertFalse(fresh.acceptDirectedPlaintext || fresh.acceptFavoriteNotices)
         fresh.applyInboundPolicy(weshLocalOnly = false)
-        assertTrue(fresh.acceptIncomingMedia && fresh.acceptDirectedPlaintext && fresh.acceptFavoriteNotices)
+        assertTrue(fresh.acceptDirectedPlaintext && fresh.acceptFavoriteNotices)
+        // No build decodes compressed media any more, whatever the product policy.
+        assertFalse(com.bitchat.android.protocol.PacketPayloadLimits.acceptCompressedMedia)
     }
 
     @Test

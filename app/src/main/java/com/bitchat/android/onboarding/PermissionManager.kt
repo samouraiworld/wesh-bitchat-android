@@ -280,8 +280,6 @@ class PermissionManager(private val context: Context) {
             )
         }
 
-        // Microphone category removed from onboarding
-
         // Battery optimization category (if applicable)
         if (isBatteryOptimizationSupported()) {
             categories.add(
@@ -350,7 +348,6 @@ data class PermissionCategory(
 enum class PermissionType(val nameValue: String) {
     NEARBY_DEVICES("Nearby Devices"),
     PRECISE_LOCATION("Precise Location"),
-    MICROPHONE("Microphone"),
     NOTIFICATIONS("Notifications"),
     WIFI_AWARE("Wi‑Fi Aware"),
     BATTERY_OPTIMIZATION("Battery Optimization"),

@@ -62,16 +62,8 @@ class PacketRelayManager(private val myPeerID: String) {
         }
         
         // Decrement TTL by 1
-        val networkSize = delegate?.getNetworkSize() ?: 1
-        val decrementedTtl = (packet.ttl - 1u).toUByte()
-        val voiceTtl = if (
-            MessageType.fromValue(packet.type) == MessageType.VOICE_FRAME && networkSize > 6
-        ) minOf(decrementedTtl, 5u.toUByte()) else decrementedTtl
-        val relayPacket = packet.copy(ttl = voiceTtl)
+        val relayPacket = packet.copy(ttl = (packet.ttl - 1u).toUByte())
         Log.d(TAG, "Decremented TTL from ${packet.ttl} to ${relayPacket.ttl}")
-        if (MessageType.fromValue(packet.type) == MessageType.VOICE_FRAME) {
-            delay(Random.nextLong(8L, 26L))
-        }
         
         // Source-based routing: if route is set and includes us, try targeted next-hop forwarding
         val route = relayPacket.route
