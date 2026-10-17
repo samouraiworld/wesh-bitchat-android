@@ -1,156 +1,93 @@
-# bitchat Privacy Policy
+# Wesh Privacy Policy
 
-*Last updated: January 2025*
+*Last updated: October 2026.* Wesh is a fork of BitChat. This file mirrors the policy published at https://wesh.samourai.app/en/privacy; the French version, https://wesh.samourai.app/confidentialite, is the reference.
 
-## Our Commitment
+## 1. Who we are
+Wesh is a free, open source, non-profit app published by **Samouraï Coop**, SARL SCOP, 149 avenue du Maine, 75014 Paris, France.
+Contact: `support@samourai.coop`. Security issues: `security@samourai.coop`.
 
-bitchat is designed with privacy as its foundation. We believe private communication is a fundamental human right. This policy explains how bitchat protects your privacy.
+## 2. In short
+- No account, no phone number, no email address required.
+- Samouraï Coop runs no server for Wesh and receives none of your messages, contacts or location.
+- Wesh does not read your location.
+- No analytics, no crash reporting, no ads, no tracking.
+- Over Bluetooth, nearby phones see your nickname and an identifier that does not change until you use the emergency erase (§5).
+- The local room is public.
 
-## Summary
+## 3. Data kept on your phone
+- Nickname, identity keys, verified contacts, drafts, meeting note, settings.
+- Private messages: on Android, the history is stored encrypted on the phone. On iPhone, it stays in memory and is gone when the app is closed.
+- A private message not yet delivered is kept encrypted for at most 24 hours.
+- Recent local-room messages may be kept for a few hours, so they can be relayed to phones that arrive later.
+- On iPhone, Wesh may also keep, for at most 24 hours, an encrypted private message that a verified contact hands it for someone else. You cannot read it.
+- Keys are held in the iOS Keychain or protected by the Android Keystore. They do not leave the phone.
 
-**WE DO NOT COLLECT ANY INFORMATION.**
+## 4. Backups
+- **Android:** Wesh excludes all of its data from Google backups and from transfers to a new phone.
+- **iPhone:** Wesh's files and keys are excluded from iCloud and computer backups. These backups contain none of your messages, contacts, keys or nickname.
+- They may contain:
+  - the app's settings (appearance, notices accepted<!-- INTERNET:START -->, whether Internet mode is on<!-- INTERNET:END -->);
+  - today's count of the phones you passed: for each one, a hash of its peer ID, stored with the secret value used to compute it, and the time you last met. Because peer IDs are stable, someone who has this backup and a phone's peer ID can check that you passed that phone that day;
+  - for at most 24 hours, a text you shared to Wesh and have not used yet.
+- Restoring a backup therefore restores neither your identity, nor your contacts, nor your conversations.
 
-- **No personal data collection** - We don't collect names, emails, or phone numbers
-- **No location data collection** - Location is accessed only for local processing (BLE/Geohash) and is never collected or sent to us
-- **Hybrid Functionality** - bitchat offers two modes of communication:
-  - **Bluetooth Mesh Chat**: This mode is completely offline, using peer-to-peer Bluetooth connections. It does not use any servers or internet connection.
-  - **Geohash Chat**: This mode uses an internet connection to communicate with others in a specific geographic area. It relies on Nostr relays for message transport.
-- **No tracking** - We have no analytics, telemetry, or user tracking
-- **Open source** - You can verify these claims by reading our code
+## 5. What others see over Bluetooth
+- Any Bluetooth device in range can tell that a phone runs Wesh or BitChat.
+- While Wesh is running, including in the background, your phone regularly announces to phones in range:
+  - your **nickname**;
+  - your **peer ID** and your **public keys**;
+  - the features your app supports;
+  - the IDs of the phones it is directly linked to.
+- These announcements are relayed from phone to phone, over at most 7 hops.
+- On Android, Wesh runs in the background by default and starts again after the phone restarts, without you opening it. No setting can turn this off today. To stop the announcements, turn Bluetooth off.
+- **Your peer ID and public keys do not change until you use the emergency erase.** A device that records them can recognise your phone from one encounter to the next and see which phones it was linked to.
+- Signal strength lets others estimate how far away your phone is.
+- **Relaying:** your messages may pass through third-party phones (Wesh or BitChat). Each relaying phone sees the sender's and recipient's IDs, the time and the size of the message. It does not see the content of a private message, which is end-to-end encrypted.
+- **The local room is public.** Every Wesh and BitChat user in range can read, keep and relay it.
+- **Private messages:** only with contacts verified by QR code. They are end-to-end encrypted: only your contact can read them.
 
-## What Information bitchat Stores
+## 6. Permissions
+- **Bluetooth:** talk to nearby phones.
+- **Camera:** scan QR codes. No image is stored or sent.
+- **Notifications:** alert you to new messages. They are created on the phone, with no remote push service.
+- **Location (Android 11 and earlier only):** Android requires this permission to scan for Bluetooth devices. Wesh reads no location and sends none. On Android 12 and later, and on iPhone, Wesh does not ask for it.
+- Wesh uses neither the microphone, nor the photo library, nor the phone's contacts.
 
-### On Your Device Only
+## 7. Reports and support
+- **Reporting someone:** Wesh blocks them on your phone, then prepares an email to `support@samourai.coop` in your mail app. You review it and choose whether to send it.
+- This email holds data about the reported person: their nickname, their short fingerprint and, for a local-room message, its text. It also holds the reason and where you met them (local room, request or contact). It never holds your private messages, your keys or your location.
+- **When you write to us,** we receive your email address and whatever you choose to write. Your email provider also processes that email.
+- Purpose: to reply and handle the report (legitimate interest: service safety).
+- Retention: as long as needed to handle your request, then deletion.
 
-1. **Identity Key** 
-   - A cryptographic key generated on first launch
-   - Stored locally in your device's secure storage
-   - Allows you to maintain "favorite" relationships across app restarts
-   - Never leaves your device
+## 8. Emergency erase
+- **Réglages → Tout effacer** (Settings → Erase everything), held for three seconds.
+- It erases from this phone: identity and keys, nickname, contacts, conversations, pending messages, drafts, meeting note, settings and notifications<!-- INTERNET:START -->, as well as the Internet key and Tor's files; Internet mode is turned off<!-- INTERNET:END -->.
+- A new identity is then created, with a new peer ID and new keys.
+- It does not erase what others have received or recorded (local-room messages, Bluetooth announcements<!-- INTERNET:START -->, copies on Nostr relays<!-- INTERNET:END -->), nor iPhone backups already made (§4).
+- Uninstalling the app also deletes its data. On iPhone, keys left in the Keychain are erased at the next install.
 
-2. **Nickname**
-   - The display name you choose (or auto-generated)
-   - Stored only on your device
-   - Shared with peers you communicate with
+## 9. Your rights
+- You have the GDPR rights of access, rectification, erasure, objection and restriction.
+- The app sends nothing to Samouraï Coop. You manage the data on your phone directly in the app (edit nickname, erase).
+- Samouraï Coop only holds the emails sent to it (§7). A report may contain another person's nickname, short fingerprint and a public text. To exercise your rights over these emails, including if you were reported: `support@samourai.coop`.
+- You may complain to the CNIL (www.cnil.fr) or your local data protection authority.
 
-3. **Message History** (if enabled)
-   - When room owners enable retention, messages are saved locally
-   - Stored encrypted on your device
-   - You can delete this at any time
+## 10. Minimum age
+Wesh is for people aged **16 and over**.
 
-4. **Favorite Peers**
-   - Public keys of peers you mark as favorites
-   - Stored only on your device
-   - Allows you to recognize these peers in future sessions
+## 11. Changes
+Any change is posted on this page with its date. Significant changes are flagged in the release notes.
 
-### Temporary Session Data
-
-During each session, bitchat temporarily maintains:
-- Active peer connections (forgotten when app closes)
-- Routing information for message delivery
-- Cached messages for offline peers (12 hours max)
-
-## What Information is Shared
-
-### With Other bitchat Users
-
-When you use bitchat, nearby peers can see:
-- Your chosen nickname
-- Your ephemeral public key (changes each session)
-- Messages you send to public rooms or directly to them
-- Your approximate Bluetooth signal strength (for connection quality)
-
-### With Room Members
-
-When you join a password-protected room:
-- Your messages are visible to others with the password
-- Your nickname appears in the member list
-- Room owners can see you've joined
-
-## What We DON'T Do
-
-bitchat **never**:
-- Collects personal information
-- Collects location history
-- Transmits any data to us (the developers)
-- Stores data on servers
-- Shares data with third parties
-- Uses analytics or telemetry
-- Creates user profiles
-- Requires registration
-
-## Encryption
-
-All private messages use end-to-end encryption:
-- **X25519** for key exchange
-- **AES-256-GCM** for message encryption
-- **Ed25519** for digital signatures
-- **Argon2id** for password-protected rooms
-
-## Your Rights
-
-You have complete control:
-- **Delete Everything**: Triple-tap the logo to instantly wipe all data
-- **Leave Anytime**: Close the app and your presence disappears
-- **No Account**: Nothing to delete from servers because there are none
-- **Portability**: Your data never leaves your device unless you export it
-
-## Location Data & Permissions
-
-To provide the core functionality of bitchat, we access your device's location data. This access is necessary for the following specific purposes:
-
-### 1. Bluetooth Low Energy (BLE) Scanning
-- **Why we need it:** The Android operating system requires Location permission to scan for nearby Bluetooth LE devices (especially on Android 11 and lower). This is a system-level requirement because Bluetooth scans can theoretically be used to derive location.
-- **How we use it:** We use this permission strictly to discover other bitchat peers nearby for the "Bluetooth Mesh Chat" mode.
-- **Privacy protection:** We do not record or store your location during this process. The data is processed instantaneously by the Android system to facilitate the connection.
-
-### 2. Geohash Chat Functionality
-- **Why we need it:** The "Geohash Chat" mode allows you to communicate with others in your approximate geographic area.
-- **How we use it:** If you enable this mode, we access your location to calculate a "geohash" (a short alphanumeric string representing a geographic region). This geohash is used to find and subscribe to relevant channels on decentralized Nostr relays.
-- **Privacy protection:** 
-  - Your precise GPS coordinates are **never** sent to any server or peer.
-  - Only the coarse geohash (representing an area, not a pinpoint) is shared with the Nostr network.
-  - You can use the "Bluetooth Mesh Chat" mode without this feature if you prefer.
-
-**We do not collect, store, or share your location history.** Location data is processed locally on your device to enable these specific features.
-
-## Children's Privacy
-
-bitchat does not knowingly collect information from children. The app has no age verification because it collects no personal information from anyone.
-
-## Data Retention
-
-- **Messages**: Deleted from memory when app closes (unless room retention is enabled)
-- **Identity Key**: Persists until you delete the app
-- **Favorites**: Persist until you remove them or delete the app
-- **Everything Else**: Exists only during active sessions
-
-## Security Measures
-
-- All communication is encrypted
-- No data transmitted to servers (there are none)
-- Open source code for public audit
-- Regular security updates
-- Cryptographic signatures prevent tampering
-
-## Changes to This Policy
-
-If we update this policy:
-- The "Last updated" date will change
-- The updated policy will be included in the app
-- No retroactive changes can affect data (since we don't collect any)
-
-## Contact
-
-bitchat is an open source project. For privacy questions:
-- Review our code: https://github.com/yourusername/bitchat
-- Open an issue on GitHub
-- Join the discussion in public rooms
-
-## Philosophy
-
-Privacy isn't just a feature—it's the entire point. bitchat proves that modern communication doesn't require surrendering your privacy. No accounts, no servers, no surveillance. Just people talking freely.
-
----
-
-*This policy is released into the public domain under The Unlicense, just like bitchat itself.*
+<!-- INTERNET:START -->
+## 12. Internet mode (optional, off by default)
+- You turn it on in **Connexion**. The emergency erase turns it off.
+- It is used only for private messages to verified contacts whose QR code carries an Internet key.
+- Messages go through the **Tor** network, then through three public **Nostr** relays that Wesh does not run: `relay.damus.io`, `relay.primal.net` and `offchain.pub`. Wesh uses no other relay.
+- Relays see neither your IP address nor the content. They see the recipient's Internet key, the time and size of messages, and can link your sends to your key.
+- Anyone who has your QR code knows your Internet key.
+- The Tor entry relay sees your IP address, but not which relays you reach or what you send.
+- Relays may keep the encrypted messages under their own rules. **These copies cannot be deleted**, not by you, not by Samouraï Coop, not by the emergency erase.
+- Samouraï Coop neither controls nor receives this data.
+- On the phone, Wesh keeps your Internet key and Tor's files. The emergency erase deletes them; a new key is created afterwards.
+<!-- INTERNET:END -->
