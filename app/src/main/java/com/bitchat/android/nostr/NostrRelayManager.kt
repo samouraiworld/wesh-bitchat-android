@@ -25,14 +25,14 @@ class NostrRelayManager internal constructor(
     
     companion object {
         /**
-         * Wesh pins the relays every BitChat client listens on (intersection of the upstream iOS
-         * and Android defaults). No custom or directory relay is ever dialed.
+         * Wesh pins three public relays that accept connections from Tor exits; the first two are
+         * also BitChat defaults. No custom or directory relay is ever dialed.
          * Declared before [shared]: the instance initializer reads it.
          */
         val WESH_PINNED_RELAYS = listOf(
             "wss://relay.damus.io",
             "wss://relay.primal.net",
-            "wss://offchain.pub"
+            "wss://relay.snort.social"
         )
 
         @JvmStatic

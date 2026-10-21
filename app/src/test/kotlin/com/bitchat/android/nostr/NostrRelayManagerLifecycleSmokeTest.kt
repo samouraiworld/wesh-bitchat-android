@@ -24,7 +24,7 @@ class NostrRelayManagerLifecycleSmokeTest {
     fun `only the pinned relays are configured and panic leaves them off`() {
         val manager = NostrRelayManager.shared
         assertEquals(
-            listOf("wss://relay.damus.io", "wss://relay.primal.net", "wss://offchain.pub"),
+            listOf("wss://relay.damus.io", "wss://relay.primal.net", "wss://relay.snort.social"),
             manager.getRelayStatuses().map { it.url }
         )
         manager.clearAllOnPanic()

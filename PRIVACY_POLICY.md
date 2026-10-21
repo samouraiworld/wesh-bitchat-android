@@ -84,7 +84,7 @@ Any change is posted on this page with its date. Significant changes are flagged
 ## 12. Internet mode (optional, off by default)
 - You turn it on in **Connexion**. The emergency erase turns it off.
 - It is used only for private messages to verified contacts whose QR code carries an Internet key.
-- Messages go through the **Tor** network, then through three public **Nostr** relays that Wesh does not run: `relay.damus.io`, `relay.primal.net` and `offchain.pub`. Wesh uses no other relay.
+- Messages go through the **Tor** network, then through three public **Nostr** relays that Wesh does not run: `relay.damus.io`, `relay.primal.net` and `relay.snort.social`. Wesh uses no other relay.
 - Relays see neither your IP address nor the content. They see the recipient's Internet key, the time and size of messages, and can link your sends to your key.
 - Anyone who has your QR code knows your Internet key.
 - The Tor entry relay sees your IP address, but not which relays you reach or what you send.
