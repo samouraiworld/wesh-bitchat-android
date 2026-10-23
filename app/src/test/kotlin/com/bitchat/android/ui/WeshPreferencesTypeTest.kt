@@ -5,6 +5,7 @@ import android.content.Context
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.Rule
 import org.junit.rules.TemporaryFolder
@@ -27,6 +28,7 @@ class WeshPreferencesTypeTest {
             .putString("public_muted", "true")
             .putLong("public_disclosure", 1L)
             .putString("notification_sender", "yes")
+            .putString("read_receipts", "no")
             .putBoolean("appearance", true)
             .commit()
 
@@ -39,6 +41,11 @@ class WeshPreferencesTypeTest {
         assertFalse(preferences.publicDisclosureAccepted)
         assertFalse(preferences.notificationShowsSender)
         assertFalse(WeshPreferences.notificationShowsSender(app))
+        assertTrue(preferences.readReceiptsEnabled)
+        assertTrue(WeshPreferences.readReceiptsEnabled(app))
+        preferences.readReceiptsEnabled = false
+        assertFalse(preferences.readReceiptsEnabled)
+        assertFalse(WeshPreferences.readReceiptsEnabled(app))
         assertEquals("Nuit", preferences.appearance)
     }
 }

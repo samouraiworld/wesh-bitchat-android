@@ -84,6 +84,7 @@ internal class WeshPreferences(
     companion object {
         const val FILE = "wesh_ui"
         private const val NOTIFICATION_SENDER = "notification_sender"
+        private const val READ_RECEIPTS = "read_receipts"
         private const val LEGACY_MEETING_NOTE = "meeting_note"
         @Volatile private var shared: WeshPreferences? = null
 
@@ -95,6 +96,11 @@ internal class WeshPreferences(
         fun notificationShowsSender(context: Context): Boolean =
             context.applicationContext.getSharedPreferences(FILE, Context.MODE_PRIVATE)
                 .booleanOr(NOTIFICATION_SENDER, false)
+
+        /** Read receipts (« Lu ») go out unless the person turned them off on this phone. */
+        fun readReceiptsEnabled(context: Context): Boolean =
+            context.applicationContext.getSharedPreferences(FILE, Context.MODE_PRIVATE)
+                .booleanOr(READ_RECEIPTS, true)
     }
 
     private val lock = Any()
@@ -134,6 +140,9 @@ internal class WeshPreferences(
     var notificationShowsSender: Boolean
         get() = prefs.booleanOr(NOTIFICATION_SENDER, false)
         set(value) { synchronized(lock) { if (!fenced) prefs.edit { putBoolean(NOTIFICATION_SENDER, value) } } }
+    var readReceiptsEnabled: Boolean
+        get() = prefs.booleanOr(READ_RECEIPTS, true)
+        set(value) { synchronized(lock) { if (!fenced) prefs.edit { putBoolean(READ_RECEIPTS, value) } } }
     var welcomed: Boolean
         get() = prefs.getBoolean("welcomed", false)
         set(value) { synchronized(lock) { if (!fenced) prefs.edit { putBoolean("welcomed", value) } } }

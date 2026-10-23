@@ -164,6 +164,30 @@ class MeshDelegateHandlerStateContractTest {
 
         verify(mesh).sendReadReceipt(incoming.id, peerID, "Résumé")
         assertEquals(listOf(incoming.id), locallyReadMessageIDs)
+
+        // With read receipts off, both Bluetooth and Internet arrivals in the open chat are read locally without sending READ.
+        org.mockito.Mockito.clearInvocations(mesh)
+        locallyReadMessageIDs.clear()
+        val internetSent = mutableListOf<String>()
+        handler = MeshDelegateHandler(
+            state = state,
+            messageManager = messages,
+            privateChatManager = privateChats,
+            notificationManager = notifications,
+            coroutineScope = TestScope(UnconfinedTestDispatcher()),
+            onHapticFeedback = {},
+            getMeshService = { mesh },
+            markMessageReadLocally = { id, _ -> locallyReadMessageIDs.add(id) },
+            sendInternetReadReceipt = { id, _, _ -> internetSent += id },
+            readReceiptsEnabled = { false }
+        )
+        handler.didReceiveMessage(incoming.copy(id = "ble-muted-receipt", content = "hello again", timestamp = Date(2)))
+        handler.readInternetMessageIfFocused(
+            incoming.copy(id = "net-muted-receipt", content = "hello net", timestamp = Date(3), transport = com.bitchat.android.model.MessageTransport.INTERNET)
+        )
+        verify(mesh, never()).sendReadReceipt(any(), any(), any())
+        assertTrue(internetSent.isEmpty())
+        assertEquals(listOf("ble-muted-receipt", "net-muted-receipt"), locallyReadMessageIDs)
     }
 
     @Test

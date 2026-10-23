@@ -43,7 +43,8 @@ class PrivateChatManager internal constructor(
     private val weshPolicy: Boolean = com.bitchat.android.BuildConfig.WESH_POLICY,
     /** READ over Internet for a message that came over Internet (MessageRouter.sendWeshInternetReadReceipt). */
     private val sendInternetReadReceipt: (messageID: String, conversationID: String, expectedToken: SeenReceiptAdmission.Token?) -> Unit =
-        { _, _, _ -> }
+        { _, _, _ -> },
+    private val readReceiptsEnabled: () -> Boolean = { true }
 ) {
 
     companion object {
@@ -403,6 +404,7 @@ class PrivateChatManager internal constructor(
         } catch (_: Exception) {
             false
         }
+        val sendReceipts = try { readReceiptsEnabled() } catch (_: Exception) { false }
         var sentCount = 0
         var internetCount = 0
         messages.forEach { msg ->
@@ -420,8 +422,8 @@ class PrivateChatManager internal constructor(
             }
             // A media placeholder stands for something never received: it is never reported read.
             // An Internet message's READ goes back over Internet, the way it came (spec §3 rule 5).
-            if (isFromTarget && msg.type == BitchatMessageType.Message && msg.transport == MessageTransport.INTERNET &&
-                !hasReadReceiptBeenSent(msg.id)
+            if (sendReceipts && isFromTarget && msg.type == BitchatMessageType.Message &&
+                msg.transport == MessageTransport.INTERNET && !hasReadReceiptBeenSent(msg.id)
             ) {
                 try {
                     sendInternetReadReceipt(msg.id, canonicalConversationID, expectedSeenToken)
@@ -429,7 +431,9 @@ class PrivateChatManager internal constructor(
                 } catch (e: Exception) {
                     Log.w(TAG, "Failed to send Internet read receipt for message ${msg.id}: ${e.message}")
                 }
-            } else if (isFromTarget && msg.type == BitchatMessageType.Message && meshPeerID != null && !hasReadReceiptBeenSent(msg.id)) {
+            } else if (sendReceipts && isFromTarget && msg.type == BitchatMessageType.Message &&
+                meshPeerID != null && !hasReadReceiptBeenSent(msg.id)
+            ) {
                 try {
                     if (hasMesh) {
                         meshService.sendReadReceipt(msg.id, meshPeerID, myNickname)

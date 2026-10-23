@@ -856,7 +856,7 @@ class NostrRelayManager internal constructor(
                     val wasGiftWrap = pendingGiftWrapIDs.remove(response.eventId)
                     if (!response.accepted) {
                         val level = if (wasGiftWrap) Log.WARN else Log.ERROR
-                        Log.println(level, TAG, "Event rejected by relay: ${response.message ?: "no reason"}")
+                        Log.println(level, TAG, "Event rejected by relay $relayUrl: ${response.message ?: "no reason"}")
                     }
                 }
 

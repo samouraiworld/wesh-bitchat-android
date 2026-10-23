@@ -124,7 +124,8 @@ class ChatViewModel(
         markMessageReadLocally = { messageID, seenToken ->
             seenMessageStore.markReadLocally(messageID, seenToken)
         },
-        sendInternetReadReceipt = ::sendWeshInternetReadReceipt
+        sendInternetReadReceipt = ::sendWeshInternetReadReceipt,
+        readReceiptsEnabled = { weshPreferences.readReceiptsEnabled }
     )
     private val notificationManager = NotificationManager(
       application.applicationContext,
@@ -176,7 +177,8 @@ class ChatViewModel(
         markMessageReadLocally = { messageID, seenToken ->
             seenMessageStore.markReadLocally(messageID, seenToken)
         },
-        sendInternetReadReceipt = ::sendWeshInternetReadReceipt
+        sendInternetReadReceipt = ::sendWeshInternetReadReceipt,
+        readReceiptsEnabled = { weshPreferences.readReceiptsEnabled }
     )
 
     private fun sendWeshInternetReadReceipt(

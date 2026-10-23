@@ -28,6 +28,7 @@
     <string name="wesh_pave_fluo_mute_public">Couper les notifications du salon public</string>
     <string name="wesh_pave_fluo_show_sender">Afficher le surnom dans les notifications</string>
     <string name="wesh_pave_fluo_notifications_body">Le contenu des messages n’apparaît jamais dans les notifications.</string>
+    <string name="wesh_pave_fluo_read_receipts">Accusés de lecture (Lu)</string>
     <string name="wesh_pave_fluo_meeting_label">Lieu, heure et notes</string>
     <string name="wesh_pave_fluo_meeting_body">Cette note reste sur ce téléphone. Elle n’est jamais envoyée.</string>
     <string name="wesh_pave_fluo_meeting_saved">Note enregistrée sur ce téléphone.</string>

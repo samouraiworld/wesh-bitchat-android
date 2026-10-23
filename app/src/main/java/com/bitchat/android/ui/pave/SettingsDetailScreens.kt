@@ -141,7 +141,7 @@ internal fun SwitchRow(label: String, checked: Boolean, onChange: (Boolean) -> U
     }
 }
 
-/** Discrétion: notifications never carry message text; these two switches decide the rest. */
+/** Discrétion: notifications never carry message text; these switches decide the rest. */
 @Composable
 fun DiscretionScreen(
     publicMuted: Boolean,
@@ -149,6 +149,8 @@ fun DiscretionScreen(
     showSender: Boolean,
     onShowSender: (Boolean) -> Unit,
     onBack: () -> Unit,
+    readReceipts: Boolean = true,
+    onReadReceipts: (Boolean) -> Unit = {},
 ) {
     val c = WeshPave.colors
     SettingsDetailFrame(stringResource(R.string.wesh_pave_settings_discretion), onBack) {
@@ -156,6 +158,8 @@ fun DiscretionScreen(
         HorizontalDivider(thickness = WeshStroke.s1, color = c.line)
         SwitchRow(stringResource(R.string.wesh_pave_fluo_show_sender), showSender, onShowSender)
         Text(stringResource(R.string.wesh_pave_fluo_notifications_body), style = WeshType.caption, color = c.inkMuted)
+        HorizontalDivider(thickness = WeshStroke.s1, color = c.line)
+        SwitchRow(stringResource(R.string.wesh_pave_fluo_read_receipts), readReceipts, onReadReceipts)
     }
 }
 

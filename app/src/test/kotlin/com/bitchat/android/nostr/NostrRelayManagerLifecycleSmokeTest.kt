@@ -90,6 +90,34 @@ class NostrRelayManagerLifecycleSmokeTest {
         assertFalse(manager.isConnected.value)
     }
 
+    @Test
+    fun `OK rejection logs the rejecting relay URL and reason`() {
+        org.robolectric.shadows.ShadowLog.clear()
+        val manager = NostrRelayManager.shared
+        val handleMessage = NostrRelayManager::class.java.getDeclaredMethod(
+            "handleMessage",
+            String::class.java,
+            String::class.java
+        ).apply { isAccessible = true }
+        val eventId = "a".repeat(64)
+        NostrRelayManager.registerPendingGiftWrap(eventId)
+
+        handleMessage.invoke(
+            manager,
+            """["OK","$eventId",false,"rate-limited: you are noting too much"]""",
+            "wss://relay.damus.io"
+        )
+
+        val logs = org.robolectric.shadows.ShadowLog.getLogsForTag("NostrRelayManager")
+        assertTrue(
+            logs.any {
+                it.type == android.util.Log.WARN &&
+                    "wss://relay.damus.io" in it.msg &&
+                    "rate-limited: you are noting too much" in it.msg
+            }
+        )
+    }
+
     private fun signedEvent(): NostrEvent {
         val privateKey = "0".repeat(63) + "1"
         return NostrEvent(

@@ -160,10 +160,12 @@ class NostrDirectMessageHandler(
                 }
 
                 if (isViewing && !suppressUnread) {
-                    val nostrTransport = NostrTransport.getInstance(application)
-                    nostrTransport.sendReadReceiptToNostrKey(pm.messageID, senderPubkey, recipientIdentity)
                     seenStore.markReadLocally(pm.messageID, receiptToken)
-                    seenStore.markReadReceiptSent(pm.messageID, receiptToken)
+                    if (com.bitchat.android.ui.WeshPreferences.readReceiptsEnabled(application)) {
+                        val nostrTransport = NostrTransport.getInstance(application)
+                        nostrTransport.sendReadReceiptToNostrKey(pm.messageID, senderPubkey, recipientIdentity)
+                        seenStore.markReadReceiptSent(pm.messageID, receiptToken)
+                    }
                 }
             }
             NoisePayloadType.DELIVERED -> {

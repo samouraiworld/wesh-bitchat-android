@@ -28,6 +28,7 @@
     <string name="wesh_pave_fluo_mute_public">Mute public room notifications</string>
     <string name="wesh_pave_fluo_show_sender">Show the nickname in notifications</string>
     <string name="wesh_pave_fluo_notifications_body">Message text never appears in notifications.</string>
+    <string name="wesh_pave_fluo_read_receipts">Read receipts (Read)</string>
     <string name="wesh_pave_fluo_meeting_label">Place, time and notes</string>
     <string name="wesh_pave_fluo_meeting_body">This note stays on this phone. It is never sent.</string>
     <string name="wesh_pave_fluo_meeting_saved">Note saved on this phone.</string>

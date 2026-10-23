@@ -161,6 +161,7 @@ class MessageRouter internal constructor(
      */
     fun clearAll() {
         weshEpoch.incrementAndGet()
+        weshRestoreStarted.set(false)
         synchronized(this) {
             outbox.clear()
             retryState.clear()
@@ -487,8 +488,10 @@ class MessageRouter internal constructor(
             try {
                 restoreWeshOutbox()
             } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                weshRestoreStarted.set(false)
                 throw cancelled
             } catch (e: Exception) {
+                weshRestoreStarted.set(false)
                 Log.w(TAG, "Outbox restore failed: ${e.message}")
             }
         }
@@ -504,13 +507,19 @@ class MessageRouter internal constructor(
         val epoch = weshEpoch.get()
         // Captured before the read: a delete or block during it keeps that conversation's messages out.
         val cancelledBefore = synchronized(this) { HashMap(weshCancelled) }
-        val pending = AppStateStore.pendingOutgoingPrivateMessages() ?: return 0
+        val pending = AppStateStore.pendingOutgoingPrivateMessages() ?: run {
+            weshRestoreStarted.set(false)
+            return 0
+        }
         val sender = WeshPrivateSender(WeshContactStore.get(context))
         var restored = 0
         synchronized(this) {
             val now = clock()
             for ((stored, message) in pending) {
-                if (epoch != weshEpoch.get()) return 0
+                if (epoch != weshEpoch.get()) {
+                    weshRestoreStarted.set(false)
+                    return 0
+                }
                 val conversationID = ContactDirectory.canonicalConversationId(stored)
                 if (!sender.enrolled(conversationID)) continue
                 if (message.id in weshInFlight || outbox[conversationID].orEmpty().any { it.messageID == message.id }) continue
@@ -568,6 +577,7 @@ class MessageRouter internal constructor(
     }
 
     fun sendReadReceipt(receipt: ReadReceipt, toPeerID: String) {
+        if (!runCatching { weshReadReceiptsEnabled() }.getOrDefault(false)) return
         val resolution = ContactDirectory.resolve(toPeerID)
         val meshTarget = resolution.meshPeerID ?: toPeerID.takeIf { ContactIdentityResolver.isMeshPeerId(it) }
         val nostrTarget = resolution.noiseKeyHex ?: toPeerID
@@ -578,7 +588,9 @@ class MessageRouter internal constructor(
             if (!weshInternetLink.isOn()) return
             val route = weshInternet()
             if (route.canSend(resolution.conversationID)) schedulerScope.launch {
-                route.sendAck(com.bitchat.android.model.NoisePayloadType.READ_RECEIPT, receipt.originalMessageID, resolution.conversationID)
+                route.sendAck(com.bitchat.android.model.NoisePayloadType.READ_RECEIPT, receipt.originalMessageID, resolution.conversationID) {
+                    runCatching { weshReadReceiptsEnabled() }.getOrDefault(false)
+                }
             }
         } else {
             Log.d(TAG, "Routing READ via Nostr to ${toPeerID.take(8)}… id=${receipt.originalMessageID.take(8)}…")
@@ -586,6 +598,9 @@ class MessageRouter internal constructor(
         }
     }
 
+    /** Whether the user allows outgoing READ receipts (« Accusés de lecture (Lu) »). */
+    internal var weshReadReceiptsEnabled: () -> Boolean =
+        { com.bitchat.android.ui.WeshPreferences.readReceiptsEnabled(context) }
     /** Records a READ as sent unless an erase came first; the seen store in production. */
     internal var markWeshReadReceiptSent: (messageID: String, expectedToken: SeenReceiptAdmission.Token?) -> Boolean =
         { messageID, expectedToken -> SeenMessageStore.getInstance(context).markReadReceiptSent(messageID, expectedToken) }
@@ -600,7 +615,7 @@ class MessageRouter internal constructor(
      * read; after an erase nothing leaves. Recorded as sent once published, so it goes out once.
      */
     internal fun sendWeshInternetReadReceipt(messageID: String, conversationID: String, expectedToken: SeenReceiptAdmission.Token?) {
-        if (!enforceWeshPolicy || expectedToken == null) return
+        if (!enforceWeshPolicy || expectedToken == null || !runCatching { weshReadReceiptsEnabled() }.getOrDefault(false)) return
         schedulerScope.launch { sendWeshInternetReadReceiptNow(messageID, conversationID, expectedToken) }
     }
 
@@ -610,6 +625,7 @@ class MessageRouter internal constructor(
         expectedToken: SeenReceiptAdmission.Token?
     ): Boolean {
         if (expectedToken == null || !expectedToken.owner.admits(expectedToken)) return false
+        if (!runCatching { weshReadReceiptsEnabled() }.getOrDefault(false)) return false
         if (runCatching { hasWeshReadReceiptBeenSent(messageID) }.getOrDefault(true)) return false
         if (!weshReadInFlight.add(messageID)) return false
         try {
@@ -617,7 +633,7 @@ class MessageRouter internal constructor(
             if (!route.canSend(conversationID)) return false
             // Checked again right before it leaves: an erase while the wrap was built sends nothing.
             if (!route.sendAck(com.bitchat.android.model.NoisePayloadType.READ_RECEIPT, messageID, conversationID) {
-                    expectedToken.owner.admits(expectedToken)
+                    expectedToken.owner.admits(expectedToken) && runCatching { weshReadReceiptsEnabled() }.getOrDefault(false)
                 }) return false
             runCatching { markWeshReadReceiptSent(messageID, expectedToken) }
             return true

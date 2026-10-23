@@ -248,6 +248,7 @@ class WeshPreferencesPanicTest {
         assertFalse(preferences.saveMeetingDraft(preferences.resetEpoch.value))
         preferences.publicMuted = false
         preferences.publicDisclosureAccepted = false
+        preferences.readReceiptsEnabled = false
         assertEquals("", preferences.meetingDraft.value)
         assertEquals(before, storage.memory)
         assertEquals(before, storage.disk)

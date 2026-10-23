@@ -29,7 +29,8 @@ class MeshDelegateHandler internal constructor(
     private val captureSeenToken: () -> SeenReceiptAdmission.Token? = { SeenMessageStore.captureReceiptToken() },
     /** READ over Internet for a message that came over Internet (MessageRouter.sendWeshInternetReadReceipt). */
     private val sendInternetReadReceipt: (messageID: String, conversationID: String, expectedToken: SeenReceiptAdmission.Token?) -> Unit =
-        { _, _, _ -> }
+        { _, _, _ -> },
+    private val readReceiptsEnabled: () -> Boolean = { true }
 ) : BluetoothMeshDelegate {
 
     override fun didReceiveMessage(message: BitchatMessage) {
@@ -218,7 +219,7 @@ class MeshDelegateHandler internal constructor(
         if (notificationManager.getAppBackgroundState() || focused != conversationID) return
         val token = captureSeenToken()
         try { markMessageReadLocally(message.id, token) } catch (_: Exception) { }
-        if (message.type == BitchatMessageType.Message) {
+        if (message.type == BitchatMessageType.Message && runCatching { readReceiptsEnabled() }.getOrDefault(false)) {
             try { sendInternetReadReceipt(message.id, conversationID, token) } catch (_: Exception) { }
         }
         try {
@@ -254,21 +255,23 @@ class MeshDelegateHandler internal constructor(
             // separate fact and may remain retryable when the peer disconnects.
             try { markMessageReadLocally(message.id, expectedToken) } catch (_: Exception) { }
 
-            val nickname = state.getNicknameValue().ifBlank { "unknown" }
-            val mesh = getMeshService()
-            try {
-                val meshPeerID = ContactDirectory.resolve(senderConversationID).meshPeerID
-                    ?: senderPeerID.takeIf {
-                        com.bitchat.android.services.ContactIdentityResolver.isMeshPeerId(it)
+            if (runCatching { readReceiptsEnabled() }.getOrDefault(false)) {
+                val nickname = state.getNicknameValue().ifBlank { "unknown" }
+                val mesh = getMeshService()
+                try {
+                    val meshPeerID = ContactDirectory.resolve(senderConversationID).meshPeerID
+                        ?: senderPeerID.takeIf {
+                            com.bitchat.android.services.ContactIdentityResolver.isMeshPeerId(it)
+                        }
+                    // A media placeholder stands for something never received: never reported read.
+                    if (meshPeerID != null && message.type == BitchatMessageType.Message &&
+                        mesh.getPeerInfo(meshPeerID)?.isConnected == true &&
+                        mesh.hasEstablishedSession(meshPeerID)
+                    ) {
+                        mesh.sendReadReceipt(message.id, meshPeerID, nickname)
                     }
-                // A media placeholder stands for something never received: never reported read.
-                if (meshPeerID != null && message.type == BitchatMessageType.Message &&
-                    mesh.getPeerInfo(meshPeerID)?.isConnected == true &&
-                    mesh.hasEstablishedSession(meshPeerID)
-                ) {
-                    mesh.sendReadReceipt(message.id, meshPeerID, nickname)
-                }
-            } catch (_: Exception) { }
+                } catch (_: Exception) { }
+            }
 
             // Ensure unread badge is cleared for this peer immediately.
             try {

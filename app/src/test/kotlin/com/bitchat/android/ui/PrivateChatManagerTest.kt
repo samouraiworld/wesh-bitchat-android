@@ -234,6 +234,24 @@ class PrivateChatManagerTest {
         assertEquals(listOf(Triple(internet.id, conversationID, token)), sent)
         verify(meshService, never()).sendReadReceipt(eq(internet.id), any(), any())
         verify(meshService).sendReadReceipt(overBluetooth.id, meshPeerID, "bob")
+
+        // With read receipts turned off, opening the chat marks messages read locally without sending READ on either path.
+        sent.clear()
+        org.mockito.Mockito.clearInvocations(meshService)
+        val locallyRead = mutableListOf<String>()
+        manager = PrivateChatManager(
+            state = state,
+            messageManager = MessageManager(state),
+            dataManager = DataManager(RuntimeEnvironment.getApplication()),
+            noiseSessionDelegate = mock(),
+            markMessageReadLocally = { id, _ -> locallyRead += id },
+            sendInternetReadReceipt = { id, conversation, expectedToken -> sent += Triple(id, conversation, expectedToken) },
+            readReceiptsEnabled = { false }
+        )
+        manager.sendReadReceiptsForPeer(conversationID, meshPeerID, meshService, expectedSeenToken = token)
+        assertTrue(sent.isEmpty())
+        verify(meshService, never()).sendReadReceipt(any(), any(), any())
+        assertEquals(listOf(internet.id, alreadyRead.id, overBluetooth.id), locallyRead)
     }
 
     @Test

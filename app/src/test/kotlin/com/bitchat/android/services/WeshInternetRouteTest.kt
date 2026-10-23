@@ -243,6 +243,11 @@ class WeshInternetRouteTest {
             val readBeforeErase = admission.capture()
             admission.fenceForPanic()
             assertFalse(kotlinx.coroutines.runBlocking { router.sendWeshInternetReadReceiptNow("r-4", bobConversation, readBeforeErase) })
+            // User turned read receipts off: nothing leaves over Internet or Bluetooth, nothing is recorded.
+            val afterReopen = SeenReceiptAdmission()
+            router.weshReadReceiptsEnabled = { false }
+            assertFalse(kotlinx.coroutines.runBlocking { router.sendWeshInternetReadReceiptNow("r-5", bobConversation, afterReopen.capture()) })
+            router.sendReadReceipt(com.bitchat.android.model.ReadReceipt("r-6", bobConversation), bobConversation)
             assertEquals(1, alice.link.published.size)
             assertEquals(listOf("r-1"), recorded)
         } finally {
@@ -955,6 +960,25 @@ class WeshInternetRouteTest {
         router.settle()
         // Restoring again in the same process adds nothing.
         assertEquals(0, kotlinx.coroutines.runBlocking { router.restoreWeshOutbox() })
+    }
+
+    @Test fun `restoreWeshOutboxOnce retries after a null store read instead of staying blocked`() = withPersistedRouter { router ->
+        alice.link.answer = RelayPublishOutcome.UNCONFIRMED
+        AppStateStore.releasePrivateConversationHistory(bobConversation)
+        // Store suspended when the first restoreWeshOutboxOnce runs: pendingOutgoingPrivateMessages() returns null.
+        AppStateStore.fencePrivateConversationAdmissionForPanic()
+        router.restoreWeshOutboxOnce()
+        router.settle()
+        Thread.sleep(100)
+        assertTrue(alice.link.published.isEmpty())
+
+        // Once admission is restored, a second restoreWeshOutboxOnce call is not blocked and restores the waiting messages.
+        AppStateStore.resetPrivateConversationAdmissionForTest()
+        router.restoreWeshOutboxOnce()
+        router.settle()
+        Thread.sleep(100)
+        router.tickOutbox()
+        waitFor { alice.link.published.size == 2 }
     }
 
     @Test fun `two copies of one waiting message merge into the stronger retry state`() {

@@ -468,9 +468,11 @@ private fun PaveNavHost(viewModel: ChatViewModel, appearance: WeshAppearance, on
             PaveRoute.Discretion -> {
                 var muted by remember(preferencesEpoch) { mutableStateOf(prefs.publicMuted) }
                 var showSender by remember(preferencesEpoch) { mutableStateOf(prefs.notificationShowsSender) }
+                var readReceipts by remember(preferencesEpoch) { mutableStateOf(prefs.readReceiptsEnabled) }
                 DiscretionScreen(
                     publicMuted = muted, onPublicMuted = { muted = it; prefs.publicMuted = it },
                     showSender = showSender, onShowSender = { showSender = it; prefs.notificationShowsSender = it },
+                    readReceipts = readReceipts, onReadReceipts = { readReceipts = it; prefs.readReceiptsEnabled = it },
                     onBack = { go(PaveRoute.Settings) },
                 )
             }
