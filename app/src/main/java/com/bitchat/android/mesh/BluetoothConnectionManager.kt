@@ -187,7 +187,34 @@ class BluetoothConnectionManager(
             (try { com.bitchat.android.ui.debug.DebugSettingsManager.getInstance().gattClientEnabled.value } catch (_: Exception) { true })
     }
 
+    /**
+     * A missing GATT completion is a dead exact-link generation, not a reason to try another link.
+     * Route closure through the role owner so tracker, peer/Noise state and delegates stay aligned.
+     */
+    private fun onGattOperationTimedOut(
+        deviceAddress: String,
+        linkID: String,
+        isClient: Boolean,
+        device: BluetoothDevice
+    ) {
+        val peerID = connectionTracker.getPeerForLink(linkID)
+        if (isClient) clientManager.disconnectLink(deviceAddress, linkID)
+        else serverManager.disconnectLink(device, linkID)
+
+        // Client finish normally performed this synchronously. The fallback is required for an
+        // inbound link whose Bluetooth service is too broken to emit its disconnect callback.
+        if (connectionTracker.cleanupDeviceConnectionIfCurrent(deviceAddress, linkID)) {
+            fragmentManager?.onIngressLinkClosed(PacketProcessor.linkQuotaKey(linkID))
+            if (peerID != null && !connectionTracker.isPeerConnected(peerID)) {
+                delegate?.onDeviceDisconnected(device, linkID, peerID)
+            } else {
+                componentDelegate.onLinkClosed(deviceAddress, linkID)
+            }
+        }
+    }
+
     init {
+        packetBroadcaster.setLinkTimeoutHandler(::onGattOperationTimedOut)
         connectionScope.launch {
             for (state in adapterStates) {
                 try { onAdapterState(state) } catch (e: Exception) { Log.w(TAG, "Bluetooth state $state not applied: ${e.message}") }

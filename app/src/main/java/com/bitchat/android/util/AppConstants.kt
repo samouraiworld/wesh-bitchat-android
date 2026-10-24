@@ -159,6 +159,15 @@ object AppConstants {
         /** Spec §3 rule 4: a Bluetooth message with no ack after this long is retried, same ID. */
         const val WESH_BLUETOOTH_ACK_TIMEOUT_MS: Long = 20_000L
 
+        /** Bound the same-ID Bluetooth attempts; after this, the message becomes manually retryable. */
+        const val WESH_BLUETOOTH_MAX_ATTEMPTS: Int = 3
+
+        /** Ack-loss retry backoff: 20 s, 40 s, then 80 s (capped). */
+        fun weshBluetoothRetryDelayMs(attempts: Int): Long {
+            val doublings = (attempts - 1).coerceIn(0, 2)
+            return WESH_BLUETOOTH_ACK_TIMEOUT_MS shl doublings
+        }
+
         /** Spec « Retry policy »: publications per message over its 24 h TTL, early retries and re-wraps included. */
         const val WESH_INTERNET_MAX_PUBLICATIONS: Int = 60
 

@@ -510,6 +510,7 @@ class WeshInternetRouteTest {
         whenever(mesh.myPeerID).thenReturn(alice.peerID)
         val bobPeer = ContactIdentityResolver.peerIdForNoiseKey(bobNoise)
         whenever(mesh.getPeerNicknames()).thenReturn(mapOf(bobPeer to "Bob"))
+        whenever(mesh.hasEstablishedSession(bobPeer)).thenReturn(true)
         whenever(mesh.getPeerInfo(bobPeer)).thenReturn(PeerInfo(id = bobPeer, nickname = "Bob", isConnected = true,
             noisePublicKey = bobNoise, isDirectConnection = true, signingPublicKey = ByteArray(32),
             isVerifiedNickname = true, lastSeen = 1L))
@@ -671,6 +672,7 @@ class WeshInternetRouteTest {
                 whenever(router.meshForTesting.sendPrivateMessageBoundOutcome(any(), any(), any(), any(), any()))
                     .thenReturn(com.bitchat.android.mesh.BoundSendOutcome.SENT)
             }
+            now += AppConstants.Router.weshBluetoothRetryDelayMs(1)
             router.tickOutbox(now)
             waitFor { bw1() == DeliveryStatus.Sent }
             assertEquals(1, alice.link.published.size)
@@ -692,6 +694,8 @@ class WeshInternetRouteTest {
         try {
             assertEquals(MessageRouter.RouteResult.MESH, router.sendPrivate("salut", bobConversation, "Bob", "bw-1"))
             waitFor { bw1() == DeliveryStatus.Sent }
+            whenever(router.meshForTesting.getAuthenticatedRemoteStaticKey(ContactIdentityResolver.peerIdForNoiseKey(bobNoise)))
+                .thenReturn(null)
             now += AppConstants.Router.WESH_BLUETOOTH_ACK_TIMEOUT_MS - 1
             router.tickOutbox(now)
             router.settle()
@@ -725,26 +729,61 @@ class WeshInternetRouteTest {
         } finally { cleanupRouter() }
     }
 
-    @Test fun `rule 4 - with Internet off at the deadline the Bluetooth message stays Envoyé and is not resent later`() {
+    @Test fun `lost ack retries a Bluetooth-only legacy contact under the same ID with a bounded cap`() {
         val router = failingBluetoothRouter(com.bitchat.android.mesh.BoundSendOutcome.SENT)
         var now = 1_000_000L
         router.clock = { now }
         alice.link.on = false
+        alice.enroll(bobNoise, null)
         try {
             router.sendPrivate("salut", bobConversation, "Bob", "bw-1")
             waitFor { bw1() == DeliveryStatus.Sent }
             router.settle()
             waitFor { router.hasPendingBluetoothFallbackForTesting("bw-1") }
-            now += AppConstants.Router.WESH_BLUETOOTH_ACK_TIMEOUT_MS
+            for (attempt in 1 until AppConstants.Router.WESH_BLUETOOTH_MAX_ATTEMPTS) {
+                now += AppConstants.Router.weshBluetoothRetryDelayMs(attempt)
+                router.tickOutbox(now)
+                router.settle()
+            }
+            kotlinx.coroutines.runBlocking {
+                verify(router.meshForTesting, org.mockito.kotlin.times(AppConstants.Router.WESH_BLUETOOTH_MAX_ATTEMPTS))
+                    .sendPrivateMessageBoundOutcome(any(), any(), any(), org.mockito.kotlin.eq("bw-1"), any())
+            }
+            now += AppConstants.Router.weshBluetoothRetryDelayMs(AppConstants.Router.WESH_BLUETOOTH_MAX_ATTEMPTS)
             router.tickOutbox(now)
-            router.settle()
-            alice.link.on = true
-            now += 60_000
-            router.tickOutbox(now)
-            router.settle()
-            Thread.sleep(200)
+            waitFor { bw1() is DeliveryStatus.Failed }
             assertTrue(alice.link.published.isEmpty())
-            assertEquals(DeliveryStatus.Sent, bw1())
+        } finally { cleanupRouter() }
+    }
+
+    @Test fun `a live Bluetooth route wins while the Internet copy is in backoff`() {
+        val router = failingBluetoothRouter(com.bitchat.android.mesh.BoundSendOutcome.SENT)
+        val bobPeer = ContactIdentityResolver.peerIdForNoiseKey(bobNoise)
+        var now = 1_000_000L
+        router.clock = { now }
+        alice.link.answer = RelayPublishOutcome.UNCONFIRMED
+        try {
+            router.sendPrivate("salut", bobConversation, "Bob", "bw-1")
+            waitFor { bw1() == DeliveryStatus.Sent }
+
+            // Bob leaves BLE range: after the application-ack deadline, one relay copy is tried
+            // and enters its Internet backoff.
+            whenever(router.meshForTesting.getAuthenticatedRemoteStaticKey(bobPeer)).thenReturn(null)
+            now += AppConstants.Router.weshBluetoothRetryDelayMs(1)
+            router.tickOutbox(now)
+            waitFor { alice.link.published.size == 1 }
+            router.settle()
+
+            // Bob comes back before that Internet backoff expires. BLE must win immediately and
+            // retain the same message ID; the relay must not receive a second copy.
+            whenever(router.meshForTesting.getAuthenticatedRemoteStaticKey(bobPeer)).thenReturn(bobNoise)
+            router.tickOutbox(now)
+            router.settle()
+            kotlinx.coroutines.runBlocking {
+                verify(router.meshForTesting, org.mockito.kotlin.times(2))
+                    .sendPrivateMessageBoundOutcome(any(), any(), any(), org.mockito.kotlin.eq("bw-1"), any())
+            }
+            assertEquals(1, alice.link.published.size)
         } finally { cleanupRouter() }
     }
 
@@ -768,7 +807,8 @@ class WeshInternetRouteTest {
             now += AppConstants.Router.OUTBOX_MESSAGE_TTL_MS
             router.tickOutbox(now)
             router.settle()
-            assertTrue(expired.isEmpty())
+            assertEquals(listOf("bw-1"), expired)
+            // This test replaces the production expiry callback with a recorder.
             assertEquals(DeliveryStatus.Sent, bw1())
         } finally { cleanupRouter() }
     }
@@ -964,6 +1004,111 @@ class WeshInternetRouteTest {
         assertEquals(0, kotlinx.coroutines.runBlocking { router.restoreWeshOutbox() })
     }
 
+    @Test fun `Bluetooth ack retry budget survives relaunch and remains capped`() = withPersistedRouter { firstRouter ->
+        val mesh = firstRouter.meshForTesting
+        val bobPeer = ContactIdentityResolver.peerIdForNoiseKey(bobNoise)
+        whenever(mesh.getPeerNicknames()).thenReturn(mapOf(bobPeer to "Bob"))
+        whenever(mesh.getPeerInfo(bobPeer)).thenReturn(PeerInfo(id = bobPeer, nickname = "Bob", isConnected = true,
+            noisePublicKey = bobNoise, isDirectConnection = true, signingPublicKey = ByteArray(32),
+            isVerifiedNickname = true, lastSeen = 1L))
+        whenever(mesh.getAuthenticatedRemoteStaticKey(bobPeer)).thenReturn(bobNoise)
+        whenever(mesh.hasEstablishedSession(bobPeer)).thenReturn(true)
+        kotlinx.coroutines.runBlocking {
+            whenever(mesh.sendPrivateMessageBoundOutcome(any(), any(), any(), any(), any()))
+                .thenReturn(com.bitchat.android.mesh.BoundSendOutcome.SENT)
+        }
+        alice.enroll(bobNoise, null)
+        alice.link.on = false
+        AppStateStore.updatePrivateMessageStatus(bobConversation, "p-new", DeliveryStatus.Delivered("Bob", java.util.Date()))
+        var now = System.currentTimeMillis()
+        firstRouter.clock = { now }
+
+        assertEquals(MessageRouter.RouteResult.MESH,
+            firstRouter.sendPrivate("salut", bobConversation, "Bob", "p-old"))
+        firstRouter.settle()
+
+        fun persisted(): PendingOutgoingDelivery = kotlinx.coroutines.runBlocking {
+            AppStateStore.pendingOutgoingPrivateMessages()!!.single { it.message.id == "p-old" }
+        }
+        waitFor { persisted().bluetoothAttempts == 1 }
+        firstRouter.clearAll()
+        AppStateStore.releasePrivateConversationHistory(bobConversation)
+
+        var router = firstRouter
+        repeat(AppConstants.Router.WESH_BLUETOOTH_MAX_ATTEMPTS - 1) { expectedIndex ->
+            router = MessageRouter(context, mesh, mock()).also {
+                it.weshInternetLink = alice.link
+                it.clock = { now }
+            }
+            assertEquals(1, kotlinx.coroutines.runBlocking { router.restoreWeshOutbox() })
+            val state = persisted()
+            assertEquals(expectedIndex + 1, state.bluetoothAttempts)
+            now = state.bluetoothRetryAtMs
+            router.tickOutbox(now)
+            router.settle()
+            waitFor { persisted().bluetoothAttempts == expectedIndex + 2 }
+            router.clearAll()
+        }
+
+        router = MessageRouter(context, mesh, mock()).also {
+            it.weshInternetLink = alice.link
+            it.clock = { now }
+        }
+        assertEquals(1, kotlinx.coroutines.runBlocking { router.restoreWeshOutbox() })
+        now = persisted().bluetoothRetryAtMs
+        router.tickOutbox(now)
+        assertTrue(kotlinx.coroutines.runBlocking {
+            AppStateStore.pendingOutgoingPrivateMessages().orEmpty().none { it.message.id == "p-old" }
+        })
+        kotlinx.coroutines.runBlocking {
+            verify(mesh, org.mockito.kotlin.times(AppConstants.Router.WESH_BLUETOOTH_MAX_ATTEMPTS))
+                .sendPrivateMessageBoundOutcome(any(), any(), any(), org.mockito.kotlin.eq("p-old"), any())
+        }
+    }
+
+    @Test fun `an unconfirmed GATT handoff persists may-have-left and waits for its ack window`() =
+        withPersistedRouter { router ->
+            val mesh = router.meshForTesting
+            val bobPeer = ContactIdentityResolver.peerIdForNoiseKey(bobNoise)
+            whenever(mesh.getPeerNicknames()).thenReturn(mapOf(bobPeer to "Bob"))
+            whenever(mesh.getPeerInfo(bobPeer)).thenReturn(PeerInfo(id = bobPeer, nickname = "Bob", isConnected = true,
+                noisePublicKey = bobNoise, isDirectConnection = true, signingPublicKey = ByteArray(32),
+                isVerifiedNickname = true, lastSeen = 1L))
+            whenever(mesh.getAuthenticatedRemoteStaticKey(bobPeer)).thenReturn(bobNoise)
+            whenever(mesh.hasEstablishedSession(bobPeer)).thenReturn(true)
+            kotlinx.coroutines.runBlocking {
+                whenever(mesh.sendPrivateMessageBoundOutcome(any(), any(), any(), any(), any()))
+                    .thenReturn(com.bitchat.android.mesh.BoundSendOutcome.UNCONFIRMED)
+            }
+            var now = 1_000_000L
+            router.clock = { now }
+
+            assertEquals(MessageRouter.RouteResult.MESH,
+                router.sendPrivate("salut", bobConversation, "Bob", "p-old"))
+            router.settle()
+
+            fun persisted(): PendingOutgoingDelivery = kotlinx.coroutines.runBlocking {
+                AppStateStore.pendingOutgoingPrivateMessages()!!.single { it.message.id == "p-old" }
+            }
+            waitFor { persisted().bluetoothAttempts == 1 }
+            val pending = persisted()
+            assertTrue(pending.bluetoothMayHaveLeft)
+            assertEquals(now + AppConstants.Router.weshBluetoothRetryDelayMs(1), pending.bluetoothRetryAtMs)
+            assertEquals(DeliveryStatus.Sending, pending.message.deliveryStatus)
+
+            router.tickOutbox(now)
+            router.settle()
+            now += AppConstants.Router.weshBluetoothRetryDelayMs(1) - 1
+            router.tickOutbox(now)
+            router.settle()
+            assertTrue(alice.link.published.isEmpty())
+            kotlinx.coroutines.runBlocking {
+                verify(mesh, org.mockito.kotlin.times(1)).sendPrivateMessageBoundOutcome(
+                    any(), any(), any(), org.mockito.kotlin.eq("p-old"), any()
+                )
+            }
+        }
+
     @Test fun `restoreWeshOutboxOnce retries after a null store read instead of staying blocked`() = withPersistedRouter { router ->
         alice.link.answer = RelayPublishOutcome.UNCONFIRMED
         AppStateStore.releasePrivateConversationHistory(bobConversation)
@@ -998,8 +1143,8 @@ class WeshInternetRouteTest {
         // A later attempt that dropped a rejected wrap wins over an older cached one.
         val rejected = worked.copy(publications = 4, giftWrap = null)
         assertEquals(null, MessageRouter.strongerRetryState(worked, rejected).giftWrap)
-        // Bluetooth stays allowed unless both copies are rule 4 copies.
-        assertFalse(MessageRouter.strongerRetryState(worked.copy(afterBluetoothWrite = true), restored).afterBluetoothWrite)
+        // A copy which may have left is the stronger safety state.
+        assertTrue(MessageRouter.strongerRetryState(worked.copy(afterBluetoothWrite = true), restored).afterBluetoothWrite)
     }
 
     @Test fun `a restored copy racing a requeue keeps the backoff and the publication count`() = withPersistedRouter { router ->

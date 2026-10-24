@@ -14,6 +14,7 @@ class BoundSendOutcomeTest {
     @Test
     fun `a timeout or a later fragment failing may have left bytes`() {
         assertEquals(BoundSendOutcome.UNCONFIRMED, BoundSendOutcome.afterFragment(0, accepted = null, stillAuthorized = true))
+        assertEquals(BoundSendOutcome.UNCONFIRMED, BoundSendOutcome.afterFragment(2, accepted = null, stillAuthorized = true))
         assertEquals(BoundSendOutcome.UNCONFIRMED, BoundSendOutcome.afterFragment(2, accepted = false, stillAuthorized = true))
     }
 

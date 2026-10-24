@@ -421,6 +421,26 @@ class ConversationDatabaseTest {
     }
 
     @Test
+    fun `Bluetooth retry budget survives reopen and is cleared by the application ack`() {
+        val message = BitchatMessage(id = "retry-1", sender = "me", content = "salut", timestamp = Date(1),
+            isPrivate = true, deliveryStatus = DeliveryStatus.Sent, transport = MessageTransport.BLUETOOTH)
+        database.upsertMessage("contact_alice", setOf("contact_alice"), "alice", message, isRead = true)
+        assertTrue(database.updateBluetoothRetryState("contact_alice", message.id, 2, 42_000L, true))
+        database.close()
+
+        database = ConversationDatabase(context, databaseName, storageCipher = storageCipher)
+        val pending = database.pendingOutgoing().single()
+        assertEquals(message.id, pending.message.id)
+        assertEquals(2, pending.bluetoothAttempts)
+        assertEquals(42_000L, pending.bluetoothRetryAtMs)
+        assertTrue(pending.bluetoothMayHaveLeft)
+
+        database.updateDeliveryStatus("contact_alice", message.id,
+            DeliveryStatus.Delivered("alice", Date(2)), MessageTransport.BLUETOOTH)
+        assertTrue(database.pendingOutgoing().isEmpty())
+    }
+
+    @Test
     fun `a status bound to a conversation never touches another conversation's message`() {
         database.upsertMessage("contact_alice", setOf("contact_alice", "aaaa000000000001"), "alice",
             BitchatMessage(id = "bound-1", sender = "me", content = "x", timestamp = Date(1), isPrivate = true,
@@ -459,7 +479,7 @@ class ConversationDatabaseTest {
     }
 
     /**
-     * Rebuilds private_messages with the exact version 5 DDL minus the transport column (same
+     * Rebuilds private_messages with the exact version 4 DDL (same
      * constraints, collation, foreign key and indexes) and stamps the file as version 4.
      */
     private fun downgradeToVersionFour() {
@@ -470,12 +490,14 @@ class ConversationDatabaseTest {
             ).use { cursor -> buildList { while (cursor.moveToNext()) add(cursor.getString(0)) } }
             val table = schema("table").single()
             val indexes = schema("index")
-            val columnLine = Regex(",\\s*transport INTEGER NOT NULL DEFAULT 0")
-            assertTrue(columnLine.containsMatchIn(table))
-            val versionFour = table.replace(columnLine, "").replaceFirst("private_messages", "private_messages_v4")
+            val postV4Columns = listOf("transport", "bluetooth_attempts", "bluetooth_retry_at", "bluetooth_may_have_left")
+            val columnLines = postV4Columns.map { Regex(",\\s*$it INTEGER NOT NULL DEFAULT 0") }
+            assertTrue(columnLines.all { it.containsMatchIn(table) })
+            val versionFour = columnLines.fold(table) { schema, column -> schema.replace(column, "") }
+                .replaceFirst("private_messages", "private_messages_v4")
             val columns = db.rawQuery("PRAGMA table_info(private_messages)", null).use { cursor ->
                 buildList { while (cursor.moveToNext()) add(cursor.getString(1)) }
-            }.filterNot { it == "transport" }
+            }.filterNot { it in postV4Columns }
             assertEquals(25, columns.size)
             db.execSQL(versionFour)
             db.execSQL("INSERT INTO private_messages_v4 (${columns.joinToString(",")}) " +

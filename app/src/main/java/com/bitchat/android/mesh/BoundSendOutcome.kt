@@ -2,7 +2,7 @@ package com.bitchat.android.mesh
 
 /** What a bound private send over Bluetooth achieved; decides the Internet fallback (spec §3). */
 enum class BoundSendOutcome {
-    /** Every fragment was accepted by the radio. */
+    /** Every fragment completed with a successful GATT callback; this is not the application ack. */
     SENT,
     /** Nothing reached the radio and the session still checks out: another route may be used. */
     NOT_SENT,
