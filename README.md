@@ -67,7 +67,8 @@ The four Arti libraries are tracked vendored build inputs. The phone’s
 `preBuild` gate checks both their hashes and the exact wrapper, lock and pinned
 build-source hashes. A source-only dependency edit with stale libraries is
 rejected. Follow the [native rebuild guide](tools/arti-build/README.md), including
-two clean native builds and comparison of all four outputs.
+two clean native builds, comparison of the four packaged libraries and all
+three native-symbol artifacts, and binding the archive to the canonical AAB.
 
 The native lock patches rustls to 0.23.46 and rustls-webpki to 0.103.15. It still
 contains `rsa 0.9.10` affected by RUSTSEC-2023-0071 and unmaintained bincode /

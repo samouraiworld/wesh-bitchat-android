@@ -42,18 +42,24 @@ gh release download "$TAG" \
   --pattern 'BITCHAT_BUILDINFO.json' \
   --pattern 'BITCHAT_SHA256SUMS' \
   --pattern 'BITCHAT_SHA256SUMS.unsigned' \
+  --pattern 'NATIVE-SYMBOLS-BUILDINFO.json' \
+  --pattern 'NATIVE-SYMBOLS-SHA256SUMS' \
   --pattern 'bitchat-android-*.apk' \
-  --pattern 'bitchat-android-*.aab'
+  --pattern 'bitchat-android-*.aab' \
+  --pattern 'wesh-android-native-debug-symbols.zip'
 
 attested_artifacts=(
   BITCHAT_BUILDINFO.json
   BITCHAT_SHA256SUMS.unsigned
+  NATIVE-SYMBOLS-BUILDINFO.json
+  NATIVE-SYMBOLS-SHA256SUMS
   bitchat-android-arm64-unsigned.apk
   bitchat-android-armv7-unsigned.apk
   bitchat-android-release-unsigned.aab
   bitchat-android-universal-unsigned.apk
   bitchat-android-x86-unsigned.apk
   bitchat-android-x86_64-unsigned.apk
+  wesh-android-native-debug-symbols.zip
 )
 for artifact in "${attested_artifacts[@]}"; do
   if [ ! -f "$DOWNLOAD_DIR/$artifact" ]; then
@@ -64,8 +70,14 @@ for artifact in "${attested_artifacts[@]}"; do
 done
 echo "GitHub provenance attestations for the canonical unsigned build verified."
 
+python3 "$PROJECT_ROOT/tools/arti-build/native_symbols.py" verify-release \
+  --archive "$DOWNLOAD_DIR/wesh-android-native-debug-symbols.zip" \
+  --buildinfo "$DOWNLOAD_DIR/NATIVE-SYMBOLS-BUILDINFO.json" \
+  --aab "$DOWNLOAD_DIR/bitchat-android-release-unsigned.aab"
+
 (
   cd "$DOWNLOAD_DIR"
+  "${SHA256[@]}" -c NATIVE-SYMBOLS-SHA256SUMS
   "${SHA256[@]}" -c BITCHAT_SHA256SUMS
 )
 echo "GitHub release checksums verified."
@@ -93,4 +105,11 @@ fi
 
 "$SCRIPT_DIR/build-in-container.sh" "$LOCAL_DIR"
 "$SCRIPT_DIR/compare-release.sh" "$LOCAL_DIR" "$DOWNLOAD_DIR"
+LOCAL_SYMBOL_DIR="$PROJECT_ROOT/.reproducible-build/verify-$TAG-native-symbols"
+if [ -e "$LOCAL_SYMBOL_DIR" ]; then
+  echo "error: local native-symbol verification output already exists: $LOCAL_SYMBOL_DIR" >&2
+  exit 1
+fi
+ARTI_SYMBOL_OUTPUT_DIR="$LOCAL_SYMBOL_DIR" "$PROJECT_ROOT/tools/arti-build/rebuild-in-container.sh"
+"$PROJECT_ROOT/tools/arti-build/compare-symbols.sh" "$LOCAL_SYMBOL_DIR" "$DOWNLOAD_DIR"
 echo "GitHub release $TAG was reproduced successfully from source."

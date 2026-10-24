@@ -98,6 +98,40 @@ tools/reproducible-builds/compare-release.sh \
   .reproducible-build/second
 ```
 
+Native symbols are built twice independently by the release workflow. To
+perform the equivalent local comparison, use two empty output directories:
+
+```bash
+ARTI_SYMBOL_OUTPUT_DIR=.reproducible-build/native-symbols-first \
+  tools/arti-build/rebuild-in-container.sh
+ARTI_SYMBOL_OUTPUT_DIR=.reproducible-build/native-symbols-second \
+  tools/arti-build/rebuild-in-container.sh
+tools/arti-build/compare-symbols.sh \
+  .reproducible-build/native-symbols-first \
+  .reproducible-build/native-symbols-second
+python3 tools/arti-build/native_symbols.py verify-release \
+  --archive .reproducible-build/native-symbols-first/wesh-android-native-debug-symbols.zip \
+  --buildinfo .reproducible-build/native-symbols-first/NATIVE-SYMBOLS-BUILDINFO.json \
+  --aab .reproducible-build/first/bitchat-android-release-unsigned.aab
+```
+
+Each native-symbol output directory contains:
+
+- `wesh-android-native-debug-symbols.zip`, with one path-remapped, unstripped
+  Arti library for each of the four Android ABIs
+- `NATIVE-SYMBOLS-BUILDINFO.json`, binding each unstripped library to the
+  stripped packaged library by SHA-256 and GNU build-id
+- `NATIVE-SYMBOLS-SHA256SUMS`
+
+These three files are produced by `tools/arti-build/rebuild-in-container.sh`,
+not by the canonical app build. The Release workflow combines the verified
+app artifacts and one byte-reproducible native-symbol replica only after both
+independent comparisons pass.
+
+The gate requires real DWARF and Arti/Rust symbols for every ABI, rejects host
+paths, proves stripped/unstripped build-id equality, and rejects an AAB that
+contains the unstripped copies.
+
 If a comparison fails and `diffoscope` is installed, the comparison script
 automatically reports the first differing artifact.
 
@@ -113,15 +147,19 @@ tools/reproducible-builds/verify-github-release.sh vX.Y.Z
 
 That command:
 
-1. downloads all release APKs, the unsigned and Play-upload AABs, build
-   information, and checksum files;
-2. verifies the canonical unsigned build's GitHub artifact-attestation subjects
-   against this repository;
-3. verifies `BITCHAT_SHA256SUMS`;
-4. checks that the local source commit is the release commit;
-5. rebuilds in the pinned container; and
-6. byte-compares every unsigned APK, the unsigned AAB, build information, and
-   the unsigned checksum manifest.
+1. downloads all release APKs, the unsigned and Play-upload AABs, app and
+   native-symbol build information, both checksum manifests, and the four-ABI
+   native-symbol archive;
+2. verifies GitHub artifact attestations for the canonical unsigned app and all
+   three native-symbol artifacts against this repository;
+3. verifies both `BITCHAT_SHA256SUMS` and `NATIVE-SYMBOLS-SHA256SUMS`;
+4. binds every unstripped symbol library to its stripped AAB library by SHA-256
+   and GNU build-id and rejects unexpected symbol-archive entries;
+5. checks that the local source commit is the release commit;
+6. rebuilds the app and native symbols independently in their pinned
+   containers; and
+7. byte-compares every unsigned app artifact and all three native-symbol
+   artifacts with the published release.
 
 To verify the published checksums and attestations without rebuilding:
 
@@ -213,6 +251,11 @@ are controlled by Google. The strongest public Play verification requires
 maintainers to retain the uploaded AAB, publish its digest and provenance, and
 record the Play version code and app-signing certificate fingerprint alongside
 the release.
+
+Upload `wesh-android-native-debug-symbols.zip` as the native debug-symbol file
+for the exact AAB version in Play Console. It is a diagnostic companion, never
+an app payload; the release gate proves that only stripped libraries are inside
+the AAB.
 
 The GitHub workflow builds and attests the canonical unsigned AAB. A
 maintainer locally creates `bitchat-android-play-upload.aab` from that exact

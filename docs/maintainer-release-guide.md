@@ -193,7 +193,9 @@ gh run view "$RUN_ID" --repo "$REPOSITORY"
 The run is successful only when:
 
 - both independent unsigned build jobs pass;
-- the byte-for-byte comparison passes;
+- both independent four-ABI native-symbol rebuild jobs pass;
+- the app and native-symbol byte-for-byte comparisons pass;
+- the symbol archive is bound to the stripped AAB by SHA-256 and GNU build-id;
 - provenance attestation succeeds; and
 - `verified-unsigned-release` is uploaded.
 
@@ -246,6 +248,9 @@ The directory must initially contain exactly these canonical files:
 - `bitchat-android-x86-unsigned.apk`
 - `bitchat-android-x86_64-unsigned.apk`
 - `bitchat-android-release-unsigned.aab`
+- `wesh-android-native-debug-symbols.zip`
+- `NATIVE-SYMBOLS-BUILDINFO.json`
+- `NATIVE-SYMBOLS-SHA256SUMS`
 
 Verify the checksum manifest:
 
@@ -254,8 +259,10 @@ Verify the checksum manifest:
   cd "$RELEASE_DIR"
   if command -v sha256sum >/dev/null 2>&1; then
     sha256sum -c SHA256SUMS.unsigned
+    sha256sum -c NATIVE-SYMBOLS-SHA256SUMS
   else
     shasum -a 256 -c SHA256SUMS.unsigned
+    shasum -a 256 -c NATIVE-SYMBOLS-SHA256SUMS
   fi
 )
 ```
@@ -271,12 +278,16 @@ ARTIFACT_COMMIT="$(
 test "$TAG_COMMIT" = "$ARTIFACT_COMMIT"
 ```
 
-Verify GitHub's provenance for every unsigned APK and AAB:
+Verify GitHub's provenance for every unsigned APK and AAB and for all three
+native-symbol artifacts:
 
 ```bash
 for artifact in \
   "$RELEASE_DIR"/*-unsigned.apk \
-  "$RELEASE_DIR"/*-unsigned.aab
+  "$RELEASE_DIR"/*-unsigned.aab \
+  "$RELEASE_DIR/NATIVE-SYMBOLS-BUILDINFO.json" \
+  "$RELEASE_DIR/NATIVE-SYMBOLS-SHA256SUMS" \
+  "$RELEASE_DIR/wesh-android-native-debug-symbols.zip"
 do
   gh attestation verify "$artifact" --repo "$REPOSITORY"
 done
@@ -360,14 +371,17 @@ The helper creates `bitchat-android-play-upload.aab`, verifies its JAR signature
 that every non-signature payload entry matches the corresponding canonical
 unsigned AAB, and updates `SHA256SUMS`.
 
-This is the only file to upload to Play Console:
+This is the only **app binary** to upload to Play Console:
 
 ```text
 release-X.Y.Z/bitchat-android-play-upload.aab
 ```
 
 Do not upload an APK or the `*-release-unsigned.aab` to Play. Do not open
-Android Studio and rebuild the bundle.
+Android Studio and rebuild the bundle. The companion
+`wesh-android-native-debug-symbols.zip` must also be uploaded for the same
+version code through Play's native debug-symbol control; it is diagnostic data,
+never an app bundle or installable artifact.
 
 Remove passwords from the environment after both signing steps:
 
@@ -389,7 +403,7 @@ tools/reproducible-builds/prepare-github-release.sh "$RELEASE_DIR"
 The helper verifies all checksums and renames the public build information and
 checksum manifests. It refuses missing or pre-existing release files.
 
-The final GitHub Release must contain all 13 files below:
+The final GitHub Release must contain all 16 files below:
 
 | Asset | Signed? | Why it is published |
 |---|---:|---|
@@ -401,7 +415,10 @@ The final GitHub Release must contain all 13 files below:
 | `bitchat-android-play-upload.aab` | Play upload key | Exact bundle uploaded to Play |
 | `BITCHAT_BUILDINFO.json` | GitHub attestation | Source commit and pinned toolchain |
 | `BITCHAT_SHA256SUMS.unsigned` | GitHub attestation | Original canonical CI manifest |
-| `BITCHAT_SHA256SUMS` | No detached signature | SHA-256 for every published asset |
+| `BITCHAT_SHA256SUMS` | No detached signature | SHA-256 for every other published asset |
+| `wesh-android-native-debug-symbols.zip` | No | Four-ABI Play native crash symbol archive |
+| `NATIVE-SYMBOLS-BUILDINFO.json` | GitHub attestation | Stripped/unstripped SHA-256 and GNU build-id binding |
+| `NATIVE-SYMBOLS-SHA256SUMS` | GitHub attestation | Checksums for the native-symbol archive and build information |
 
 Run the public checksum verification once more:
 
@@ -476,18 +493,21 @@ Keep it as a draft until the Play internal-track checks below pass.
 3. Create a new release.
 4. Upload exactly:
    `release-X.Y.Z/bitchat-android-play-upload.aab`.
-5. Confirm Play accepts the upload signature and reports the expected package,
+5. Upload `release-X.Y.Z/wesh-android-native-debug-symbols.zip` as the native
+   debug-symbol file for this exact version code. Do not add it to the AAB.
+6. Confirm Play accepts the upload signature and reports the expected package,
    `versionCode`, and `versionName`.
-6. Add the user-visible Play release notes.
-7. Resolve blocking Play checks, save the release, and start the internal
+7. Add the user-visible Play release notes.
+8. Resolve blocking Play checks, save the release, and start the internal
    rollout.
-8. Install the build through the internal-test opt-in link on a representative
+9. Install the build through the internal-test opt-in link on a representative
    physical device. Confirm startup, upgrade from the previous public release,
    networking, and the release-critical scenarios.
-9. In **App bundle explorer**, select the uploaded version. If the account
+10. In **App bundle explorer**, select the uploaded version. If the account
    permits downloading the original AAB, download it and verify that its digest
    matches `bitchat-android-play-upload.aab` in `BITCHAT_SHA256SUMS`.
-10. In **Setup > App integrity**, confirm the Play app-signing certificate
+11. Confirm Play reports native debug symbols for all four packaged ABIs.
+12. In **Setup > App integrity**, confirm the Play app-signing certificate
     SHA-256 is the value recorded in the GitHub release notes.
 
 Promote the same tested Play release from its test track to production. Do not rebuild or upload replacement AABs for
@@ -498,7 +518,7 @@ APKs will not be byte-identical to the GitHub APKs. That is expected.
 
 ## 10. Publish GitHub and promote Play
 
-After the Play test build passes and the GitHub draft has all 13 assets:
+After the Play test build passes and the GitHub draft has all 16 assets:
 
 ```bash
 gh release edit "$TAG" \
@@ -567,7 +587,9 @@ Also verify:
 - [ ] Checksums, source commit, and attestations verified
 - [ ] GitHub APKs signed locally with the pinned certificate
 - [ ] Phone Play AAB signed locally with the registered upload key
-- [ ] `BITCHAT_SHA256SUMS` verifies all 13 release assets
+- [ ] The release contains all 16 assets; `BITCHAT_SHA256SUMS` verifies every
+      other asset, and `NATIVE-SYMBOLS-SHA256SUMS` independently verifies the
+      symbol archive and its build information
 - [ ] GitHub draft created with certificate fingerprints and all assets
 - [ ] Exact signed phone AAB uploaded to and tested on its track
 - [ ] GitHub Release published

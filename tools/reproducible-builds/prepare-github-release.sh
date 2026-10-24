@@ -2,6 +2,8 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 RELEASE_DIR="${1:?usage: prepare-github-release.sh RELEASE_DIR}"
 
 if [ ! -d "$RELEASE_DIR" ]; then
@@ -21,6 +23,8 @@ fi
 
 required=(
   BUILDINFO.json
+  NATIVE-SYMBOLS-BUILDINFO.json
+  NATIVE-SYMBOLS-SHA256SUMS
   SHA256SUMS
   SHA256SUMS.unsigned
   bitchat-android-arm64-unsigned.apk
@@ -33,6 +37,7 @@ required=(
   bitchat-android-x86-unsigned.apk
   bitchat-android-x86_64-unsigned.apk
   bitchat-android-x86_64.apk
+  wesh-android-native-debug-symbols.zip
 )
 for artifact in "${required[@]}"; do
   if [ ! -f "$RELEASE_DIR/$artifact" ]; then
@@ -48,13 +53,14 @@ for artifact_path in "$RELEASE_DIR"/*; do
   fi
   artifact="$(basename "$artifact_path")"
   case "$artifact" in
-    BUILDINFO.json|SHA256SUMS|SHA256SUMS.unsigned|\
+    BUILDINFO.json|NATIVE-SYMBOLS-BUILDINFO.json|NATIVE-SYMBOLS-SHA256SUMS|SHA256SUMS|SHA256SUMS.unsigned|\
     bitchat-android-arm64-unsigned.apk|bitchat-android-arm64.apk|\
     bitchat-android-armv7-unsigned.apk|\
     bitchat-android-play-upload.aab|bitchat-android-release-unsigned.aab|\
     bitchat-android-universal-unsigned.apk|bitchat-android-universal.apk|\
     bitchat-android-x86-unsigned.apk|\
-    bitchat-android-x86_64-unsigned.apk|bitchat-android-x86_64.apk)
+    bitchat-android-x86_64-unsigned.apk|bitchat-android-x86_64.apk|\
+    wesh-android-native-debug-symbols.zip)
       ;;
     *)
       echo "error: unexpected release artifact: $artifact" >&2
@@ -72,8 +78,14 @@ done
 
 (
   cd "$RELEASE_DIR"
+  "${SHA256[@]}" -c NATIVE-SYMBOLS-SHA256SUMS
   "${SHA256[@]}" -c SHA256SUMS
 )
+
+python3 "$PROJECT_ROOT/tools/arti-build/native_symbols.py" verify-release \
+  --archive "$RELEASE_DIR/wesh-android-native-debug-symbols.zip" \
+  --buildinfo "$RELEASE_DIR/NATIVE-SYMBOLS-BUILDINFO.json" \
+  --aab "$RELEASE_DIR/bitchat-android-release-unsigned.aab"
 
 mv "$RELEASE_DIR/BUILDINFO.json" "$RELEASE_DIR/BITCHAT_BUILDINFO.json"
 mv "$RELEASE_DIR/SHA256SUMS.unsigned" "$RELEASE_DIR/BITCHAT_SHA256SUMS.unsigned"

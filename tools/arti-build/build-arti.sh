@@ -35,11 +35,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 ARTI_SOURCE_DIR="$SCRIPT_DIR/.arti-source"
 JNILIBS_DIR="$PROJECT_ROOT/app/src/main/jniLibs"
+SYMBOLS_STAGING_DIR="$PROJECT_ROOT/.reproducible-build/arti-native-symbols-raw"
+SYMBOLS_OUTPUT_DIR="${ARTI_SYMBOL_OUTPUT_DIR:-$PROJECT_ROOT/.reproducible-build/arti-native-symbols-release}"
 # Capture wrapper, lock, and pins before using them; compile only these copies.
 # shellcheck source=provenance.sh
 source "$SCRIPT_DIR/provenance.sh"
 SOURCE_INPUT_DIR="$(mktemp -d)"
-trap 'rm -rf "$SOURCE_INPUT_DIR"' EXIT
+cleanup() {
+  rm -rf "$SOURCE_INPUT_DIR" "$SYMBOLS_STAGING_DIR"
+}
+trap cleanup EXIT
 capture_source_inputs "$SCRIPT_DIR" "$SOURCE_INPUT_DIR"
 TOOLCHAIN_FILE="$SOURCE_INPUT_DIR/TOOLCHAIN.env"
 LOCKFILE_SOURCE="$SOURCE_INPUT_DIR/Cargo.lock"
@@ -74,11 +79,31 @@ REPRO_RUSTFLAGS=(
   "--remap-path-prefix=$PROJECT_ROOT=/usr/src/bitchat-android"
   "--remap-path-prefix=$ARTI_SOURCE_DIR=/usr/src/arti"
   "--remap-path-prefix=$CARGO_HOME_PATH=/usr/local/cargo"
+  "-C link-arg=-Wl,--build-id=sha1"
 )
 for rustflag in "${REPRO_RUSTFLAGS[@]}"; do
   RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }$rustflag"
 done
+# Rust path remapping does not cover C/C++/assembly objects compiled by native
+# dependency build scripts (for example ring, SQLite, xz, and zstd). Feed the
+# pinned NDK clang equivalent mappings through cc-rs as well. Clang applies the
+# last matching mapping, so put the generic project prefix first and the most
+# specific cache/source prefixes last.
+REPRO_NATIVE_PREFIX_MAPS=(
+  "$PROJECT_ROOT=/usr/src/bitchat-android"
+  "$ARTI_SOURCE_DIR=/usr/src/arti"
+  "$CARGO_HOME_PATH=/usr/local/cargo"
+)
+for prefix_map in "${REPRO_NATIVE_PREFIX_MAPS[@]}"; do
+  for map_option in fdebug-prefix-map ffile-prefix-map fmacro-prefix-map; do
+    native_flag="-$map_option=$prefix_map"
+    CFLAGS="${CFLAGS:+$CFLAGS }$native_flag"
+    CXXFLAGS="${CXXFLAGS:+$CXXFLAGS }$native_flag"
+  done
+done
 export CARGO_INCREMENTAL=0
+export CFLAGS
+export CXXFLAGS
 export RUSTFLAGS
 export SOURCE_DATE_EPOCH
 
@@ -425,12 +450,16 @@ build_for_target() {
   if [ -f "$OUTPUT_PATH/$LIB_NAME" ]; then
     print_success "Built: $OUTPUT_PATH/$LIB_NAME"
 
-    # Strip debug symbols safely
-    print_info "Stripping debug symbols..."
-    if [ -x "$LLVM_STRIP" ]; then
-      "$LLVM_STRIP" --strip-debug "$OUTPUT_PATH/$LIB_NAME"
-      print_success "Stripped debug symbols"
-    fi
+    # Retain the path-remapped DWARF and Rust symbols outside the Android
+    # source set. Only the stripped copy below is ever packaged into the app.
+    local SYMBOL_PATH="$SYMBOLS_STAGING_DIR/$ABI/$LIB_NAME"
+    mkdir -p "$(dirname "$SYMBOL_PATH")"
+    cp "$OUTPUT_PATH/$LIB_NAME" "$SYMBOL_PATH"
+    print_success "Retained unstripped symbol library for $ABI"
+
+    print_info "Stripping packaged library..."
+    "$LLVM_STRIP" --strip-unneeded "$OUTPUT_PATH/$LIB_NAME"
+    print_success "Stripped packaged library"
 
     local SIZE
     SIZE="$(du -h "$OUTPUT_PATH/$LIB_NAME" | cut -f1)"
@@ -467,8 +496,13 @@ verify_no_host_paths() {
   for TARGET in "${TARGETS[@]}"; do
     local ABI="${ABI_MAP[$TARGET]}"
     local LIB_PATH="$JNILIBS_DIR/$ABI/libarti_android.so"
+    local SYMBOL_PATH="$SYMBOLS_STAGING_DIR/$ABI/libarti_android.so"
     if ! assert_no_host_paths "$LIB_PATH"; then
       print_error "Host-specific path detected in $ABI native library."
+      return 1
+    fi
+    if ! assert_no_host_paths "$SYMBOL_PATH"; then
+      print_error "Host-specific path detected in $ABI symbol library."
       return 1
     fi
   done
@@ -495,6 +529,24 @@ write_checksums() {
 
   cp "$SOURCE_INPUT_DIR/SOURCE_SHA256SUMS" "$SCRIPT_DIR/SOURCE_SHA256SUMS"
   print_success "Wrote native source snapshot checksums"
+  echo ""
+}
+
+package_native_symbols() {
+  print_header "Packaging Native Debug Symbols"
+
+  if [ -e "$SYMBOLS_OUTPUT_DIR" ] && [ -n "$(find "$SYMBOLS_OUTPUT_DIR" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
+    print_error "Native symbol output directory must be empty: $SYMBOLS_OUTPUT_DIR"
+    return 1
+  fi
+  mkdir -p "$SYMBOLS_OUTPUT_DIR"
+  python3 "$SOURCE_INPUT_DIR/native_symbols.py" package \
+    --symbols-root "$SYMBOLS_STAGING_DIR" \
+    --packaged-root "$JNILIBS_DIR" \
+    --source-manifest "$SCRIPT_DIR/SOURCE_SHA256SUMS" \
+    --packaged-manifest "$SCRIPT_DIR/SHA256SUMS" \
+    --output "$SYMBOLS_OUTPUT_DIR"
+  print_success "Native symbol release artifacts written to $SYMBOLS_OUTPUT_DIR"
   echo ""
 }
 
@@ -591,6 +643,7 @@ show_summary() {
   echo -e "${GREEN}Next steps:${NC}"
   echo "  1. Test the build: ./gradlew assembleDebug"
   echo "  2. Verify checksums: tools/arti-build/verify-checksums.sh"
+  echo "  3. Retain the symbol archive beside the public AAB"
   echo ""
   echo -e "${GREEN}To update Arti version:${NC}"
   echo "  1. Update TOOLCHAIN.env and regenerate Cargo.lock"
@@ -618,6 +671,9 @@ main() {
   fi
   ensure_wrapper_lockfile
 
+  rm -rf "$SYMBOLS_STAGING_DIR"
+  mkdir -p "$SYMBOLS_STAGING_DIR"
+
   for TARGET in "${TARGETS[@]}"; do
     build_for_target "$TARGET"
   done
@@ -626,7 +682,9 @@ main() {
   verify_no_host_paths
   if [ "$RELEASE_ONLY" = false ]; then
     write_checksums
+    package_native_symbols
   fi
+  rm -rf "$SYMBOLS_STAGING_DIR"
   show_summary
 }
 

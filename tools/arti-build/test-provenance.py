@@ -20,7 +20,8 @@ class NativeProvenanceTests(unittest.TestCase):
                         self.tool / "verify-checksums.sh")
         self.sources = [self.tool / name for name in (
             "Cargo.lock", "Cargo.toml", "Dockerfile", "TOOLCHAIN.env",
-            "rust-toolchain.toml", "build-arti.sh", "provenance.sh", "src/lib.rs")]
+            "rust-toolchain.toml", "build-arti.sh", "native_symbols.py", "provenance.sh",
+            "rebuild-in-container.sh", "src/lib.rs")]
         self.libraries = [self.root / "app/src/main/jniLibs" / abi / "libarti_android.so"
                           for abi in ("arm64-v8a", "armeabi-v7a", "x86", "x86_64")]
         for entry in self.sources + self.libraries:
@@ -40,8 +41,8 @@ class NativeProvenanceTests(unittest.TestCase):
     def test_matching_inputs_pass(self):
         self.assertEqual(self.verify().returncode, 0)
 
-    def test_changed_lock_or_wrapper_is_rejected(self):
-        for entry in (self.sources[0], self.sources[-1]):
+    def test_changed_lock_wrapper_or_container_entrypoint_is_rejected(self):
+        for entry in (self.sources[0], self.sources[-2], self.sources[-1]):
             original = entry.read_bytes()
             with self.subTest(input=entry.name):
                 entry.write_bytes(original + b"synthetic modification\n")

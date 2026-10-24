@@ -5,13 +5,17 @@ source plus the JNI wrapper in this directory. The supported build path is the
 pinned Linux container:
 
 ```bash
-tools/arti-build/rebuild-in-container.sh
+ARTI_SYMBOL_OUTPUT_DIR=.reproducible-build/native-symbols-first \
+  tools/arti-build/rebuild-in-container.sh
 tools/arti-build/verify-checksums.sh
 ```
 
 The container builds all four Android ABIs, verifies the exported JNI symbols
 and rejects native binaries containing host-specific paths. It then rewrites
-`tools/arti-build/SHA256SUMS` and `tools/arti-build/SOURCE_SHA256SUMS`.
+`tools/arti-build/SHA256SUMS` and `tools/arti-build/SOURCE_SHA256SUMS`. It also
+writes `wesh-android-native-debug-symbols.zip`,
+`NATIVE-SYMBOLS-BUILDINFO.json`, and `NATIVE-SYMBOLS-SHA256SUMS` to the empty
+directory selected by `ARTI_SYMBOL_OUTPUT_DIR`.
 These manifests bind the four vendored libraries to the reviewed lock, wrapper,
 and pinned build inputs. The phone `preBuild` task rejects missing manifests or
 changed input hashes; update them only through a successful native rebuild.
@@ -35,6 +39,12 @@ whether those outputs can be reproduced.
 - `Cargo.lock`: complete Rust dependency graph
 - `Dockerfile`: digest-pinned Rust base image and checksum-verified NDK archive
 - `Cargo.toml` and `src/lib.rs`: JNI wrapper package and source
+- `build-arti.sh` and `provenance.sh`: build, snapshot, privacy, alignment, and
+  checksum gates
+- `rebuild-in-container.sh`: pinned image, platform, mounts, build environment,
+  epoch, and release-output boundary
+- `native_symbols.py`: deterministic archive creation and stripped/unstripped
+  SHA-256, GNU build-id, DWARF, symbol, inventory, and AAB binding gates
 
 Rust source paths are remapped to stable virtual paths, incremental compilation
 is disabled, and `SOURCE_DATE_EPOCH` is pinned to the value used for the
@@ -54,13 +64,44 @@ committed libraries.
 
 4. Update the digest-pinned base image and `rust-toolchain.toml` when changing
    Rust.
-5. Run `tools/arti-build/rebuild-in-container.sh` twice from clean generated
-   state and confirm `tools/arti-build/SHA256SUMS` is unchanged.
-6. Run the Android tests and the two-build release comparison described in
+5. Run two clean rebuilds into distinct empty symbol directories, compare all
+   three artifacts byte-for-byte, and verify the final committed checksums:
+
+   ```bash
+   ARTI_SYMBOL_OUTPUT_DIR=.reproducible-build/native-symbols-first \
+     tools/arti-build/rebuild-in-container.sh
+   ARTI_SYMBOL_OUTPUT_DIR=.reproducible-build/native-symbols-second \
+     tools/arti-build/rebuild-in-container.sh
+   tools/arti-build/compare-symbols.sh \
+     .reproducible-build/native-symbols-first \
+     .reproducible-build/native-symbols-second
+   tools/arti-build/verify-checksums.sh
+   ```
+
+6. From the same committed source, build the canonical unsigned app and bind
+   the symbol archive to its AAB:
+
+   ```bash
+   tools/reproducible-builds/build-in-container.sh \
+     .reproducible-build/native-app-check
+   python3 tools/arti-build/native_symbols.py verify-release \
+     --archive .reproducible-build/native-symbols-first/wesh-android-native-debug-symbols.zip \
+     --buildinfo .reproducible-build/native-symbols-first/NATIVE-SYMBOLS-BUILDINFO.json \
+     --aab .reproducible-build/native-app-check/bitchat-android-release-unsigned.aab
+   ```
+
+7. Run the Android tests and the two-build release comparison described in
    [`docs/reproducible-builds.md`](../../docs/reproducible-builds.md).
 
 Do not build release native libraries with an unpinned local NDK or Rust
 toolchain. `build-arti.sh` deliberately rejects mismatched tool versions.
+
+If a repeated macOS Docker build stops before compilation with Git's
+`dubious ownership` check on `tools/arti-build/.arti-source`, first confirm
+that exact directory is ignored with `git check-ignore`, remove only that
+generated clone, and rerun into the still-empty output directory. Do not add a
+global `safe.directory` exception and do not continue from a partially filled
+release directory.
 
 ## Dependency security and local validation
 

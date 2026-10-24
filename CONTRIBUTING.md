@@ -27,12 +27,21 @@ alignments, scans for host paths and publishes source/library checksum manifests
 
 ```sh
 python3 tools/arti-build/test-provenance.py
-tools/arti-build/rebuild-in-container.sh
+ARTI_SYMBOL_OUTPUT_DIR=.reproducible-build/native-symbols-first \
+  tools/arti-build/rebuild-in-container.sh
+ARTI_SYMBOL_OUTPUT_DIR=.reproducible-build/native-symbols-second \
+  tools/arti-build/rebuild-in-container.sh
+tools/arti-build/compare-symbols.sh \
+  .reproducible-build/native-symbols-first \
+  .reproducible-build/native-symbols-second
 tools/arti-build/verify-checksums.sh
 ```
 
-For a dependency update, preserve a first clean build's four libraries and both
-manifests locally, rebuild from clean generated state, and compare all hashes.
+For a dependency update, the two distinct output directories must start empty.
+Their byte-identical symbol archive and build information prove that all four
+packaged-library hashes and all four unstripped libraries reproduced. Bind the
+reviewed archive to the canonical unsigned AAB with `native_symbols.py
+verify-release` as documented in the native rebuild guide.
 A changed lock or wrapper with stale libraries must fail the `preBuild` gate.
 Never edit the checksum manifests to make an old library appear rebuilt.
 Raw download caches may be reused; compiled target objects must not be reused
