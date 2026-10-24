@@ -4,32 +4,24 @@ This candidate keeps version name `1.0.0` and advances the Play version code to
 `104`. Its About screen links to the French or English privacy policy according
 to the active app language.
 
-## Native crash symbols: public-release blocker
+## Native crash symbols: tooling addressed, Play verification pending
 
-The four committed Arti libraries are stripped ELF files. Their dynamic symbol
-tables expose the six required JNI entry points, but they do not contain the
-Rust symbol or debug information needed to symbolicate native crash frames.
-The native wrapper also sets `strip = true`, and the pinned build applies
-`llvm-strip --strip-debug` before publishing each library.
+The pinned native build now retains a path-remapped, unstripped Arti library for
+each of the four Android ABIs as a release-only symbol artifact. The app still
+packages separately stripped libraries. The release gate binds both forms by
+SHA-256 and GNU build-id, requires real DWARF and identifiable Arti/Rust symbols,
+rejects host paths, and rejects symbol data inside the AAB.
 
-Consequently, enabling `ndk.debugSymbolLevel` in Gradle would not recover useful
-symbols from the current inputs. It would only repackage already stripped
-libraries. Candidate 104 must not claim native crash symbol support, and the
-Play native-symbol warning remains unresolved.
+The Release workflow builds the app and native symbols twice independently,
+requires byte-identical replicas, verifies the four-ABI symbol archive against
+the stripped AAB, and attests the combined verified output. The local
+publication gate repeats that cross-check before any asset can be renamed for a
+GitHub release.
 
-A complete correction requires the pinned Arti build to retain an unstripped,
-path-remapped library for each ABI as a release-only symbol artifact, while the
-app continues to package stripped libraries. That change must include:
-
-1. a clean four-ABI native rebuild in the pinned container;
-2. provenance for both packaged libraries and symbol artifacts;
-3. two clean builds proving identical hashes;
-4. validation that the symbol archive contains no host paths and resolves Rust
-   frames for every ABI; and
-5. release tooling that ships the reviewed symbol archive beside the AAB.
-
-The current repository does not retain those unstripped inputs, so this cannot
-be corrected honestly by an application-only Gradle change.
+This makes the Play native-symbol warning technically addressable. It does not
+claim Play acceptance: `wesh-android-native-debug-symbols.zip` still has to be
+uploaded for the exact version code, and Play must report symbols for all four
+packaged ABIs before promotion.
 
 ## `RUSTSEC-2023-0071`: public-release blocker
 
@@ -52,6 +44,9 @@ private-key operations constant-time or absent. It then requires a new lock,
 four-ABI rebuild, dependency audit, JNI reachability review, reproducibility
 checks, and Tor interoperability validation.
 
-Candidate 104 intentionally leaves the pinned native graph and binary hashes
-unchanged. Public promotion remains blocked on an explicit resolution and
-review; the Beta 103 waiver must not be reused.
+Candidate 104 leaves the pinned dependency graph, RSA version, and reviewed JNI
+surface unchanged. The packaged native hashes change because the deterministic
+pipeline now retains debuginfo before creating separate `--strip-unneeded`
+copies with explicit GNU build-ids; that does not resolve the RSA advisory.
+Public promotion remains blocked on an explicit RSA resolution and review; the
+Beta 103 waiver must not be reused.

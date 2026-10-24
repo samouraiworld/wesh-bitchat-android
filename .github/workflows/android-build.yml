@@ -32,11 +32,16 @@ jobs:
         uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92 # v6.2.0
 
       - name: Verify native library inputs
-        run: tools/arti-build/verify-checksums.sh
+        run: |
+          tools/arti-build/verify-checksums.sh
+          python3 tools/arti-build/test-provenance.py
+          python3 tools/arti-build/test_native_symbols.py
+          bash -n tools/arti-build/build-arti.sh tools/arti-build/rebuild-in-container.sh tools/arti-build/compare-symbols.sh
 
       - name: Verify release tooling
         run: |
           python3 -m unittest tools.release_gate.test_release_gate
+          bash -n tools/reproducible-builds/prepare-github-release.sh
           bash -n tools/reproducible-builds/verify-github-release.sh
 
       - name: Verify reproducible store assets in pinned toolchain

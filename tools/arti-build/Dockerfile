@@ -28,6 +28,7 @@ RUN source /tmp/TOOLCHAIN.env \
         ca-certificates \
         curl \
         git \
+        python3 \
         unzip \
     && rm -rf /var/lib/apt/lists/*
 

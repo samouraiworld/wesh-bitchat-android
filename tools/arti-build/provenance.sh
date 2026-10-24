@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Shared native input and privacy checks; callers use set -euo pipefail.
-NATIVE_SOURCE_INPUTS=(Cargo.lock Cargo.toml Dockerfile TOOLCHAIN.env rust-toolchain.toml build-arti.sh provenance.sh src/lib.rs)
+NATIVE_SOURCE_INPUTS=(Cargo.lock Cargo.toml Dockerfile TOOLCHAIN.env rust-toolchain.toml build-arti.sh native_symbols.py provenance.sh rebuild-in-container.sh src/lib.rs)
 
 reject_unsupported_patches() {
   local directory="$1"
@@ -60,7 +60,7 @@ assert_no_host_paths() {
   fi
   # Consume the completed scan, avoiding grep -q / SIGPIPE acceptance under pipefail.
   local scan_status=0
-  grep -E '/Users/|/home/|[A-Za-z]:\\Users\\' "$scan" > /dev/null || scan_status=$?
+  grep -E '/Users/|/home/|/workspace/|/\.arti-source/|/\.reproducible-build/|[A-Za-z]:\\Users\\' "$scan" > /dev/null || scan_status=$?
   rm -f "$scan"
   case "$scan_status" in
     0) echo "error: host-specific path detected in a native library" >&2; return 1 ;;

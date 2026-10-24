@@ -63,10 +63,48 @@ jobs:
           retention-days: 30
           if-no-files-found: error
 
+  native-symbols:
+    name: Build native symbols ${{ matrix.replica }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        replica: [a, b]
+
+    steps:
+      - name: Checkout tagged source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Verify workflow provenance ref
+        run: |
+          checked_out_commit="$(git rev-parse HEAD)"
+          if [ "$checked_out_commit" != "$GITHUB_SHA" ]; then
+            echo "error: run the workflow from the $RELEASE_TAG tag ref so provenance identifies the built commit" >&2
+            exit 1
+          fi
+
+      - name: Rebuild four-ABI native symbols
+        env:
+          ARTI_SYMBOL_OUTPUT_DIR: ${{ runner.temp }}/native-symbols-${{ matrix.replica }}
+        run: tools/arti-build/rebuild-in-container.sh
+
+      - name: Verify rebuilt packaged libraries match the tag
+        run: git diff --exit-code -- app/src/main/jniLibs tools/arti-build/SHA256SUMS tools/arti-build/SOURCE_SHA256SUMS
+
+      - name: Upload native-symbol replica
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: native-symbols-${{ matrix.replica }}
+          path: ${{ runner.temp }}/native-symbols-${{ matrix.replica }}/*
+          retention-days: 30
+          if-no-files-found: error
+
   compare:
     name: Verify reproducibility
     runs-on: ubuntu-24.04
-    needs: build
+    needs: [build, native-symbols]
     permissions:
       attestations: write
       contents: read
@@ -90,8 +128,30 @@ jobs:
           name: unsigned-release-b
           path: ${{ runner.temp }}/release-b
 
+      - name: Download native-symbol replica A
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: native-symbols-a
+          path: ${{ runner.temp }}/native-symbols-a
+
+      - name: Download native-symbol replica B
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: native-symbols-b
+          path: ${{ runner.temp }}/native-symbols-b
+
       - name: Compare every canonical byte
         run: tools/reproducible-builds/compare-release.sh "$RUNNER_TEMP/release-a" "$RUNNER_TEMP/release-b"
+
+      - name: Compare native-symbol artifacts
+        run: tools/arti-build/compare-symbols.sh "$RUNNER_TEMP/native-symbols-a" "$RUNNER_TEMP/native-symbols-b"
+
+      - name: Verify symbols match the stripped AAB
+        run: |
+          python3 tools/arti-build/native_symbols.py verify-release \
+            --archive "$RUNNER_TEMP/native-symbols-a/wesh-android-native-debug-symbols.zip" \
+            --buildinfo "$RUNNER_TEMP/native-symbols-a/NATIVE-SYMBOLS-BUILDINFO.json" \
+            --aab "$RUNNER_TEMP/release-a/bitchat-android-release-unsigned.aab"
 
       - name: Prepare public attestation subjects
         run: |
@@ -104,16 +164,24 @@ jobs:
             "$RUNNER_TEMP/attestation-subjects/"
           cp "$RUNNER_TEMP"/release-a/bitchat-android-*-unsigned.aab \
             "$RUNNER_TEMP/attestation-subjects/"
+          cp "$RUNNER_TEMP"/native-symbols-a/* \
+            "$RUNNER_TEMP/attestation-subjects/"
 
       - name: Attest verified unsigned release
         uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
         with:
           subject-path: ${{ runner.temp }}/attestation-subjects/*
 
+      - name: Prepare verified release bundle
+        run: |
+          mkdir "$RUNNER_TEMP/verified-release"
+          cp "$RUNNER_TEMP"/release-a/* "$RUNNER_TEMP/verified-release/"
+          cp "$RUNNER_TEMP"/native-symbols-a/* "$RUNNER_TEMP/verified-release/"
+
       - name: Upload verified unsigned release
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: verified-unsigned-release
-          path: ${{ runner.temp }}/release-a/*
+          path: ${{ runner.temp }}/verified-release/*
           retention-days: 30
           if-no-files-found: error

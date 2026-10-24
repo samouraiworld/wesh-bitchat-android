@@ -235,7 +235,7 @@ val verifyNativeArtiInputs = tasks.register("verifyNativeArtiInputs") {
     val manifests = listOf("SHA256SUMS", "SOURCE_SHA256SUMS")
     inputs.files(manifests.map { nativeRoot.file("tools/arti-build/$it") })
     inputs.files(fileTree(nativeRoot.dir("tools/arti-build")) {
-        include("Cargo.lock", "Cargo.toml", "Dockerfile", "TOOLCHAIN.env", "rust-toolchain.toml", "build-arti.sh", "provenance.sh", "src/lib.rs")
+        include("Cargo.lock", "Cargo.toml", "Dockerfile", "TOOLCHAIN.env", "rust-toolchain.toml", "build-arti.sh", "native_symbols.py", "provenance.sh", "rebuild-in-container.sh", "src/lib.rs")
     })
     inputs.files(fileTree("src/main/jniLibs") { include("**/libarti_android.so") })
     doLast {
@@ -251,7 +251,7 @@ val verifyNativeArtiInputs = tasks.register("verifyNativeArtiInputs") {
                 listOf("arm64-v8a", "armeabi-v7a", "x86", "x86_64")
                     .map { "app/src/main/jniLibs/$it/libarti_android.so" }.toSet()
             } else {
-                listOf("Cargo.lock", "Cargo.toml", "Dockerfile", "TOOLCHAIN.env", "rust-toolchain.toml", "build-arti.sh", "provenance.sh", "src/lib.rs")
+                listOf("Cargo.lock", "Cargo.toml", "Dockerfile", "TOOLCHAIN.env", "rust-toolchain.toml", "build-arti.sh", "native_symbols.py", "provenance.sh", "rebuild-in-container.sh", "src/lib.rs")
                     .map { "tools/arti-build/$it" }.toSet()
             }
             check(entries.size == expectedPaths.size && entries.map {

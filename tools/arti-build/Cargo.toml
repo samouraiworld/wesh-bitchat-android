@@ -21,5 +21,6 @@ anyhow = "1.0"
 opt-level = "z"     # Optimize for size
 lto = true          # Link-time optimization
 codegen-units = 1   # Better optimization
-strip = true        # Strip symbols
+debug = 2           # Retain DWARF in the release-only symbol artifact
+strip = false       # The build script strips the packaged copy after archiving this one
 panic = "abort"     # Smaller panic handler
