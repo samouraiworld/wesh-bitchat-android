@@ -264,7 +264,7 @@ class BluetoothConnectionManager(
     ) {
         val peerID = connectionTracker.getPeerForLink(linkID)
         if (isClient) clientManager.disconnectLink(deviceAddress, linkID)
-        else serverManager.disconnectLink(device, linkID)
+        else serverManager.invalidateTimedOutLink(device, linkID)
 
         // Client finish normally performed this synchronously. The fallback is required for an
         // inbound link whose Bluetooth service is too broken to emit its disconnect callback.

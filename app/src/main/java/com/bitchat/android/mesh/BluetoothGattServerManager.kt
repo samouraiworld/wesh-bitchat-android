@@ -33,7 +33,9 @@ class BluetoothGattServerManager(
     private val roleReady: (ownerGeneration: Long) -> Unit = {},
     private val serviceCallbackTimeoutMs: Long = 5_000L,
     private val advertiseCallbackTimeoutMs: Long = 5_000L,
-    private val beforePlatformAdvertiseStart: (() -> Unit)? = null
+    private val linkDisconnectCallbackTimeoutMs: Long = 5_000L,
+    private val beforePlatformAdvertiseStart: (() -> Unit)? = null,
+    private val beforePlatformLinkCancel: (() -> Unit)? = null
 ) {
     
     companion object {
@@ -63,6 +65,7 @@ class BluetoothGattServerManager(
     private var gattServer: BluetoothGattServer? = null
     private val serverLinkIDs = ConcurrentHashMap<String, String>()
     private val closingServerLinks = ConcurrentHashMap<String, String>()
+    private val closingServerLinkDeadlines = mutableMapOf<String, Job>()
     private var characteristic: BluetoothGattCharacteristic? = null
     private data class ActiveAdvertising(
         val advertiser: BluetoothLeAdvertiser,
@@ -84,7 +87,13 @@ class BluetoothGattServerManager(
     private data class DetachedServer(
         val server: BluetoothGattServer?,
         val advertising: ActiveAdvertising?,
-        val connections: List<BluetoothConnectionTracker.LinkToClose>
+        val connections: List<BluetoothConnectionTracker.LinkToClose>,
+        val closingDeadlines: List<Job>
+    )
+    private data class ClaimedServerLink(
+        val server: BluetoothGattServer?,
+        val generation: Long,
+        val linkID: String
     )
     private data class ClaimedGeneration(
         val ownerGeneration: Long,
@@ -119,14 +128,40 @@ class BluetoothGattServerManager(
 
     /** Close only the exact inbound GATT generation rejected by authenticated tie-break. */
     fun disconnectLink(device: BluetoothDevice, linkID: String) {
-        val shouldClose = synchronized(serverStateLock) {
-            if (serverLinkIDs[device.address] != linkID) return@synchronized false
+        val claimed = synchronized(serverStateLock) {
+            if (!isActive || serverLinkIDs[device.address] != linkID) return@synchronized null
             closingServerLinks[device.address] = linkID
             connectionTracker.removeSubscribedDevice(device)
-            true
+            ClaimedServerLink(gattServer, serverGeneration, linkID)
+        } ?: return
+        beforePlatformLinkCancel?.invoke()
+        try {
+            claimed.server?.cancelConnection(device)
+        } catch (_: SecurityException) {
+            Log.w(TAG, "Bluetooth permission revoked while disconnecting exact server link")
+        } catch (e: Exception) {
+            Log.w(TAG, "Exact server link disconnect failed (${e.javaClass.simpleName})")
         }
-        if (!shouldClose) return
-        disconnectDevice(device)
+        armLinkDisconnectDeadline(device.address, claimed)
+    }
+
+    /**
+     * A missing GATT operation callback means the inbound server generation itself is no longer
+     * trustworthy. Invalidate and detach it synchronously so the timeout handler cannot publish an
+     * outcome while a replacement could still be confused with this exact link.
+     */
+    fun invalidateTimedOutLink(device: BluetoothDevice, linkID: String): Boolean {
+        val claimed = claimGeneration(null) {
+            isActive && serverLinkIDs[device.address] == linkID
+        } ?: return false
+        releaseDetached(claimed.detached)
+        Log.w(TAG, "GATT server operation timed out; recycling server generation")
+        notifyRoleFailure(
+            claimed.ownerGeneration,
+            "server-link-operation-timeout",
+            BluetoothRoleFailureAction.RETRY_STACK
+        )
+        return true
     }
     
     /**
@@ -224,12 +259,15 @@ class BluetoothGattServerManager(
                 characteristic = null
                 serverLinkIDs.clear()
                 closingServerLinks.clear()
+                val closingDeadlines = closingServerLinkDeadlines.values.toList()
+                closingServerLinkDeadlines.clear()
                 val advertising = activeAdvertising
                 activeAdvertising = null
                 ClaimedGeneration(
                     claimedOwner,
                     DetachedServer(server, advertising,
-                        connectionTracker.getAllTrackedLinks().filter { !it.connection.isClient })
+                        connectionTracker.getAllTrackedLinks().filter { !it.connection.isClient },
+                        closingDeadlines)
                 )
         }
     }
@@ -237,6 +275,7 @@ class BluetoothGattServerManager(
     private fun releaseDetached(detached: DetachedServer) {
         // The generation is already invalid and no new start can adopt it. Platform calls and
         // delegates deliberately run after both state locks are released.
+        detached.closingDeadlines.forEach { it.cancel() }
         stopAdvertising(detached.advertising)
         val server = detached.server
         if (server != null) {
@@ -407,6 +446,7 @@ class BluetoothGattServerManager(
                             if (!isActive || serverGeneration != generation) return
                             val linkID = serverLinkIDs.remove(address)
                             closingServerLinks.remove(address)
+                            closingServerLinkDeadlines.remove(address)?.cancel()
                             val peerID = linkID?.let(connectionTracker::getPeerForLink)
                             val removed = linkID != null && connectionTracker.cleanupDeviceConnectionIfCurrent(address, linkID)
                             if (removed) connectionTracker.removeSubscribedDevice(device)
@@ -821,6 +861,38 @@ class BluetoothGattServerManager(
         releaseDetached(claimed.detached)
         Log.w(TAG, "GATT service generation failed: $reason")
         notifyRoleFailure(claimed.ownerGeneration, reason, BluetoothRoleFailureAction.RETRY_STACK)
+    }
+
+    private fun armLinkDisconnectDeadline(address: String, claimed: ClaimedServerLink) {
+        val deadline = connectionScope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
+            delay(linkDisconnectCallbackTimeoutMs)
+            failClosingLinkGeneration(claimed.generation, address, claimed.linkID)
+        }
+        synchronized(serverStateLock) {
+            if (isActive && serverGeneration == claimed.generation &&
+                serverLinkIDs[address] == claimed.linkID &&
+                closingServerLinks[address] == claimed.linkID
+            ) {
+                closingServerLinkDeadlines.remove(address)?.cancel()
+                closingServerLinkDeadlines[address] = deadline
+            } else {
+                deadline.cancel()
+            }
+        }
+        deadline.start()
+    }
+
+    private fun failClosingLinkGeneration(generation: Long, address: String, linkID: String) {
+        val claimed = claimGeneration(generation) {
+            serverLinkIDs[address] == linkID && closingServerLinks[address] == linkID
+        } ?: return
+        releaseDetached(claimed.detached)
+        Log.w(TAG, "GATT server link disconnect callback timed out")
+        notifyRoleFailure(
+            claimed.ownerGeneration,
+            "link-disconnect-callback-timeout",
+            BluetoothRoleFailureAction.RETRY_STACK
+        )
     }
 
     private fun stopAdvertisingAttempt(

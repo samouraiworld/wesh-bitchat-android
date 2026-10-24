@@ -63,6 +63,7 @@ class BluetoothGattServerPermissionCallbacksTest {
     private val failureOwners = mutableListOf<Long>()
     private val readyOwners = mutableListOf<Long>()
     private var beforeAdvertiseStart: (() -> Unit)? = null
+    private var beforeLinkCancel: (() -> Unit)? = null
     private val manager = BluetoothGattServerManager(context, scope, tracker, permissions, power,
         delegate,
         roleFailure = { owner, reason, action ->
@@ -70,7 +71,8 @@ class BluetoothGattServerPermissionCallbacksTest {
             roleFailures += reason to action
         },
         roleReady = readyOwners::add,
-        beforePlatformAdvertiseStart = { beforeAdvertiseStart?.invoke() }
+        beforePlatformAdvertiseStart = { beforeAdvertiseStart?.invoke() },
+        beforePlatformLinkCancel = { beforeLinkCancel?.invoke() }
     )
     private val device = mock<BluetoothDevice> {
         on { address }.thenReturn("AA:BB:CC:DD:EE:01")
@@ -629,6 +631,138 @@ class BluetoothGattServerPermissionCallbacksTest {
         callback.onConnectionStateChange(device, BluetoothGatt.GATT_SUCCESS,
             BluetoothProfile.STATE_DISCONNECTED)
         connect()
+        assertEquals(1, tracker.getConnectedDeviceCount())
+        verify(delegate, times(2)).onServerConnectionRegistered(device)
+    }
+
+    @Test fun `exact link cancel never targets a replacement server generation`() {
+        start(); publish(); connect()
+        val rejectedLink = tracker.getAllDeviceConnections().single().linkID
+        val linkClaimed = CountDownLatch(1)
+        val allowCancel = CountDownLatch(1)
+        beforeLinkCancel = {
+            linkClaimed.countDown()
+            assertTrue(allowCancel.await(5, TimeUnit.SECONDS))
+        }
+
+        val cancelThread = thread(name = "cancel-exact-server-link") {
+            manager.disconnectLink(device, rejectedLink)
+        }
+        assertTrue(linkClaimed.await(5, TimeUnit.SECONDS))
+
+        manager.stop()
+        val replacement = mock<BluetoothGattServer>()
+        whenever(replacement.addService(any())).thenAnswer {
+            service = it.getArgument(0)
+            true
+        }
+        openResult = replacement
+        assertEquals(BluetoothRoleStartResult.STARTED, manager.startResult(ownerGeneration = 72))
+        scope.runCurrent()
+        assertSame(replacement, manager.getGattServer())
+
+        allowCancel.countDown()
+        cancelThread.join(5_000)
+        assertFalse(cancelThread.isAlive)
+
+        verify(gatt, atLeastOnce()).cancelConnection(device)
+        verify(replacement, never()).cancelConnection(device)
+    }
+
+    @Test fun `timed out exact link invalidates server generation before handler returns`() {
+        assertEquals(BluetoothRoleStartResult.STARTED, manager.startResult(ownerGeneration = 75))
+        scope.runCurrent()
+        val staleServerCallback = callback
+        connect()
+        val timedOutLink = tracker.getAllDeviceConnections().single().linkID
+
+        assertTrue(manager.invalidateTimedOutLink(device, timedOutLink))
+
+        // The manager callback is deliberately asynchronous, but exact-link state and platform
+        // resources must already be gone when the timeout handler returns.
+        assertNull(manager.getGattServer())
+        assertEquals(0, tracker.getConnectedDeviceCount())
+        verify(gatt).cancelConnection(device)
+        verify(gatt).close()
+        assertTrue(roleFailures.isEmpty())
+
+        scope.runCurrent()
+        assertEquals(
+            listOf("server-link-operation-timeout" to BluetoothRoleFailureAction.RETRY_STACK),
+            roleFailures
+        )
+        assertEquals(listOf(75L), failureOwners)
+
+        val replacement = mock<BluetoothGattServer>()
+        whenever(replacement.addService(any())).thenAnswer {
+            service = it.getArgument(0)
+            true
+        }
+        openResult = replacement
+        assertEquals(BluetoothRoleStartResult.STARTED, manager.startResult(ownerGeneration = 76))
+        scope.runCurrent()
+        val replacementServerCallback = callback
+        replacementServerCallback.onConnectionStateChange(
+            device,
+            BluetoothGatt.GATT_SUCCESS,
+            BluetoothProfile.STATE_CONNECTED
+        )
+        assertEquals(1, tracker.getConnectedDeviceCount())
+
+        staleServerCallback.onConnectionStateChange(
+            device,
+            BluetoothGatt.GATT_SUCCESS,
+            BluetoothProfile.STATE_DISCONNECTED
+        )
+        assertEquals(1, tracker.getConnectedDeviceCount())
+        verify(replacement, never()).cancelConnection(device)
+    }
+
+    @Test fun `missing exact link disconnect callback recycles generation and readmits address`() {
+        assertEquals(BluetoothRoleStartResult.STARTED, manager.startResult(ownerGeneration = 73))
+        scope.runCurrent()
+        publish()
+        val advertising = argumentCaptor<AdvertiseCallback>()
+        verify(advertiser).startAdvertising(any(), any(), any(), advertising.capture())
+        advertising.firstValue.onStartSuccess(AdvertiseSettings.Builder().build())
+        scope.runCurrent()
+        val staleServerCallback = callback
+        connect()
+        val timedOutLink = tracker.getAllDeviceConnections().single().linkID
+
+        manager.disconnectLink(device, timedOutLink)
+        scope.advanceTimeBy(5_000)
+        scope.runCurrent()
+
+        assertNull(manager.getGattServer())
+        assertEquals(
+            listOf("link-disconnect-callback-timeout" to BluetoothRoleFailureAction.RETRY_STACK),
+            roleFailures
+        )
+        assertEquals(listOf(73L), failureOwners)
+        assertEquals(0, tracker.getConnectedDeviceCount())
+
+        val replacement = mock<BluetoothGattServer>()
+        whenever(replacement.addService(any())).thenAnswer {
+            service = it.getArgument(0)
+            true
+        }
+        openResult = replacement
+        assertEquals(BluetoothRoleStartResult.STARTED, manager.startResult(ownerGeneration = 74))
+        scope.runCurrent()
+        val replacementCallback = callback
+        replacementCallback.onConnectionStateChange(
+            device,
+            BluetoothGatt.GATT_SUCCESS,
+            BluetoothProfile.STATE_CONNECTED
+        )
+        assertEquals(1, tracker.getConnectedDeviceCount())
+
+        staleServerCallback.onConnectionStateChange(
+            device,
+            BluetoothGatt.GATT_SUCCESS,
+            BluetoothProfile.STATE_DISCONNECTED
+        )
         assertEquals(1, tracker.getConnectedDeviceCount())
         verify(delegate, times(2)).onServerConnectionRegistered(device)
     }
