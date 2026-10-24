@@ -11,6 +11,7 @@ import com.bitchat.android.protocol.MessageType
 import com.bitchat.android.protocol.SpecialRecipients
 import com.bitchat.android.util.toHexString
 import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
 import org.junit.*
 import org.junit.Assert.*
 import org.junit.runner.RunWith
@@ -60,19 +61,55 @@ class WeshBluetoothHandoffTest {
     }
     @Test fun `rejected GATT operation produces failure rather than sent or unbounded retries`() = runBlocking<Unit> {
         whenever(gatt.writeCharacteristic(any())).thenReturn(false)
-        assertFalse(withTimeout(5_000) { broadcaster.broadcastPacketAndAwaitAcceptance(packet(2000), null, null) { true } })
-        verify(gatt, atLeastOnce()).writeCharacteristic(any())
+        assertEquals(BoundSendOutcome.NOT_SENT, withTimeout(5_000) {
+            broadcaster.broadcastPacketAndAwaitOutcome(packet(32), null, null) { true }
+        })
+        verify(gatt, times(1)).writeCharacteristic(any())
     }
 
-    @Test fun `local API acceptance followed by disconnect is not a completed handoff`() = runBlocking<Unit> {
+    @Test fun `local API acceptance followed by disconnect is unconfirmed`() = runBlocking<Unit> {
         val started = CompletableDeferred<Unit>()
         whenever(gatt.writeCharacteristic(any())).thenAnswer { started.complete(Unit); true }
         val outcome = async {
-            broadcaster.broadcastPacketAndAwaitAcceptance(packet(32), null, null) { true }
+            broadcaster.broadcastPacketAndAwaitOutcome(packet(32), null, null) { true }
         }
         withTimeout(1_000) { started.await() }
         broadcaster.onLinkDisconnected(address, "synthetic-generation")
-        assertFalse(withTimeout(1_000) { outcome.await() })
+        assertEquals(BoundSendOutcome.UNCONFIRMED, withTimeout(1_000) { outcome.await() })
+    }
+
+    @Test fun `local API acceptance without a callback is unconfirmed`() = runBlocking<Unit> {
+        broadcaster.shutdown()
+        broadcaster = BluetoothPacketBroadcaster(
+            scope, tracker, FragmentManager(), "1111222233334444", gattCallbackTimeoutMs = 50L
+        )
+        whenever(gatt.writeCharacteristic(any())).thenReturn(true)
+
+        assertEquals(BoundSendOutcome.UNCONFIRMED, withTimeout(1_000) {
+            broadcaster.broadcastPacketAndAwaitOutcome(packet(32), null, null) { true }
+        })
+        verify(tracker).cleanupDeviceConnectionIfCurrent(address, "synthetic-generation")
+    }
+
+    @Test fun `callback failures after local API acceptance are unconfirmed`() = runBlocking<Unit> {
+        val writes = Channel<Unit>(Channel.UNLIMITED)
+        whenever(gatt.writeCharacteristic(any())).thenAnswer {
+            writes.trySend(Unit)
+            true
+        }
+        val outcome = async {
+            broadcaster.broadcastPacketAndAwaitOutcome(packet(32), null, null) { true }
+        }
+
+        repeat(4) {
+            withTimeout(1_000) { writes.receive() }
+            broadcaster.onGattClientWriteComplete(
+                address,
+                "synthetic-generation",
+                BluetoothGatt.GATT_FAILURE
+            )
+        }
+        assertEquals(BoundSendOutcome.UNCONFIRMED, withTimeout(1_000) { outcome.await() })
     }
 
     @Test fun `missing GATT callback times out invalidates link and releases its whole queue`() = runBlocking<Unit> {

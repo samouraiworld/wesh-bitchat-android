@@ -1066,6 +1066,49 @@ class WeshInternetRouteTest {
         }
     }
 
+    @Test fun `an unconfirmed GATT handoff persists may-have-left and waits for its ack window`() =
+        withPersistedRouter { router ->
+            val mesh = router.meshForTesting
+            val bobPeer = ContactIdentityResolver.peerIdForNoiseKey(bobNoise)
+            whenever(mesh.getPeerNicknames()).thenReturn(mapOf(bobPeer to "Bob"))
+            whenever(mesh.getPeerInfo(bobPeer)).thenReturn(PeerInfo(id = bobPeer, nickname = "Bob", isConnected = true,
+                noisePublicKey = bobNoise, isDirectConnection = true, signingPublicKey = ByteArray(32),
+                isVerifiedNickname = true, lastSeen = 1L))
+            whenever(mesh.getAuthenticatedRemoteStaticKey(bobPeer)).thenReturn(bobNoise)
+            whenever(mesh.hasEstablishedSession(bobPeer)).thenReturn(true)
+            kotlinx.coroutines.runBlocking {
+                whenever(mesh.sendPrivateMessageBoundOutcome(any(), any(), any(), any(), any()))
+                    .thenReturn(com.bitchat.android.mesh.BoundSendOutcome.UNCONFIRMED)
+            }
+            var now = 1_000_000L
+            router.clock = { now }
+
+            assertEquals(MessageRouter.RouteResult.MESH,
+                router.sendPrivate("salut", bobConversation, "Bob", "p-old"))
+            router.settle()
+
+            fun persisted(): PendingOutgoingDelivery = kotlinx.coroutines.runBlocking {
+                AppStateStore.pendingOutgoingPrivateMessages()!!.single { it.message.id == "p-old" }
+            }
+            waitFor { persisted().bluetoothAttempts == 1 }
+            val pending = persisted()
+            assertTrue(pending.bluetoothMayHaveLeft)
+            assertEquals(now + AppConstants.Router.weshBluetoothRetryDelayMs(1), pending.bluetoothRetryAtMs)
+            assertEquals(DeliveryStatus.Sending, pending.message.deliveryStatus)
+
+            router.tickOutbox(now)
+            router.settle()
+            now += AppConstants.Router.weshBluetoothRetryDelayMs(1) - 1
+            router.tickOutbox(now)
+            router.settle()
+            assertTrue(alice.link.published.isEmpty())
+            kotlinx.coroutines.runBlocking {
+                verify(mesh, org.mockito.kotlin.times(1)).sendPrivateMessageBoundOutcome(
+                    any(), any(), any(), org.mockito.kotlin.eq("p-old"), any()
+                )
+            }
+        }
+
     @Test fun `restoreWeshOutboxOnce retries after a null store read instead of staying blocked`() = withPersistedRouter { router ->
         alice.link.answer = RelayPublishOutcome.UNCONFIRMED
         AppStateStore.releasePrivateConversationHistory(bobConversation)
