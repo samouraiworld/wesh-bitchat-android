@@ -84,4 +84,11 @@ class BluetoothConnectionManagerTest {
         assertEquals(AdapterReaction.NONE, adapterReaction(BluetoothAdapter.STATE_ON, active = true, resumePending = true))
         assertEquals(AdapterReaction.NONE, adapterReaction(BluetoothAdapter.STATE_TURNING_ON, active = true, resumePending = false))
     }
+
+    @Test
+    fun `cold start while Bluetooth is off waits for state on unless manager is terminal`() {
+        assertTrue(initialResumeWhenBluetoothOn(bluetoothEnabled = false, stopped = false))
+        assertFalse(initialResumeWhenBluetoothOn(bluetoothEnabled = true, stopped = false))
+        assertFalse(initialResumeWhenBluetoothOn(bluetoothEnabled = false, stopped = true))
+    }
 }

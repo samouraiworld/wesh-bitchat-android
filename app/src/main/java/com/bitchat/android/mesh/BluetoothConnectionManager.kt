@@ -9,6 +9,7 @@ import android.util.Log
 import androidx.core.content.ContextCompat
 import com.bitchat.android.model.RoutedPacket
 import com.bitchat.android.protocol.BitchatPacket
+import com.bitchat.android.protocol.MessageType
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.collect
@@ -42,7 +43,7 @@ class BluetoothConnectionManager(
     
     // Component managers
     private val permissionManager = BluetoothPermissionManager(context)
-    private val connectionTracker = BluetoothConnectionTracker(connectionScope, powerManager)
+    private val connectionTracker = BluetoothConnectionTracker(connectionScope, powerManager, myPeerID)
     private val packetBroadcaster = BluetoothPacketBroadcaster(connectionScope, connectionTracker, fragmentManager, myPeerID)
     
     // Delegate for component managers to call back to main manager
@@ -62,7 +63,9 @@ class BluetoothConnectionManager(
                 }
             }
 
-            if (peerID == myPeerID) return // Ignore messages from self
+            // A validated ANNOUNCE claiming our identity must reach the tracker so the link is
+            // closed fail-closed. Other reflected self packets remain ignored.
+            if (peerID == myPeerID && packet.type != MessageType.ANNOUNCE.value) return
 
             delegate?.onPacketReceived(packet, peerID, device, ingressLinkID)
         }
@@ -125,8 +128,20 @@ class BluetoothConnectionManager(
     // Public property for address-peer mapping
     val addressPeerMap get() = connectionTracker.addressPeerMap
 
-    fun observePeerIfCurrent(deviceAddress: String, linkID: String, peerID: String): Boolean =
-        connectionTracker.observePeerIfCurrent(deviceAddress, linkID, peerID)
+    fun observePeerIfCurrent(deviceAddress: String, linkID: String, peerID: String): Boolean {
+        val observation = connectionTracker.observePeerIfCurrent(deviceAddress, linkID, peerID)
+        observation.linksToClose.forEach { link ->
+            val loser = link.connection
+            // Tie-break removes the loser from the tracker before Android reports disconnect, so
+            // release per-link queues and fragment quota here without announcing peer loss: the
+            // authenticated winner remains connected.
+            packetBroadcaster.onLinkDisconnected(link.deviceAddress, loser.linkID)
+            fragmentManager?.onIngressLinkClosed(PacketProcessor.linkQuotaKey(loser.linkID))
+            if (loser.isClient) clientManager.disconnectLink(link.deviceAddress, loser.linkID)
+            else serverManager.disconnectLink(loser.device, loser.linkID)
+        }
+        return observation.accepted
+    }
 
     fun getCurrentLinkID(deviceAddress: String): String? =
         connectionTracker.getCurrentLinkID(deviceAddress)
@@ -250,7 +265,9 @@ class BluetoothConnectionManager(
     /**
      * Start all Bluetooth services with power optimization
      */
-    fun startServices(): Boolean {
+    @Synchronized fun startServices(): Boolean {
+        if (stopped) return false
+        if (isActive) return true
         if (!isBleTransportEnabled()) {
             Log.i(TAG, "BLE transport disabled by debug settings; not starting Bluetooth services")
             disableTransport()
@@ -261,6 +278,13 @@ class BluetoothConnectionManager(
             Log.e(TAG, "Missing Bluetooth permissions")
             return false
         }
+
+        // Register even when Bluetooth is currently off. Otherwise no STATE_ON event can ever
+        // reach this manager and a cold start with Bluetooth off remains wedged until process exit.
+        registerAdapterReceiver()
+        // Arm recovery before reading adapter state, so a concurrent STATE_ON broadcast cannot
+        // slip through the check-then-set window and leave the manager waiting forever.
+        resumeWhenBluetoothOn = initialResumeWhenBluetoothOn(bluetoothEnabled = false, stopped = stopped)
         
         val bluetoothEnabled = try {
             bluetoothAdapter?.isEnabled == true
@@ -275,7 +299,7 @@ class BluetoothConnectionManager(
         
         try {
             isActive = true
-            registerAdapterReceiver()
+            resumeWhenBluetoothOn = false
 
         // set the adapter's name to our 8-character peerID for iOS privacy, TODO: Make this configurable
         // try {
@@ -597,3 +621,7 @@ internal fun adapterReaction(state: Int, active: Boolean, resumePending: Boolean
     BluetoothAdapter.STATE_ON -> if (resumePending && !active) AdapterReaction.RESTART else AdapterReaction.NONE
     else -> AdapterReaction.NONE
 }
+
+/** A reusable manager started while Bluetooth is off must keep listening for STATE_ON. */
+internal fun initialResumeWhenBluetoothOn(bluetoothEnabled: Boolean, stopped: Boolean): Boolean =
+    !bluetoothEnabled && !stopped

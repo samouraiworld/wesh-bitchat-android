@@ -84,7 +84,12 @@ class BluetoothGattClientManager(
     }
 
     // Scan management
-    @Volatile private var scanCallback: ScanCallback? = null
+    private data class ActiveScan(
+        val scanner: BluetoothLeScanner,
+        val callback: ScanCallback
+    )
+    private val scanLock = Any()
+    @Volatile private var activeScan: ActiveScan? = null
     
     // Scan rate limiting to prevent "scanning too frequently" errors
     private var lastScanStartTime = 0L
@@ -166,6 +171,11 @@ class BluetoothGattClientManager(
         Log.i(TAG, "GATT client manager stopped")
     }
 
+    /** Close only the exact outgoing GATT generation rejected by authenticated tie-break. */
+    fun disconnectLink(deviceAddress: String, linkID: String) = synchronized(clientLock) {
+        clientAttempts[deviceAddress]?.takeIf { it.linkID == linkID }?.finish()
+    }
+
     /**
      * Handle scan state changes from power manager
      */
@@ -216,8 +226,8 @@ class BluetoothGattClientManager(
         
         val scanFilters = listOf(scanFilter)
 
-        scanCallback = object : ScanCallback() {
-            private fun isCurrent(): Boolean = scanCallback === this && isActive && scanningDesired
+        val callback = object : ScanCallback() {
+            private fun isCurrent(): Boolean = activeScan?.callback === this && isActive && scanningDesired
 
             override fun onScanResult(callbackType: Int, result: ScanResult) {
                 if (isCurrent() && permissionManager.hasBluetoothPermissions()) handleScanResult(result)
@@ -266,15 +276,20 @@ class BluetoothGattClientManager(
             }
         }
         
-        try {
-            lastScanStartTime = currentTime
-            isCurrentlyScanning = true
-            
-            scanner.startScan(scanFilters, powerManager.getScanSettings(), scanCallback)
-            Log.i(TAG, "BLE scan started")
-        } catch (e: Exception) {
-            Log.e(TAG, "Exception starting scan: ${e.message}")
-            isCurrentlyScanning = false
+        synchronized(scanLock) {
+            if (!isActive || !scanningDesired || isCurrentlyScanning) return
+            val scan = ActiveScan(scanner, callback)
+            activeScan = scan
+            try {
+                lastScanStartTime = currentTime
+                isCurrentlyScanning = true
+                scanner.startScan(scanFilters, powerManager.getScanSettings(), callback)
+                Log.i(TAG, "BLE scan started")
+            } catch (e: Exception) {
+                Log.e(TAG, "Exception starting scan: ${e.message}")
+                if (activeScan === scan) activeScan = null
+                isCurrentlyScanning = false
+            }
         }
     }
     
@@ -283,15 +298,17 @@ class BluetoothGattClientManager(
      */
     @Suppress("DEPRECATION")
     private fun stopScanning() {
-        val callback = scanCallback
-        // Detach this scan before touching Android: permission loss cannot retain a live flag,
-        // and a later start must never inherit a deferred stop for the previous callback.
-        scanCallback = null
-        isCurrentlyScanning = false
-        if (callback == null) return
+        val scan = synchronized(scanLock) {
+            // Detach this generation before touching Android: permission loss cannot retain a
+            // live flag, and adapter replacement cannot redirect the stop to a different scanner.
+            activeScan.also {
+                activeScan = null
+                isCurrentlyScanning = false
+            }
+        } ?: return
         lastScanStopTime = currentTimeMillis()
         try {
-            bleScanner?.stopScan(callback)
+            scan.scanner.stopScan(scan.callback)
         } catch (_: SecurityException) {
             Log.w(TAG, "Bluetooth permission revoked while stopping scan")
         } catch (_: Exception) {
@@ -528,14 +545,11 @@ class BluetoothGattClientManager(
         private var releasedGatt: BluetoothGatt? = null
 
         private fun isCurrent(candidate: BluetoothGatt): Boolean {
-            val tracked = connectionTracker.getDeviceConnection(address)
             if (clientAttempts[address] !== this || phase == ClientPhase.CLOSED ||
                 (gatt != null && gatt !== candidate)) return false
-            // Android reports this attempt's own link to the local GATT server too, a few
-            // milliseconds before it connects: until the attempt registers its link at MTU,
-            // only another client link supersedes it.
-            val registered = phase >= ClientPhase.DISCOVERY
-            if (tracked != null && tracked.linkID != linkID && (tracked.isClient || registered)) {
+            // Once registered, only this exact generation owns its callbacks. A server link to
+            // the same address remains independent until ANNOUNCE authentication elects a winner.
+            if (phase >= ClientPhase.DISCOVERY && !connectionTracker.hasLink(address, linkID)) {
                 finish()
                 return false
             }
@@ -589,7 +603,7 @@ class BluetoothGattClientManager(
             if (clientAttempts[address] === this) {
                 clientAttempts.remove(address)
                 if (!backOff) connectionTracker.removePendingConnection(address)
-                val disconnectedPeerID = connectionTracker.addressPeerMap[address]
+                val disconnectedPeerID = connectionTracker.getPeerForLink(linkID)
                 if (connectionTracker.cleanupDeviceConnectionIfCurrent(address, linkID)) {
                     delegate?.onDeviceDisconnected(device, linkID, disconnectedPeerID)
                 }

@@ -243,16 +243,14 @@ class BluetoothPacketBroadcaster(
         val data = packet.packet.toBinaryData(
             padding = BLEPacketPaddingPolicy.shouldPadForBLE(packet.packet.type)
         ) ?: return@send false
-        val currentLink = connectionTracker.getDeviceConnection(deviceAddress)
-            ?.takeIf { it.linkID == linkID }
-            ?: return@send false
+        val currentLink = connectionTracker.getLink(deviceAddress, linkID) ?: return@send false
         if (currentLink.isClient) {
             return@send writeToDeviceConn(currentLink, data)
         }
         val serverTarget = connectionTracker.getSubscribedDevices()
             .firstOrNull { it.address == deviceAddress }
             ?: return@send false
-        notifyDevice(serverTarget, data, gattServer, characteristic)
+        notifyDevice(serverTarget, data, gattServer, characteristic, expectedLinkID = linkID)
     }
 
     private fun sendSinglePacketToPeer(
@@ -512,11 +510,13 @@ class BluetoothPacketBroadcaster(
         device: BluetoothDevice, 
         data: ByteArray,
         gattServer: BluetoothGattServer?,
-        characteristic: BluetoothGattCharacteristic?
+        characteristic: BluetoothGattCharacteristic?,
+        expectedLinkID: String? = null
     ): Boolean {
         val server = gattServer ?: return false
         val char = characteristic ?: return false
-        val linkID = connectionTracker.getDeviceConnection(device.address)
+        val linkID = (expectedLinkID?.let { connectionTracker.getLink(device.address, it) }
+            ?: connectionTracker.getDeviceConnection(device.address))
             ?.takeIf { !it.isClient }
             ?.linkID
             ?: return false

@@ -293,6 +293,7 @@ class BluetoothGattClientCallbacksTest {
     @Test fun `late callback cannot mutate an independently replaced tracker generation`() {
         val callback = connect()
         discover(callback)
+        assertTrue(tracker.cleanupDeviceConnectionIfCurrent(address, tracker.getCurrentLinkID(address)!!))
         val replacement = BluetoothConnectionTracker.DeviceConnection(device, linkID = "synthetic-new-link")
         tracker.addDeviceConnection(address, replacement)
         callback.onServicesDiscovered(gatt, BluetoothGatt.GATT_SUCCESS)
@@ -308,7 +309,9 @@ class BluetoothGattClientCallbacksTest {
         mtu(callback)
         verify(gatt).requestMtu(517)
         callback.onMtuChanged(gatt, 517, BluetoothGatt.GATT_SUCCESS)
-        assertTrue(tracker.getDeviceConnection(address)?.isClient == true)
+        assertEquals(2, tracker.getConnectedDeviceCount())
+        assertTrue(tracker.getAllDeviceConnections().any { it.isClient })
+        assertTrue(tracker.getAllDeviceConnections().any { !it.isClient })
         verify(gatt, never()).close()
     }
     @Test fun `denied close does not retain attempt or prevent repeated stop`() {
@@ -351,6 +354,30 @@ class BluetoothGattClientCallbacksTest {
         assertTrue(client.start())
         scope.runCurrent()
         assertTrue(client.connectToAddress(address))
+    }
+
+    @Test fun `scan stop uses the scanner instance that started the generation when adapter returns null`() {
+        assertTrue(client.start())
+        scope.runCurrent()
+        val callback = scanCallbacks.single()
+        whenever(adapter.bluetoothLeScanner).thenReturn(null)
+
+        client.stop()
+
+        verify(scanner).stopScan(callback)
+    }
+
+    @Test fun `scan stop never targets a replacement scanner instance`() {
+        val replacementScanner = mock<BluetoothLeScanner>()
+        assertTrue(client.start())
+        scope.runCurrent()
+        val callback = scanCallbacks.single()
+        whenever(adapter.bluetoothLeScanner).thenReturn(replacementScanner)
+
+        client.stop()
+
+        verify(scanner).stopScan(callback)
+        verify(replacementScanner, never()).stopScan(any<ScanCallback>())
     }
 
     @Test fun `old scan results batches and failures cannot act on a restarted scanner`() {

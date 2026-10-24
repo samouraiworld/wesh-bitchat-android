@@ -109,6 +109,33 @@ class BluetoothGattServerPermissionCallbacksTest {
         verify(advertiser, atLeast(0)).stopAdvertising(stopped.capture())
         assertEquals(1, (started.allValues - stopped.allValues.toSet()).size)
     }
+
+    @Test fun `advertising stop uses the advertiser instance that started it when adapter returns null`() {
+        start()
+        publish()
+        val started = argumentCaptor<AdvertiseCallback>()
+        verify(advertiser).startAdvertising(any(), any(), any(), started.capture())
+        whenever(adapter.bluetoothLeAdvertiser).thenReturn(null)
+
+        manager.stop()
+
+        verify(advertiser).stopAdvertising(started.firstValue)
+    }
+
+    @Test fun `advertising stop never targets a replacement advertiser instance`() {
+        val replacementAdvertiser = mock<BluetoothLeAdvertiser>()
+        start()
+        publish()
+        val started = argumentCaptor<AdvertiseCallback>()
+        verify(advertiser).startAdvertising(any(), any(), any(), started.capture())
+        whenever(adapter.bluetoothLeAdvertiser).thenReturn(replacementAdvertiser)
+
+        manager.stop()
+
+        verify(advertiser).stopAdvertising(started.firstValue)
+        verify(replacementAdvertiser, never()).stopAdvertising(any<AdvertiseCallback>())
+    }
+
     @Test fun `null open leaves server unavailable and permits a new attempt`() {
         openResult = null
         start()
@@ -209,6 +236,19 @@ class BluetoothGattServerPermissionCallbacksTest {
         verify(delegate, never()).onDeviceConnected(any())
         readyTime()
         verify(delegate).onDeviceConnected(device)
+    }
+
+    @Test fun `server disconnect removes subscription while a client link at the address survives`() {
+        start(); publish(); connect(); subscribe(); readyTime()
+        tracker.addDeviceConnection(device.address,
+            BluetoothConnectionTracker.DeviceConnection(device, isClient = true, linkID = "client"))
+
+        callback.onConnectionStateChange(device, BluetoothGatt.GATT_SUCCESS,
+            BluetoothProfile.STATE_DISCONNECTED)
+
+        assertTrue(tracker.getSubscribedDevices().isEmpty())
+        assertTrue(tracker.hasLink(device.address, "client"))
+        assertEquals(1, tracker.getConnectedDeviceCount())
     }
 
     @Test fun `CCCD disable removes subscription and cancels delayed readiness`() {

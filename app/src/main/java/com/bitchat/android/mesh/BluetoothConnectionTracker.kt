@@ -14,15 +14,20 @@ import java.util.UUID
  */
 class BluetoothConnectionTracker(
     private val connectionScope: CoroutineScope,
-    private val powerManager: PowerManager
+    private val powerManager: PowerManager,
+    private val localPeerID: String = ""
 ) : MeshConnectionTracker(connectionScope, TAG) {
     
     companion object {
         private const val TAG = "BluetoothConnectionTracker"
     }
     
-    // Connection tracking - reduced memory footprint
-    private val connectedDevices = ConcurrentHashMap<String, DeviceConnection>()
+    // A phone may temporarily have both a client and server GATT link to the same peer. Links are
+    // therefore owned by their generation ID until a validated ANNOUNCE elects one of them.
+    private val linksByID = ConcurrentHashMap<String, DeviceConnection>()
+    private val linkAddressByID = ConcurrentHashMap<String, String>()
+    private val addressLinkIDs = ConcurrentHashMap<String, MutableSet<String>>()
+    private val selectedLinkByAddress = ConcurrentHashMap<String, String>()
     private val subscribedDevices = CopyOnWriteArrayList<BluetoothDevice>()
     val addressPeerMap = ConcurrentHashMap<String, String>()
     // Track whether we have seen the first ANNOUNCE on a given device connection
@@ -43,9 +48,18 @@ class BluetoothConnectionTracker(
         val connectedAt: Long = System.currentTimeMillis(),
         val peerID: String? = null,
         /** Unique to this GATT connection, even when Android reuses the device address. */
-        val linkID: String = UUID.randomUUID().toString(),
-        /** The local server's link to the same address, when this client link holds the slot. */
-        val serverLinkID: String? = null
+        val linkID: String = UUID.randomUUID().toString()
+    )
+
+    data class LinkObservation(
+        val accepted: Boolean,
+        /** Links removed from routing which their owning GATT manager must now close. */
+        val linksToClose: List<LinkToClose> = emptyList()
+    )
+
+    data class LinkToClose(
+        val deviceAddress: String,
+        val connection: DeviceConnection
     )
     
     override fun start() {
@@ -59,25 +73,32 @@ class BluetoothConnectionTracker(
     }
 
     // Abstract implementations
-    override fun isConnected(id: String): Boolean = connectedDevices.containsKey(id)
+    override fun isConnected(id: String): Boolean = synchronized(connectionStateLock) {
+        addressLinkIDs[id]?.isNotEmpty() == true
+    }
     
     override fun disconnect(id: String) {
-        connectedDevices[id]?.gatt?.let {
-            try {
-                it.disconnect()
-            } catch (_: SecurityException) {
-                Log.w(TAG, "Bluetooth permission revoked while disconnecting")
-                closeGatt(it)
-            } catch (e: Exception) {
-                Log.w(TAG, "Error disconnecting GATT: ${e.message}")
-                closeGatt(it)
+        val links = synchronized(connectionStateLock) {
+            addressLinkIDs[id].orEmpty().mapNotNull(linksByID::get)
+        }
+        links.forEach { connection ->
+            connection.gatt?.let {
+                try {
+                    it.disconnect()
+                } catch (_: SecurityException) {
+                    Log.w(TAG, "Bluetooth permission revoked while disconnecting")
+                    closeGatt(it)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Error disconnecting GATT: ${e.message}")
+                    closeGatt(it)
+                }
             }
         }
         cleanupDeviceConnection(id)
         Log.d(TAG, "Requested disconnect for $id")
     }
 
-    override fun getConnectionCount(): Int = connectedDevices.size
+    override fun getConnectionCount(): Int = linksByID.size
     
     /**
      * Add a device connection
@@ -85,13 +106,15 @@ class BluetoothConnectionTracker(
     fun addDeviceConnection(deviceAddress: String, deviceConn: DeviceConnection) {
         Log.d(TAG, "Tracker: Adding device connection for $deviceAddress (isClient: ${deviceConn.isClient}")
         synchronized(connectionStateLock) {
-            val current = connectedDevices[deviceAddress]
-            // A client link taking the slot keeps the server link it replaces: packets still arrive there.
-            connectedDevices[deviceAddress] = if (deviceConn.isClient && current != null && !current.isClient) {
-                deviceConn.copy(serverLinkID = current.linkID)
-            } else deviceConn
-            // A route observation belongs to this GATT generation, not its reusable address.
-            addressPeerMap.remove(deviceAddress)
+            val links = addressLinkIDs.getOrPut(deviceAddress) { linkedSetOf() }
+            val wasEmpty = links.isEmpty()
+            links += deviceConn.linkID
+            linksByID[deviceConn.linkID] = deviceConn
+            linkAddressByID[deviceConn.linkID] = deviceAddress
+            selectedLinkByAddress.putIfAbsent(deviceAddress, deviceConn.linkID)
+            // An address route belongs to an authenticated live generation. A second, still
+            // anonymous generation must not erase the route of the first one.
+            if (wasEmpty) addressPeerMap.remove(deviceAddress)
         }
         removePendingConnection(deviceAddress)
         // Mark as awaiting first ANNOUNCE on this connection
@@ -99,27 +122,22 @@ class BluetoothConnectionTracker(
     }
     
     /**
-     * Track a link accepted by the local GATT server, unless this device's own client link to the
-     * same address already holds the slot: Android reports that link to the server too, and it
-     * then rides along as [DeviceConnection.serverLinkID]. Returns true when [deviceConn] is tracked.
+     * Track a link accepted by the local GATT server. It remains independent from an outgoing
+     * link to the same address until both have authenticated their peer identity.
      */
-    fun addServerConnection(deviceAddress: String, deviceConn: DeviceConnection): Boolean =
-        synchronized(connectionStateLock) {
-            val current = connectedDevices[deviceAddress]
-            if (current?.isClient == true) {
-                connectedDevices[deviceAddress] = current.copy(serverLinkID = deviceConn.linkID)
-                return@synchronized false
-            }
-            addDeviceConnection(deviceAddress, deviceConn)
-            true
-        }
+    fun addServerConnection(deviceAddress: String, deviceConn: DeviceConnection): Boolean {
+        addDeviceConnection(deviceAddress, deviceConn)
+        return true
+    }
 
     /**
      * Update a device connection
      */
     fun updateDeviceConnection(deviceAddress: String, deviceConn: DeviceConnection) {
         synchronized(connectionStateLock) {
-            connectedDevices[deviceAddress] = deviceConn
+            if (addressLinkIDs[deviceAddress]?.contains(deviceConn.linkID) == true) {
+                linksByID[deviceConn.linkID] = deviceConn
+            }
         }
     }
 
@@ -128,9 +146,9 @@ class BluetoothConnectionTracker(
         linkID: String,
         update: (DeviceConnection) -> DeviceConnection
     ): Boolean = synchronized(connectionStateLock) {
-        val current = connectedDevices[deviceAddress] ?: return@synchronized false
-        if (current.linkID != linkID) return@synchronized false
-        connectedDevices[deviceAddress] = update(current)
+        if (addressLinkIDs[deviceAddress]?.contains(linkID) != true) return@synchronized false
+        val current = linksByID[linkID] ?: return@synchronized false
+        linksByID[linkID] = update(current)
         true
     }
     
@@ -138,11 +156,23 @@ class BluetoothConnectionTracker(
      * Get a device connection
      */
     fun getDeviceConnection(deviceAddress: String): DeviceConnection? {
-        return connectedDevices[deviceAddress]
+        return synchronized(connectionStateLock) {
+            selectedLinkByAddress[deviceAddress]?.let(linksByID::get)
+        }
     }
 
     fun getCurrentLinkID(deviceAddress: String): String? =
-        connectedDevices[deviceAddress]?.linkID
+        synchronized(connectionStateLock) { selectedLinkByAddress[deviceAddress] }
+
+    fun hasLink(deviceAddress: String, linkID: String): Boolean = synchronized(connectionStateLock) {
+        addressLinkIDs[deviceAddress]?.contains(linkID) == true && linksByID.containsKey(linkID)
+    }
+
+    fun getLink(deviceAddress: String, linkID: String): DeviceConnection? = synchronized(connectionStateLock) {
+        if (addressLinkIDs[deviceAddress]?.contains(linkID) == true) linksByID[linkID] else null
+    }
+
+    fun getPeerForLink(linkID: String): String? = linksByID[linkID]?.peerID
 
     /**
      * Records that the current link delivered a validated, non-relayed ANNOUNCE for [peerID].
@@ -151,20 +181,69 @@ class BluetoothConnectionTracker(
      * other observations. The link generation check prevents a late packet from an old GATT
      * connection from being applied to a replacement connection that reused the same address.
      */
-    fun observePeerIfCurrent(deviceAddress: String, linkID: String, peerID: String): Boolean =
+    fun observePeerIfCurrent(deviceAddress: String, linkID: String, peerID: String): LinkObservation =
         synchronized(connectionStateLock) {
-            val current = connectedDevices[deviceAddress] ?: return@synchronized false
-            if (current.linkID != linkID && current.serverLinkID != linkID) return@synchronized false
-            addressPeerMap[deviceAddress] = peerID
-            true
+            if (addressLinkIDs[deviceAddress]?.contains(linkID) != true) {
+                return@synchronized LinkObservation(false)
+            }
+            val current = linksByID[linkID] ?: return@synchronized LinkObservation(false)
+            val normalizedPeer = peerID.lowercase()
+
+            // A remote claiming our identity is never allowed to influence routing or tie-breaks.
+            if (localPeerID.isNotBlank() && normalizedPeer == localPeerID.lowercase()) {
+                removeLinkLocked(deviceAddress, linkID)
+                return@synchronized LinkObservation(false, listOf(LinkToClose(deviceAddress, current)))
+            }
+
+            // The same live Android address cannot change authenticated identity. This also stops
+            // a delayed ANNOUNCE from an old generation rewriting a replacement route.
+            val conflict = addressLinkIDs[deviceAddress].orEmpty()
+                .asSequence()
+                .filter { it != linkID }
+                .mapNotNull(linksByID::get)
+                .any { it.peerID != null && it.peerID.lowercase() != normalizedPeer }
+            if (conflict) {
+                removeLinkLocked(deviceAddress, linkID)
+                return@synchronized LinkObservation(false, listOf(LinkToClose(deviceAddress, current)))
+            }
+
+            linksByID[linkID] = current.copy(peerID = normalizedPeer)
+            val candidates = linksByID.values.filter { it.peerID?.lowercase() == normalizedPeer }
+            val hasBothRoles = candidates.any { it.isClient } && candidates.any { !it.isClient }
+            val desiredClient = localPeerID.isNotBlank() && localPeerID.lowercase() < normalizedPeer
+            // Peer IDs choose the direction, which is symmetric across the two phones. Multiple
+            // generations of the chosen direction remain independently tracked: their local
+            // timestamps and link IDs are not shared and therefore cannot safely break a tie.
+            val losers = if (hasBothRoles && localPeerID.isNotBlank()) {
+                candidates.filter { it.isClient != desiredClient }
+            } else {
+                emptyList()
+            }
+            val linksToClose = losers.mapNotNull { loser ->
+                linkAddressByID[loser.linkID]?.let { LinkToClose(it, loser) }
+            }
+            linksToClose.forEach { removeLinkLocked(it.deviceAddress, it.connection.linkID) }
+            val keepers = candidates.filter { candidate -> losers.none { it.linkID == candidate.linkID } }
+            keepers.forEach { keeper ->
+                val address = linkAddressByID[keeper.linkID] ?: return@forEach
+                selectedLinkByAddress[address] = keeper.linkID
+                refreshAddressPeerLocked(address)
+            }
+            LinkObservation(losers.none { it.linkID == linkID }, linksToClose)
         }
     
     /**
      * Get all connected devices
      */
     fun getConnectedDevices(): Map<String, DeviceConnection> {
-        return connectedDevices.toMap()
+        return synchronized(connectionStateLock) {
+            selectedLinkByAddress.mapNotNull { (address, linkID) ->
+                linksByID[linkID]?.let { address to it }
+            }.toMap()
+        }
     }
+
+    fun getAllDeviceConnections(): List<DeviceConnection> = linksByID.values.toList()
     
     /**
      * Get subscribed devices (for server connections)
@@ -177,7 +256,7 @@ class BluetoothConnectionTracker(
      * Get current RSSI for a device address
      */
     fun getDeviceRSSI(deviceAddress: String): Int? {
-        return connectedDevices[deviceAddress]?.rssi?.takeIf { it != Int.MIN_VALUE }
+        return getDeviceConnection(deviceAddress)?.rssi?.takeIf { it != Int.MIN_VALUE }
     }
     
     /**
@@ -192,7 +271,10 @@ class BluetoothConnectionTracker(
      */
     fun getBestRSSI(deviceAddress: String): Int? {
         // Prefer connection RSSI if available and valid
-        connectedDevices[deviceAddress]?.rssi?.takeIf { it != Int.MIN_VALUE }?.let { return it }
+        synchronized(connectionStateLock) {
+            addressLinkIDs[deviceAddress].orEmpty().mapNotNull(linksByID::get)
+                .map { it.rssi }.filter { it != Int.MIN_VALUE }.maxOrNull()
+        }?.let { return it }
         
         // Fall back to scan RSSI
         return scanRSSI[deviceAddress]
@@ -202,6 +284,7 @@ class BluetoothConnectionTracker(
      * Add a subscribed device
      */
     fun addSubscribedDevice(device: BluetoothDevice) {
+        subscribedDevices.removeAll { it.address == device.address }
         subscribedDevices.add(device)
     }
     
@@ -209,7 +292,7 @@ class BluetoothConnectionTracker(
      * Remove a subscribed device
      */
     fun removeSubscribedDevice(device: BluetoothDevice) {
-        subscribedDevices.remove(device)
+        subscribedDevices.removeAll { it.address == device.address }
     }
     
     /**
@@ -222,7 +305,7 @@ class BluetoothConnectionTracker(
      */
     fun isPeerConnected(peerID: String): Boolean {
         // Only consider actual connected devices that have identified themselves
-        return connectedDevices.values.any { it.peerID == peerID }
+        return linksByID.values.any { it.peerID == peerID }
     }
     
     /**
@@ -242,8 +325,9 @@ class BluetoothConnectionTracker(
      * Check if a new client connection is allowed based on limits
      */
     fun canConnectAsClient(maxOverall: Int, maxClient: Int): Boolean {
-        val total = connectedDevices.size
-        val clients = connectedDevices.values.count { it.isClient }
+        val all = linksByID.values.toList()
+        val total = all.size
+        val clients = all.count { it.isClient }
         return total < maxOverall && clients < maxClient
     }
     
@@ -255,7 +339,7 @@ class BluetoothConnectionTracker(
      */
     fun getConnectionsToEvict(maxOverall: Int, maxServer: Int, maxClient: Int): List<DeviceConnection> {
         val toEvict = mutableSetOf<DeviceConnection>()
-        val currentDevices = connectedDevices.values.toList()
+        val currentDevices = linksByID.values.toList()
         
         // 1. Enforce Role Limits
         val clients = currentDevices.filter { it.isClient }.sortedBy { it.connectedAt }
@@ -300,7 +384,11 @@ class BluetoothConnectionTracker(
      */
     fun cleanupDeviceConnection(deviceAddress: String) {
         synchronized(connectionStateLock) {
-            connectedDevices.remove(deviceAddress)
+            addressLinkIDs.remove(deviceAddress).orEmpty().forEach { linkID ->
+                linksByID.remove(linkID)
+                linkAddressByID.remove(linkID)
+            }
+            selectedLinkByAddress.remove(deviceAddress)
             subscribedDevices.removeAll { it.address == deviceAddress }
             addressPeerMap.remove(deviceAddress)
             firstAnnounceSeen.remove(deviceAddress)
@@ -312,28 +400,35 @@ class BluetoothConnectionTracker(
         deviceAddress: String,
         expectedLinkID: String
     ): Boolean = synchronized(connectionStateLock) {
-        val current = connectedDevices[deviceAddress] ?: return@synchronized false
-        if (current.linkID != expectedLinkID) {
-            if (current.serverLinkID == expectedLinkID) connectedDevices[deviceAddress] = current.copy(serverLinkID = null)
-            return@synchronized false
-        }
-        val serverLinkID = current.serverLinkID
-        if (serverLinkID != null) {
-            // The client link ended but the server link to the same address is still up: it takes the slot.
-            connectedDevices[deviceAddress] = DeviceConnection(device = current.device, rssi = current.rssi,
-                isClient = false, peerID = current.peerID, linkID = serverLinkID)
-            Log.d(TAG, "Client link for $deviceAddress ended; its server link stays tracked")
-            return@synchronized true
-        }
-        if (connectedDevices.remove(deviceAddress, current)) {
+        if (!removeLinkLocked(deviceAddress, expectedLinkID)) return@synchronized false
+        Log.d(TAG, "Cleaned up link $expectedLinkID for $deviceAddress")
+        true
+    }
+
+    private fun removeLinkLocked(deviceAddress: String, linkID: String): Boolean {
+        if (addressLinkIDs[deviceAddress]?.remove(linkID) != true) return false
+        linksByID.remove(linkID)
+        linkAddressByID.remove(linkID)
+        val remaining = addressLinkIDs[deviceAddress]
+        if (remaining.isNullOrEmpty()) {
+            addressLinkIDs.remove(deviceAddress)
+            selectedLinkByAddress.remove(deviceAddress)
             subscribedDevices.removeAll { it.address == deviceAddress }
-            addressPeerMap.remove(deviceAddress)
             firstAnnounceSeen.remove(deviceAddress)
-            Log.d(TAG, "Cleaned up device connection for $deviceAddress")
-            true
-        } else {
-            false
+        } else if (selectedLinkByAddress[deviceAddress] == linkID) {
+            selectedLinkByAddress[deviceAddress] = remaining.mapNotNull(linksByID::get)
+                .sortedWith(compareByDescending<DeviceConnection> { it.peerID != null }
+                    .thenBy { it.connectedAt }.thenBy { it.linkID })
+                .first().linkID
         }
+        refreshAddressPeerLocked(deviceAddress)
+        return true
+    }
+
+    private fun refreshAddressPeerLocked(deviceAddress: String) {
+        val selected = selectedLinkByAddress[deviceAddress]?.let(linksByID::get)
+        val peer = selected?.peerID
+        if (peer == null) addressPeerMap.remove(deviceAddress) else addressPeerMap[deviceAddress] = peer
     }
     
     /**
@@ -342,7 +437,7 @@ class BluetoothConnectionTracker(
     private fun cleanupAllConnections() {
         // Terminal cleanup must finish before the owner cancels the scope. Retain each GATT
         // until close has been attempted, even when permission was revoked during disconnect.
-        connectedDevices.values.toList().forEach { deviceConn ->
+        linksByID.values.toList().forEach { deviceConn ->
             val gatt = deviceConn.gatt ?: return@forEach
             try {
                 gatt.disconnect()
@@ -369,7 +464,10 @@ class BluetoothConnectionTracker(
      * Clear all connection tracking
      */
     private fun clearAllConnections() {
-        connectedDevices.clear()
+        linksByID.clear()
+        linkAddressByID.clear()
+        addressLinkIDs.clear()
+        selectedLinkByAddress.clear()
         subscribedDevices.clear()
         addressPeerMap.clear()
         pendingConnections.clear()
@@ -396,8 +494,9 @@ class BluetoothConnectionTracker(
      */
     fun getDebugInfo(): String {
         return buildString {
-            appendLine("Connected Devices: ${connectedDevices.size} / ${powerManager.getMaxConnections()}")
-            connectedDevices.forEach { (address, deviceConn) ->
+            appendLine("Connected Links: ${linksByID.size} / ${powerManager.getMaxConnections()}")
+            linksByID.values.forEach { deviceConn ->
+                val address = linkAddressByID[deviceConn.linkID] ?: "unknown"
                 val age = (System.currentTimeMillis() - deviceConn.connectedAt) / 1000
                 appendLine("  - $address (we're ${if (deviceConn.isClient) "client" else "server"}, ${age}s, RSSI: ${deviceConn.rssi})")
             }
