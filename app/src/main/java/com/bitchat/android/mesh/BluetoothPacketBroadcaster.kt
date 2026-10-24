@@ -21,6 +21,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.channels.actor
 import java.util.ArrayDeque
@@ -46,7 +47,8 @@ class BluetoothPacketBroadcaster(
     private val connectionScope: CoroutineScope,
     private val connectionTracker: BluetoothConnectionTracker,
     private val fragmentManager: FragmentManager?,
-    private val myPeerID: String
+    private val myPeerID: String,
+    private val gattCallbackTimeoutMs: Long = GATT_CALLBACK_TIMEOUT_MS
 ) {
     
     companion object {
@@ -55,6 +57,7 @@ class BluetoothPacketBroadcaster(
         private const val MAX_PENDING_BYTES_PER_LINK = 1_048_576
         private const val SEND_RETRY_DELAY_MS = 15L
         private const val MAX_CALLBACK_RETRIES = 3
+        private const val GATT_CALLBACK_TIMEOUT_MS = 5_000L
     }
 
     // Optional nickname resolver injected by higher layer (peerID -> nickname?)
@@ -152,10 +155,19 @@ class BluetoothPacketBroadcaster(
         var pendingBytes = 0
         var inFlight = false
         var retryScheduled = false
+        var operationGeneration = 0L
+        var callbackTimeout: Job? = null
     }
 
     private val sendLock = Any()
     private val sendStates = mutableMapOf<SendKey, LinkSendState>()
+    @Volatile private var linkTimeoutHandler: ((deviceAddress: String, linkID: String, isClient: Boolean, device: BluetoothDevice) -> Unit)? = null
+
+    fun setLinkTimeoutHandler(
+        handler: (deviceAddress: String, linkID: String, isClient: Boolean, device: BluetoothDevice) -> Unit
+    ) {
+        linkTimeoutHandler = handler
+    }
     
     // SERIALIZATION: Actor to serialize all broadcast operations
     @OptIn(kotlinx.coroutines.ObsoleteCoroutinesApi::class)
@@ -189,7 +201,7 @@ class BluetoothPacketBroadcaster(
         }
     }
 
-    /** Wesh texts keep the existing bounded fragment plan and report concrete GATT acceptance. */
+    /** Wesh texts keep the existing bounded fragment plan and report completed GATT operations. */
     suspend fun broadcastPacketAndAwaitAcceptance(routed: RoutedPacket, gattServer: BluetoothGattServer?,
         characteristic: BluetoothGattCharacteristic?, authorized: () -> Boolean): Boolean =
         broadcastPacketAndAwaitOutcome(routed, gattServer, characteristic, authorized) == BoundSendOutcome.SENT
@@ -201,7 +213,7 @@ class BluetoothPacketBroadcaster(
             if (!authorized()) return BoundSendOutcome.beforeFragment(index)
             val accepted = CompletableDeferred<Boolean>()
             val result: Boolean? = try {
-                kotlinx.coroutines.withTimeoutOrNull(5_000) {
+                kotlinx.coroutines.withTimeoutOrNull(gattCallbackTimeoutMs + 1_000L) {
                     broadcasterActor.send(BroadcastRequest(routed.copy(packet = packet),
                         gattServer, characteristic, accepted, true, authorized))
                     accepted.await()
@@ -408,6 +420,7 @@ class BluetoothPacketBroadcaster(
                     logPacketRelay(typeName, senderPeerID, senderNick, incomingPeer, incomingAddr, toPeer, serverTarget.address, packet.ttl, packet.version, routeInfo)
                     sent = true
                 }
+                if (actualWrites) return sent
             }
 
             // Try to find first hop in client connections if not sent yet
@@ -421,6 +434,7 @@ class BluetoothPacketBroadcaster(
                         logPacketRelay(typeName, senderPeerID, senderNick, incomingPeer, incomingAddr, toPeer, clientTarget.device.address, packet.ttl, packet.version, routeInfo)
                         sent = true
                     }
+                    if (actualWrites) return sent
                 }
             }
 
@@ -444,6 +458,7 @@ class BluetoothPacketBroadcaster(
                     logPacketRelay(typeName, senderPeerID, senderNick, incomingPeer, incomingAddr, toPeer, targetDevice.address, packet.ttl, packet.version, routeInfo)
                     return true
                 }
+                if (actualWrites) return false
             }
 
             // Try to find the recipient in client connections (connectedDevices)
@@ -457,6 +472,7 @@ class BluetoothPacketBroadcaster(
                     logPacketRelay(typeName, senderPeerID, senderNick, incomingPeer, incomingAddr, toPeer, targetDeviceConn.device.address, packet.ttl, packet.version, routeInfo)
                     return true
                 }
+                if (actualWrites) return false
             }
         }
 
@@ -564,7 +580,7 @@ class BluetoothPacketBroadcaster(
     private suspend fun enqueueAndAwait(key: SendKey, request: PendingSend): Boolean {
         val accepted = request.accepted ?: return false
         if (!enqueueSend(key, request)) return false
-        return try { kotlinx.coroutines.withTimeoutOrNull(5_000) { accepted.await() } == true }
+        return try { kotlinx.coroutines.withTimeoutOrNull(gattCallbackTimeoutMs + 1_000L) { accepted.await() } == true }
         finally { if (!accepted.isCompleted) accepted.cancel() }
     }
 
@@ -599,7 +615,12 @@ class BluetoothPacketBroadcaster(
     @Suppress("DEPRECATION")
     @SuppressLint("MissingPermission", "ObsoleteSdkInt")
     private fun startHead(key: SendKey) {
-        val request = synchronized(sendLock) { sendStates[key]?.pending?.peekFirst() } ?: return
+        val (request, operationGeneration) = synchronized(sendLock) {
+            val state = sendStates[key] ?: return
+            val head = state.pending.peekFirst() ?: return
+            state.operationGeneration += 1
+            head to state.operationGeneration
+        }
         val exactLink = connectionTracker.getLink(key.deviceAddress, key.linkID)
         val exactRole = when (key.direction) {
             SendDirection.CLIENT_WRITE -> exactLink?.isClient == true
@@ -647,8 +668,65 @@ class BluetoothPacketBroadcaster(
             Log.w(TAG, "BLE ${key.direction} failed to start: ${error.message}")
             false
         }
-        if (accepted) request.accepted?.complete(true)
+        if (accepted) armGattCallbackTimeout(key, request, operationGeneration)
         else if (request.accepted != null) failBoundHead(key, request) else rejectStart(key)
+    }
+
+    /**
+     * Android accepting write/notify only means that the operation entered the local Bluetooth
+     * stack. The exact-link queue advances, and a bound send succeeds, only after its GATT callback.
+     * A missing callback invalidates that generation so no later operation can cross over to a
+     * replacement link which happens to reuse the same address.
+     */
+    private fun armGattCallbackTimeout(key: SendKey, request: PendingSend, operationGeneration: Long) {
+        val timeout = broadcasterScope.launch {
+            delay(gattCallbackTimeoutMs)
+            onGattCallbackTimeout(key, request, operationGeneration)
+        }
+        synchronized(sendLock) {
+            val state = sendStates[key]
+            if (state == null || state.pending.peekFirst() !== request || !state.inFlight ||
+                state.operationGeneration != operationGeneration
+            ) {
+                timeout.cancel()
+            } else {
+                state.callbackTimeout?.cancel()
+                state.callbackTimeout = timeout
+            }
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun onGattCallbackTimeout(key: SendKey, request: PendingSend, operationGeneration: Long) {
+        val abandoned = synchronized(sendLock) {
+            val state = sendStates[key] ?: return
+            if (state.pending.peekFirst() !== request || !state.inFlight ||
+                state.operationGeneration != operationGeneration
+            ) return
+            state.callbackTimeout = null
+            sendStates.remove(key)?.pending?.toList().orEmpty()
+        }
+        Log.w(TAG, "BLE ${key.direction} callback timed out; invalidating exact link")
+        abandoned.forEach { it.accepted?.complete(false) }
+        val timeoutHandler = linkTimeoutHandler
+        if (timeoutHandler != null) {
+            timeoutHandler(key.deviceAddress, key.linkID, key.direction == SendDirection.CLIENT_WRITE, request.device)
+            return
+        }
+        // Standalone/tests fallback. Production installs a manager handler so peer, Noise and
+        // direct-route state receive the same disconnect delegate event as a platform callback.
+        connectionTracker.cleanupDeviceConnectionIfCurrent(key.deviceAddress, key.linkID)
+        try {
+            when (key.direction) {
+                SendDirection.CLIENT_WRITE -> {
+                    request.gatt?.disconnect()
+                    request.gatt?.close()
+                }
+                SendDirection.SERVER_NOTIFICATION -> request.gattServer?.cancelConnection(request.device)
+            }
+        } catch (error: Exception) {
+            Log.w(TAG, "BLE ${key.direction} timed-out link close failed: ${error.message}")
+        }
     }
 
     private fun failBoundHead(key: SendKey, request: PendingSend) {
@@ -656,6 +734,7 @@ class BluetoothPacketBroadcaster(
         val startNext = synchronized(sendLock) {
             val state = sendStates[key] ?: return
             if (state.pending.peekFirst() !== request) return
+            state.callbackTimeout?.cancel(); state.callbackTimeout = null
             state.pending.removeFirst(); state.pendingBytes -= request.data.size; state.inFlight = false
             if (state.pending.isEmpty()) { sendStates.remove(key); false }
             else { state.inFlight = true; true }
@@ -700,12 +779,15 @@ class BluetoothPacketBroadcaster(
 
     private fun completeSend(key: SendKey, status: Int) {
         var retry = false
+        var completed: PendingSend? = null
+        var completedSuccessfully = false
         val startNext = synchronized(sendLock) {
             val state = sendStates[key] ?: return
             val head = state.pending.peekFirst() ?: run {
                 sendStates.remove(key)
                 return
             }
+            state.callbackTimeout?.cancel(); state.callbackTimeout = null
             state.inFlight = false
             if (status != BluetoothGatt.GATT_SUCCESS && head.callbackFailures < MAX_CALLBACK_RETRIES) {
                 head.callbackFailures++
@@ -717,6 +799,8 @@ class BluetoothPacketBroadcaster(
                 }
                 state.pending.removeFirst()
                 state.pendingBytes -= head.data.size
+                completed = head
+                completedSuccessfully = status == BluetoothGatt.GATT_SUCCESS
                 if (state.pending.isEmpty()) {
                     sendStates.remove(key)
                     false
@@ -726,14 +810,23 @@ class BluetoothPacketBroadcaster(
                 }
             }
         }
+        completed?.accepted?.complete(completedSuccessfully)
         if (retry) rejectStart(key) else if (startNext) startHead(key)
     }
 
     fun onLinkDisconnected(deviceAddress: String, linkID: String?) {
         synchronized(sendLock) {
             sendStates.keys.filter { key -> key.deviceAddress == deviceAddress && (linkID == null || key.linkID == linkID) }
-                .forEach { key -> sendStates.remove(key)?.pending?.forEach { it.accepted?.complete(false) } }
+                .forEach { key -> sendStates.remove(key)?.let { state ->
+                    state.callbackTimeout?.cancel()
+                    state.pending.forEach { it.accepted?.complete(false) }
+                } }
         }
+    }
+
+    internal fun pendingSendCountForTesting(deviceAddress: String, linkID: String): Int = synchronized(sendLock) {
+        sendStates.filterKeys { it.deviceAddress == deviceAddress && it.linkID == linkID }
+            .values.sumOf { it.pending.size }
     }
     
     /**
@@ -752,7 +845,13 @@ class BluetoothPacketBroadcaster(
      * Shutdown the broadcaster actor gracefully
      */
     fun shutdown() {
-        synchronized(sendLock) { sendStates.values.forEach { state -> state.pending.forEach { it.accepted?.complete(false) } }; sendStates.clear() }
+        synchronized(sendLock) {
+            sendStates.values.forEach { state ->
+                state.callbackTimeout?.cancel()
+                state.pending.forEach { it.accepted?.complete(false) }
+            }
+            sendStates.clear()
+        }
         // Close the actor gracefully
         broadcasterActor.close()
 

@@ -50,9 +50,11 @@ class MessageRouter internal constructor(
         val lastPublishedAtMs: Long = 0L,
         /** The backoff time an early retry replaced; restored after it, so the backoff is unchanged. */
         val scheduledRetryAtMs: Long? = null,
+        /** Same-message Bluetooth attempts, including completed writes still awaiting an app ack. */
+        val bluetoothAttempts: Int = 0,
         /**
-         * Rule 4 copy of a Bluetooth write: over Internet only, and only if that route exists at the
-         * deadline. Its TTL ends silently: the Bluetooth write already made it « Envoyé ».
+         * A Bluetooth operation completed, or may have left, but has no application ack yet. It may
+         * be retried over the same authenticated route; receivers deduplicate the stable message ID.
          */
         val afterBluetoothWrite: Boolean = false
     )
@@ -106,7 +108,8 @@ class MessageRouter internal constructor(
                 publications = maxOf(a.publications, b.publications),
                 lastPublishedAtMs = maxOf(a.lastPublishedAtMs, b.lastPublishedAtMs),
                 scheduledRetryAtMs = listOfNotNull(a.scheduledRetryAtMs, b.scheduledRetryAtMs).maxOrNull(),
-                afterBluetoothWrite = a.afterBluetoothWrite && b.afterBluetoothWrite
+                bluetoothAttempts = maxOf(a.bluetoothAttempts, b.bluetoothAttempts),
+                afterBluetoothWrite = a.afterBluetoothWrite || b.afterBluetoothWrite
             )
         }
 
@@ -248,27 +251,63 @@ class MessageRouter internal constructor(
             // a relaunch restore or a flush never sees this message as neither in flight nor queued.
             synchronized(this@MessageRouter) {
                 weshInFlight.remove(messageID)
+                val attempted = entry.copy(bluetoothAttempts = entry.bluetoothAttempts + 1)
                 when (outcome) {
                     null -> Unit
-                    // Rule 4: without an ack within the window, the same message ID goes over Internet once
-                    // (if that route exists then). Only for a contact with a QR-bound npub.
-                    com.bitchat.android.mesh.BoundSendOutcome.SENT -> if (weshInternet().recipient(conversationID) != null) {
-                        enqueueWesh(conversationID, entry.copy(notBeforeMs = clock() + AppConstants.Router.WESH_BLUETOOTH_ACK_TIMEOUT_MS,
-                            internetRetryAtMs = 0L, afterBluetoothWrite = true), epoch, cancelled)
+                    // A GATT callback completed the transport operation, but only DELIVERED/READ is
+                    // the application ack. Keep a same-ID retry even for legacy contacts with no npub.
+                    com.bitchat.android.mesh.BoundSendOutcome.SENT -> {
+                        val pending = attempted.copy(
+                            notBeforeMs = clock() + AppConstants.Router.weshBluetoothRetryDelayMs(attempted.bluetoothAttempts),
+                            internetRetryAtMs = 0L,
+                            afterBluetoothWrite = true
+                        )
+                        enqueueWesh(conversationID, pending, epoch, cancelled)
+                        // Persist the retry budget before durable « Envoyé » so even a process death
+                        // between the two writes restores a bounded same-ID attempt.
+                        persistBluetoothRetry(conversationID, pending)
+                        AppStateStore.updatePrivateMessageStatus(
+                            conversationID,
+                            messageID,
+                            com.bitchat.android.model.DeliveryStatus.Sent,
+                            com.bitchat.android.model.MessageTransport.BLUETOOTH
+                        )
                     }
                     // Nothing reached the radio: another route may take it.
-                    com.bitchat.android.mesh.BoundSendOutcome.NOT_SENT -> afterFailedBluetoothWrite(entry, conversationID, epoch, cancelled)
+                    com.bitchat.android.mesh.BoundSendOutcome.NOT_SENT -> {
+                        val pending = attempted.copy(
+                            notBeforeMs = clock() + AppConstants.Router.weshBluetoothRetryDelayMs(attempted.bluetoothAttempts),
+                            afterBluetoothWrite = false
+                        )
+                        persistBluetoothRetry(conversationID, pending)
+                        afterFailedBluetoothWrite(pending, conversationID, epoch, cancelled)
+                    }
                     // Some bytes may have left: « En attente » under the same ID; after the ack window
                     // (rule 4) it is retried, over Bluetooth if in range, else Internet; receivers dedup.
-                    com.bitchat.android.mesh.BoundSendOutcome.UNCONFIRMED -> requeueWesh(
-                        entry.copy(notBeforeMs = clock() + AppConstants.Router.WESH_BLUETOOTH_ACK_TIMEOUT_MS),
-                        conversationID, epoch, cancelled)
+                    com.bitchat.android.mesh.BoundSendOutcome.UNCONFIRMED -> {
+                        val pending = attempted.copy(
+                            notBeforeMs = clock() + AppConstants.Router.weshBluetoothRetryDelayMs(attempted.bluetoothAttempts),
+                            afterBluetoothWrite = true
+                        )
+                        persistBluetoothRetry(conversationID, pending)
+                        requeueWesh(pending, conversationID, epoch, cancelled)
+                    }
                     // The session or key no longer matches: never elsewhere.
                     com.bitchat.android.mesh.BoundSendOutcome.AUTH_FAILED -> AppStateStore.updatePrivateMessageStatus(conversationID, messageID,
                         com.bitchat.android.model.DeliveryStatus.Failed(WeshPrivateSender.FAILED_WRITE))
                 }
             }
         }
+    }
+
+    private fun persistBluetoothRetry(conversationID: String, entry: QueuedMessage) {
+        AppStateStore.updateBluetoothRetryState(
+            conversationID = conversationID,
+            messageID = entry.messageID,
+            attempts = entry.bluetoothAttempts,
+            retryAtMs = entry.notBeforeMs,
+            mayHaveLeft = entry.afterBluetoothWrite
+        )
     }
 
     /**
@@ -282,7 +321,13 @@ class MessageRouter internal constructor(
         when {
             (weshCancelled[conversationID] ?: 0L) != cancelled -> AppStateStore.updatePrivateMessageStatus(conversationID, entry.messageID,
                 com.bitchat.android.model.DeliveryStatus.Failed("Contact retiré ou bloqué"))
-            // Rule 3: no route now, so it waits (« En attente ») until the 24 h TTL.
+            next.bluetoothAttempts >= AppConstants.Router.WESH_BLUETOOTH_MAX_ATTEMPTS &&
+                !weshInternet().canSend(conversationID) -> AppStateStore.updatePrivateMessageStatus(
+                    conversationID,
+                    entry.messageID,
+                    com.bitchat.android.model.DeliveryStatus.Failed(WeshPrivateSender.FAILED_NO_ACK)
+                )
+            // Rule 3: no route now, so it waits for the next bounded Bluetooth retry.
             !weshInternet().canSend(conversationID) -> requeueWesh(next, conversationID, epoch, cancelled)
             next.internetRetryAtMs > clock() -> requeueWesh(next, conversationID, epoch, cancelled)
             else -> dispatchWeshInternet(next, conversationID, epoch, since = cancelled)
@@ -515,7 +560,9 @@ class MessageRouter internal constructor(
         var restored = 0
         synchronized(this) {
             val now = clock()
-            for ((stored, message) in pending) {
+            for (storedDelivery in pending) {
+                val stored = storedDelivery.conversationID
+                val message = storedDelivery.message
                 if (epoch != weshEpoch.get()) {
                     weshRestoreStarted.set(false)
                     return 0
@@ -528,7 +575,15 @@ class MessageRouter internal constructor(
                     notifyExpired(conversationID, message.id)
                     continue
                 }
-                val entry = QueuedMessage(message.content, message.recipientNickname ?: "", message.id, enqueuedAt)
+                val entry = QueuedMessage(
+                    content = message.content,
+                    nickname = message.recipientNickname ?: "",
+                    messageID = message.id,
+                    enqueuedAtMs = enqueuedAt,
+                    notBeforeMs = storedDelivery.bluetoothRetryAtMs,
+                    bluetoothAttempts = storedDelivery.bluetoothAttempts,
+                    afterBluetoothWrite = storedDelivery.bluetoothMayHaveLeft
+                )
                 if (enqueueWesh(conversationID, entry, epoch, cancelledBefore[conversationID] ?: 0L)) restored++
             }
         }
@@ -713,25 +768,38 @@ class MessageRouter internal constructor(
                 } else if (entry.notBeforeMs > clock()) {
                     // Inside the ack window of a Bluetooth write that may have left.
                 } else if (entry.afterBluetoothWrite) {
-                    if (entry.internetRetryAtMs > clock() ||
+                    if (sender.canSend(conversationID, mesh) &&
+                        entry.bluetoothAttempts < AppConstants.Router.WESH_BLUETOOTH_MAX_ATTEMPTS) {
+                        // A transport callback is not a delivery ack. Retry on the same authenticated
+                        // route and with the same message ID; receiver admission deduplicates it.
+                        iterator.remove()
+                        dispatchWesh(entry.copy(afterBluetoothWrite = false), conversationID, epoch,
+                            weshCancelled[conversationID] ?: 0L)
+                    } else if (entry.internetRetryAtMs > clock() ||
                         entry.publications >= AppConstants.Router.WESH_INTERNET_MAX_PUBLICATIONS) {
                         // Waiting for its next Internet attempt, or for its TTL past the cap.
                     } else if (weshInternet().canSend(conversationID)) {
                         iterator.remove()
                         dispatchWeshInternet(entry, conversationID, epoch, since = weshCancelled[conversationID] ?: 0L)
-                    } else if (entry.publications == 0 && entry.internetAttempts == 0) {
-                        // No Internet route at the deadline: the Bluetooth write stands as is.
+                    } else if (entry.bluetoothAttempts >= AppConstants.Router.WESH_BLUETOOTH_MAX_ATTEMPTS) {
                         iterator.remove()
+                        AppStateStore.updatePrivateMessageStatus(conversationID, entry.messageID,
+                            com.bitchat.android.model.DeliveryStatus.Failed(WeshPrivateSender.FAILED_NO_ACK))
                     }
-                } else if (entry.publications >= AppConstants.Router.WESH_INTERNET_MAX_PUBLICATIONS) {
-                    // Past the hard cap: it waits for its TTL, then fails.
-                } else if (sender.canSend(conversationID, mesh)) {
+                } else if (sender.canSend(conversationID, mesh) &&
+                    entry.bluetoothAttempts < AppConstants.Router.WESH_BLUETOOTH_MAX_ATTEMPTS) {
                     // Bluetooth first whenever the contact is in range again, same message ID.
                     dispatchWesh(entry, conversationID, epoch, weshCancelled[conversationID] ?: 0L)
                     iterator.remove()
+                } else if (entry.publications >= AppConstants.Router.WESH_INTERNET_MAX_PUBLICATIONS) {
+                    // Past the Internet hard cap: it waits for its TTL, then fails.
                 } else if (entry.internetRetryAtMs <= clock() && weshInternet().canSend(conversationID)) {
                     iterator.remove()
                     dispatchWeshInternet(entry, conversationID, epoch, since = weshCancelled[conversationID] ?: 0L)
+                } else if (entry.bluetoothAttempts >= AppConstants.Router.WESH_BLUETOOTH_MAX_ATTEMPTS) {
+                    iterator.remove()
+                    AppStateStore.updatePrivateMessageStatus(conversationID, entry.messageID,
+                        com.bitchat.android.model.DeliveryStatus.Failed(WeshPrivateSender.FAILED_NO_ACK))
                 }
                 continue
             }
@@ -763,7 +831,7 @@ class MessageRouter internal constructor(
         while (queue.size > OUTBOX_MAX_PER_PEER) {
             val evicted = queue.removeAt(0)
             Log.w(TAG, "Outbox full for ${conversationID.take(16)}…; evicting oldest msg_id=${evicted.messageID.take(8)}…")
-            if (!evicted.afterBluetoothWrite) notifyExpired(conversationID, evicted.messageID)
+            notifyExpired(conversationID, evicted.messageID)
         }
     }
 
@@ -858,11 +926,7 @@ class MessageRouter internal constructor(
             if (nowMs - entry.enqueuedAtMs > OUTBOX_MESSAGE_TTL_MS) {
                 Log.w(TAG, "Expiring queued PM for ${conversationID.take(16)}… msg_id=${entry.messageID.take(8)}…")
                 iterator.remove()
-                if (!entry.afterBluetoothWrite) notifyExpired(conversationID, entry.messageID)
-            } else if (entry.afterBluetoothWrite && entry.notBeforeMs <= nowMs && entry.publications == 0 &&
-                entry.internetAttempts == 0 && !weshInternet().canSend(conversationID)) {
-                // Rule 4 found no Internet route at the deadline: the Bluetooth write stands as is.
-                iterator.remove()
+                notifyExpired(conversationID, entry.messageID)
             }
         }
         if (queued.isEmpty()) {

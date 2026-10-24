@@ -16,7 +16,11 @@ internal class WeshPrivateSender(private val contacts: WeshContactStore) {
     /** Boolean form for callers that only need « Envoyé » or « Échec ». */
     suspend fun dispatch(content: String, conversationID: String, messageID: String, mesh: MeshService): Boolean {
         val outcome = dispatchOutcome(content, conversationID, messageID, mesh)
-        if (outcome != BoundSendOutcome.SENT) {
+        if (outcome == BoundSendOutcome.SENT) {
+            AppStateStore.updatePrivateMessageStatus(
+                conversationID, messageID, DeliveryStatus.Sent, MessageTransport.BLUETOOTH
+            )
+        } else {
             AppStateStore.updatePrivateMessageStatus(conversationID, messageID, DeliveryStatus.Failed(FAILED_WRITE))
         }
         return outcome == BoundSendOutcome.SENT
@@ -46,10 +50,6 @@ internal class WeshPrivateSender(private val contacts: WeshContactStore) {
             // Raised before the radio write (store, directory): nothing left.
             BoundSendOutcome.NOT_SENT
         } ?: BoundSendOutcome.NOT_SENT
-        if (outcome == BoundSendOutcome.SENT) {
-            AppStateStore.updatePrivateMessageStatus(conversationID, messageID, DeliveryStatus.Sent, MessageTransport.BLUETOOTH)
-            return outcome
-        }
         // Not sent or maybe sent: an identity change (removed, blocked, another proven key) makes
         // it AUTH_FAILED; a peer that simply walked away keeps the transport's answer.
         return if (identityChanged(conversationID, mesh)) BoundSendOutcome.AUTH_FAILED else outcome
@@ -64,5 +64,6 @@ internal class WeshPrivateSender(private val contacts: WeshContactStore) {
 
     companion object {
         const val FAILED_WRITE = "Connexion ou identité indisponible. Réessayez après vérification."
+        const val FAILED_NO_ACK = "Aucun accusé de réception. Réessayez."
     }
 }

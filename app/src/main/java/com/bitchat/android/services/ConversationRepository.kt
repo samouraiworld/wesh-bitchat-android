@@ -39,6 +39,13 @@ import java.util.concurrent.atomic.AtomicLong
  */
 /** A message's delivery status as stored; [status] null means none recorded yet. */
 data class StoredDeliveryStatus(val status: DeliveryStatus?)
+data class PendingOutgoingDelivery(
+    val conversationID: String,
+    val message: BitchatMessage,
+    val bluetoothAttempts: Int = 0,
+    val bluetoothRetryAtMs: Long = 0L,
+    val bluetoothMayHaveLeft: Boolean = false
+)
 
 class ConversationRepository internal constructor(
     context: Context,
@@ -251,16 +258,34 @@ class ConversationRepository internal constructor(
         }
     }
 
-    /** My messages still « En attente », after every queued write; null when unreadable or erased since. */
+    /** My messages still awaiting an app ack, after every queued write. */
     internal suspend fun pendingOutgoingAndWait(
         expectedGeneration: Long = captureWriteGeneration()
-    ): List<Pair<String, BitchatMessage>>? = withContext(dispatcher) {
+    ): List<PendingOutgoingDelivery>? = withContext(dispatcher) {
         if (expectedGeneration != captureWriteGeneration()) return@withContext null
         try {
             database.pendingOutgoing()
         } catch (error: Exception) {
             Log.e(TAG, "Unable to read waiting messages: ${error.message}")
             null
+        }
+    }
+
+    fun updateBluetoothRetryState(
+        conversationID: String,
+        messageID: String,
+        attempts: Int,
+        retryAtMs: Long,
+        mayHaveLeft: Boolean
+    ) {
+        enqueueMutation {
+            try {
+                database.updateBluetoothRetryState(
+                    conversationID, messageID, attempts, retryAtMs, mayHaveLeft
+                )
+            } catch (error: Exception) {
+                Log.e(TAG, "Unable to persist Bluetooth retry state: ${error.message}")
+            }
         }
     }
 
@@ -454,7 +479,7 @@ internal class ConversationDatabase(
         const val MAX_MEDIA_BYTES = 256L * 1024L * 1024L
 
         internal const val DEFAULT_DATABASE_NAME = "private_conversations.db"
-        internal const val DATABASE_VERSION = 5
+        internal const val DATABASE_VERSION = 6
         private const val PRUNE_INTERVAL = 64
         private const val PRUNE_BATCH_SIZE = 256
     }
@@ -541,6 +566,9 @@ internal class ConversationDatabase(
                 payload_ciphertext BLOB NOT NULL,
                 is_read INTEGER NOT NULL DEFAULT 0,
                 transport INTEGER NOT NULL DEFAULT 0,
+                bluetooth_attempts INTEGER NOT NULL DEFAULT 0,
+                bluetooth_retry_at INTEGER NOT NULL DEFAULT 0,
+                bluetooth_may_have_left INTEGER NOT NULL DEFAULT 0,
                 FOREIGN KEY(conversation_id) REFERENCES conversations(conversation_id)
                     ON DELETE CASCADE ON UPDATE CASCADE
             )
@@ -610,6 +638,12 @@ internal class ConversationDatabase(
             // 0 = unknown (history from before the label), 1 = Bluetooth, 2 = Internet.
             db.execSQL("ALTER TABLE private_messages ADD COLUMN transport INTEGER NOT NULL DEFAULT 0")
             version = 5
+        }
+        if (version == 5) {
+            db.execSQL("ALTER TABLE private_messages ADD COLUMN bluetooth_attempts INTEGER NOT NULL DEFAULT 0")
+            db.execSQL("ALTER TABLE private_messages ADD COLUMN bluetooth_retry_at INTEGER NOT NULL DEFAULT 0")
+            db.execSQL("ALTER TABLE private_messages ADD COLUMN bluetooth_may_have_left INTEGER NOT NULL DEFAULT 0")
+            version = 6
         }
         check(version == newVersion) {
             "Missing conversation database migration from $version to $newVersion"
@@ -722,20 +756,74 @@ internal class ConversationDatabase(
         )
     }
 
-    /** Private messages whose stored status is « En attente » (only mine carry it), oldest first. */
-    fun pendingOutgoing(): List<Pair<String, BitchatMessage>> =
-        loadMessages(
-            selection = "delivery_type = 1 AND is_private = 1",
+    /** Private messages awaiting an app ack, including their bounded Bluetooth retry state. */
+    fun pendingOutgoing(): List<PendingOutgoingDelivery> {
+        val retryState = readableDatabase.query(
+            "private_messages",
+            arrayOf("message_id", "bluetooth_attempts", "bluetooth_retry_at", "bluetooth_may_have_left"),
+            "(delivery_type = 1 OR (delivery_type = 2 AND transport = 1)) AND is_private = 1",
+            null,
+            null,
+            null,
+            null
+        ).use { cursor ->
+            buildMap {
+                while (cursor.moveToNext()) {
+                    put(cursor.string("message_id"), Triple(
+                        cursor.int("bluetooth_attempts"),
+                        cursor.long("bluetooth_retry_at"),
+                        cursor.int("bluetooth_may_have_left") != 0
+                    ))
+                }
+            }
+        }
+        return loadMessages(
+            selection = "(delivery_type = 1 OR (delivery_type = 2 AND transport = 1)) AND is_private = 1",
             selectionArgs = null,
             orderBy = "arrival_sequence ASC",
             displayNameConversationID = null
         ).let { snapshot ->
             snapshot.arrivalOrder.mapNotNull { id ->
                 snapshot.chats.entries.firstNotNullOfOrNull { (conversationID, messages) ->
-                    messages.firstOrNull { it.id == id }?.let { conversationID to it }
+                    messages.firstOrNull { it.id == id }?.let { message ->
+                        val retry = retryState[id]
+                        PendingOutgoingDelivery(
+                            conversationID = conversationID,
+                            message = message,
+                            bluetoothAttempts = retry?.first ?: 0,
+                            bluetoothRetryAtMs = retry?.second ?: 0L,
+                            bluetoothMayHaveLeft = retry?.third ?: false
+                        )
+                    }
                 }
             }
         }
+    }
+
+    fun updateBluetoothRetryState(
+        conversationID: String,
+        messageID: String,
+        attempts: Int,
+        retryAtMs: Long,
+        mayHaveLeft: Boolean
+    ): Boolean {
+        val db = writableDatabase
+        val owner = db.rawQuery(
+            "SELECT conversation_id FROM private_messages WHERE message_id = ?",
+            arrayOf(messageID)
+        ).use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else null } ?: return false
+        if (!resolveStoredConversationLocked(db, conversationID).equals(owner, ignoreCase = true)) return false
+        return db.update(
+            "private_messages",
+            ContentValues().apply {
+                put("bluetooth_attempts", attempts.coerceAtLeast(0))
+                put("bluetooth_retry_at", retryAtMs.coerceAtLeast(0L))
+                put("bluetooth_may_have_left", mayHaveLeft.asInt())
+            },
+            "message_id = ? AND conversation_id = ? AND delivery_type IN (1, 2)",
+            arrayOf(messageID, owner)
+        ) == 1
+    }
 
     fun loadConversation(conversationID: String): PersistedConversationSnapshot {
         val resolved = resolveStoredConversationLocked(readableDatabase, conversationID)
@@ -994,6 +1082,13 @@ internal class ConversationDatabase(
                 "private_messages",
                 ContentValues().apply {
                     putAll(deliveryValues(status, includeSensitiveText = false))
+                    if (status is DeliveryStatus.Delivered || status is DeliveryStatus.Read ||
+                        status is DeliveryStatus.Failed || status is DeliveryStatus.Sending
+                    ) {
+                        put("bluetooth_attempts", 0)
+                        put("bluetooth_retry_at", 0L)
+                        put("bluetooth_may_have_left", 0)
+                    }
                     put(
                         "payload_ciphertext",
                         encryptMessagePayload(current.copy(deliveryStatus = status))

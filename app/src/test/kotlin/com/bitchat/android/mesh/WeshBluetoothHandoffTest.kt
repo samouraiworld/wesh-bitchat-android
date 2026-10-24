@@ -63,6 +63,42 @@ class WeshBluetoothHandoffTest {
         assertFalse(withTimeout(5_000) { broadcaster.broadcastPacketAndAwaitAcceptance(packet(2000), null, null) { true } })
         verify(gatt, atLeastOnce()).writeCharacteristic(any())
     }
+
+    @Test fun `local API acceptance followed by disconnect is not a completed handoff`() = runBlocking<Unit> {
+        val started = CompletableDeferred<Unit>()
+        whenever(gatt.writeCharacteristic(any())).thenAnswer { started.complete(Unit); true }
+        val outcome = async {
+            broadcaster.broadcastPacketAndAwaitAcceptance(packet(32), null, null) { true }
+        }
+        withTimeout(1_000) { started.await() }
+        broadcaster.onLinkDisconnected(address, "synthetic-generation")
+        assertFalse(withTimeout(1_000) { outcome.await() })
+    }
+
+    @Test fun `missing GATT callback times out invalidates link and releases its whole queue`() = runBlocking<Unit> {
+        broadcaster.shutdown()
+        broadcaster = BluetoothPacketBroadcaster(
+            scope, tracker, FragmentManager(), "1111222233334444", gattCallbackTimeoutMs = 50L
+        )
+        whenever(gatt.writeCharacteristic(any())).thenReturn(true)
+
+        assertTrue(broadcaster.sendPacketToLink(packet(32), address, "synthetic-generation", null, null))
+        assertTrue(broadcaster.sendPacketToLink(packet(32), address, "synthetic-generation", null, null))
+        assertEquals(2, broadcaster.pendingSendCountForTesting(address, "synthetic-generation"))
+
+        withTimeout(1_000) {
+            while (broadcaster.pendingSendCountForTesting(address, "synthetic-generation") != 0) delay(10)
+        }
+        verify(gatt, times(1)).writeCharacteristic(any())
+        verify(tracker).cleanupDeviceConnectionIfCurrent(address, "synthetic-generation")
+        verify(gatt).disconnect()
+        verify(gatt).close()
+
+        // A late callback belongs to the invalidated generation and cannot advance anything twice.
+        broadcaster.onGattClientWriteComplete(address, "synthetic-generation", BluetoothGatt.GATT_SUCCESS)
+        assertEquals(0, broadcaster.pendingSendCountForTesting(address, "synthetic-generation"))
+        verify(gatt, times(1)).writeCharacteristic(any())
+    }
     @Test fun `fragmented handoff waits for accepted GATT writes and preserves native packet limits`() = runBlocking<Unit> {
         val writes = java.util.concurrent.ConcurrentLinkedQueue<ByteArray>()
         whenever(gatt.writeCharacteristic(any())).thenAnswer {

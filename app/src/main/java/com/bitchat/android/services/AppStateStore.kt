@@ -422,16 +422,27 @@ object AppStateStore {
     }
 
     /**
-     * My private messages still « En attente » (to rebuild the memory-only outbox after a relaunch),
-     * read after every pending write and behind the erase fence. Null when the store is unavailable.
+     * My private messages still awaiting an application ack (to rebuild the memory-only outbox
+     * after a relaunch). This includes Bluetooth « Envoyé »: its GATT callback completed, but the
+     * peer has not yet authenticated DELIVERED/READ. Null when the store is unavailable.
      */
-    suspend fun pendingOutgoingPrivateMessages(): List<Pair<String, BitchatMessage>>? {
+    suspend fun pendingOutgoingPrivateMessages(): List<PendingOutgoingDelivery>? {
         val (repository, generation) = synchronized(this) {
             if (privateConversationWritesSuspended) return null
             val generation = capturePrivateConversationGeneration() ?: return null
             val repository = conversationRepository
                 ?: return _privateMessages.value.flatMap { (conversationID, messages) ->
-                    messages.filter { it.isPrivate && it.deliveryStatus == DeliveryStatus.Sending }.map { conversationID to it }
+                    messages.filter { message ->
+                        message.isPrivate && (message.deliveryStatus == DeliveryStatus.Sending ||
+                            (message.deliveryStatus == DeliveryStatus.Sent && message.transport == MessageTransport.BLUETOOTH))
+                    }.map { message ->
+                        PendingOutgoingDelivery(
+                            conversationID = conversationID,
+                            message = message,
+                            bluetoothMayHaveLeft = message.deliveryStatus == DeliveryStatus.Sent &&
+                                message.transport == MessageTransport.BLUETOOTH
+                        )
+                    }
                 }
             repository to generation
         }
@@ -444,6 +455,24 @@ object AppStateStore {
         }
         if (!isCurrentPrivateConversationGeneration(generation)) return null
         return pending
+    }
+
+    /** Persist the retry budget beside the message; ownership is checked again by the database. */
+    fun updateBluetoothRetryState(
+        conversationID: String,
+        messageID: String,
+        attempts: Int,
+        retryAtMs: Long,
+        mayHaveLeft: Boolean
+    ) = synchronized(this) {
+        if (privateConversationWritesSuspended) return@synchronized
+        conversationRepository?.updateBluetoothRetryState(
+            ContactDirectory.canonicalConversationId(conversationID),
+            messageID,
+            attempts,
+            retryAtMs,
+            mayHaveLeft
+        )
     }
 
     private fun DeliveryStatus?.toPersistedAck(): PersistedAck = when (this) {
