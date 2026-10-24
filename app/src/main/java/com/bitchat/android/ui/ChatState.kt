@@ -110,7 +110,6 @@ class ChatState(
     fun getFavoritePeersValue() = _favoritePeers.value
     fun getPeerSessionStatesValue() = _peerSessionStates.value
     fun getPeerFingerprintsValue() = _peerFingerprints.value
-    fun getShowAppInfoValue() = _showAppInfo.value
 
     fun getShowMeshPeerListValue() = _showMeshPeerList.value
     fun getPrivateChatSheetPeerValue() = _privateChatSheetPeer.value

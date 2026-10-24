@@ -41,8 +41,9 @@ internal object WeshMessagePolicy {
     ): Boolean {
         if (content.isBlank() || content.toByteArray(Charsets.UTF_8).size > 2000) return false
         if (!authorized() || !bluetoothSend(content) || !authorized()) return false
+        // A link accepted it, and the public room has no receipts: it is sent, never left waiting.
         store(BitchatMessage(sender = nickname, content = content, timestamp = Date(),
-            isRelay = false, senderPeerID = myPeerID))
+            isRelay = false, senderPeerID = myPeerID, deliveryStatus = DeliveryStatus.Sent))
         return true
     }
 

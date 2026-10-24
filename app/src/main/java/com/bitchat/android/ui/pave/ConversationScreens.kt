@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -26,6 +27,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Campaign
 import androidx.compose.material.icons.rounded.Lock
+import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material.icons.rounded.Verified
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -46,6 +48,12 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.bitchat.android.R
 import java.util.Locale
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import kotlinx.coroutines.delay
 
 /** A message row as the conversation screens draw it. Remote names are sanitized by [MessageBubble]. */
 @Immutable
@@ -146,6 +154,7 @@ fun PrivateChatScreen(
     onBack: () -> Unit,
     onOpenContact: () -> Unit,
     modifier: Modifier = Modifier,
+    loading: Boolean = false,
 ) {
     val c = WeshPave.colors
     val name = remoteDisplayName(nickname)
@@ -154,25 +163,31 @@ fun PrivateChatScreen(
             Modifier
                 .fillMaxWidth()
                 .statusBarsPadding()
-                .padding(start = WeshSpace.s1, end = WeshSpace.s4, top = WeshSpace.s2, bottom = WeshSpace.s3),
+                .padding(start = WeshSpace.s1, end = WeshSpace.s1, top = WeshSpace.s2, bottom = WeshSpace.s3),
             verticalArrangement = Arrangement.spacedBy(WeshSpace.s1),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 BackButton(onBack, tint = c.ink)
-                Text(
-                    name,
-                    style = WeshType.title,
-                    color = c.ink,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier
-                        .weight(1f, fill = false)
-                        .heightIn(min = WeshTouch.min)
-                        .paveClickable(RoundedCornerShape(WeshRadius.control), stringResource(R.string.wesh_pave_private_open_contact), onClick = onOpenContact)
-                        .semantics { heading() },
-                )
-                Spacer(Modifier.width(WeshSpace.s2))
-                if (verified) VerifiedChip() else UnverifiedChip()
+                // Name and chip take the free width, so the contact button sits at the right edge.
+                Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        name,
+                        style = WeshType.title,
+                        color = c.ink,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier
+                            .weight(1f, fill = false)
+                            .heightIn(min = WeshTouch.min)
+                            .paveClickable(RoundedCornerShape(WeshRadius.control), stringResource(R.string.wesh_pave_private_open_contact), onClick = onOpenContact)
+                            .semantics { heading() }
+                            // The touch target is taller than the name: center the text in it, in line with Back.
+                            .wrapContentHeight(Alignment.CenterVertically),
+                    )
+                    Spacer(Modifier.width(WeshSpace.s2))
+                    if (verified) VerifiedChip() else UnverifiedChip()
+                }
+                PaveIconButton(Icons.Rounded.Tune, stringResource(R.string.wesh_pave_private_contact_settings), onOpenContact)
             }
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -197,6 +212,7 @@ fun PrivateChatScreen(
             onMessageActions = {},
             onRetry = onRetry,
             modifier = Modifier.weight(1f),
+            loading = loading,
         )
         ComposerFooter(composer, PaveRoom.Private, nickname, onDraftChange, onSend)
     }
@@ -235,6 +251,16 @@ private fun UnverifiedChip() {
     Text(stringResource(R.string.wesh_pave_unverified), style = WeshType.caption, color = c.warning)
 }
 
+/** A spinner that appears only once loading outlasts 200 ms, so a fast open never flashes it. */
+@Composable
+private fun DelayedSpinner() {
+    var visible by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { delay(200); visible = true }
+    Box(Modifier.fillMaxWidth().heightIn(min = WeshTouch.min), contentAlignment = Alignment.Center) {
+        if (visible) CircularProgressIndicator(color = WeshPave.colors.inkMuted, strokeWidth = 2.dp, modifier = Modifier.size(24.dp))
+    }
+}
+
 @Composable
 private fun MessageList(
     messages: List<PaveMessageItem>,
@@ -243,6 +269,7 @@ private fun MessageList(
     onMessageActions: (String) -> Unit,
     onRetry: (String) -> Unit,
     modifier: Modifier,
+    loading: Boolean = false,
 ) {
     val c = WeshPave.colors
     val listState = rememberLazyListState()
@@ -253,7 +280,8 @@ private fun MessageList(
         contentPadding = PaddingValues(horizontal = WeshSpace.gutter, vertical = WeshSpace.s3),
         verticalArrangement = Arrangement.spacedBy(WeshSpace.s2, Alignment.Bottom),
     ) {
-        if (messages.isEmpty()) item(key = "empty") {
+        if (messages.isEmpty() && loading) item(key = "loading") { DelayedSpinner() }
+        else if (messages.isEmpty()) item(key = "empty") {
             Text(empty, style = WeshType.body, color = c.inkMuted, modifier = Modifier.fillMaxWidth())
         }
         items(messages, key = { it.id }) { m ->
