@@ -891,8 +891,8 @@ class ChatViewModel(
 
     fun weshIsBlocked(peerID: String): Boolean = privateChatManager.isPeerBlocked(peerID)
     fun weshBlockedFingerprints(): Set<String> = weshContactStore.blockedFingerprints()
-    /** The remote nickname known for [fingerprint], as stored; shown only through the remote rule. */
-    fun weshContactName(fingerprint: String): String? = weshContactStore.forFingerprint(fingerprint)?.nickname
+    /** The contact's local alias, else the remote nickname known for [fingerprint]; shown only through the remote rule. */
+    fun weshContactName(fingerprint: String): String? = weshContactStore.forFingerprint(fingerprint)?.displayName
         ?: identityManager.getCachedFingerprintNickname(fingerprint)
     fun weshBlock(peerID: String): Boolean {
         val resolution = ContactDirectory.resolve(peerID)
@@ -945,6 +945,15 @@ class ChatViewModel(
         weshContactStore.forFingerprint(fingerprint)?.let { contact ->
             com.bitchat.android.services.MessageRouter.tryGetInstance()?.cancelWeshConversation(contact.conversationID)
         }
+    }
+    /** Local alias and memo of a QR contact; false when nothing could be written. */
+    suspend fun setWeshContactNote(conversationID: String, alias: String, memo: String): Boolean {
+        if (!withContext(Dispatchers.IO) { weshContactStore.setNote(conversationID, alias, memo) }) return false
+        notificationManager.refreshPrivateConversationName(
+            conversationID,
+            weshContactStore.contact(conversationID)?.displayName,
+        )
+        return true
     }
     fun removeWeshContact(conversationID: String) {
         verificationHandler.cancelWeshVerification(conversationID)

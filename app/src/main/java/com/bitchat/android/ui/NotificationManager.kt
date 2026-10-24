@@ -23,6 +23,7 @@ import com.bitchat.android.R
 import com.bitchat.android.service.ConversationNotificationReceiver
 import com.bitchat.android.services.ContactDirectory
 import com.bitchat.android.services.ConversationListPreferences
+import com.bitchat.android.services.WeshContactStore
 import com.bitchat.android.ui.pave.RemoteNameRule
 import java.util.Collections
 import java.util.WeakHashMap
@@ -150,7 +151,10 @@ class NotificationManager(
     /**
      * Show a notification for a private message with proper grouping and state awareness
      */
-    /** [senderNickname] is the nickname as received, null when unknown: shown through the remote rule. */
+    /**
+     * [senderNickname] is the nickname as received, null when unknown: shown through the remote rule.
+     * A QR contact's local alias, when set, is shown instead.
+     */
     fun showPrivateMessageNotification(senderPeerID: String, senderNickname: String?, messageContent: String) {
         val conversationID = ContactDirectory.canonicalConversationId(senderPeerID)
         if (isConversationMuted(conversationID)) {
@@ -165,7 +169,7 @@ class NotificationManager(
 
         val notification = PendingNotification(
             senderPeerID = conversationID,
-            senderNickname = remoteName.show(senderNickname),
+            senderNickname = remoteName.show(contactAlias(conversationID) ?: senderNickname),
             messageContent = messageContent,
             timestamp = System.currentTimeMillis()
         )
@@ -180,6 +184,23 @@ class NotificationManager(
         if (pendingNotifications.size > 1) {
             showSummaryNotification()
         }
+    }
+
+    private fun contactAlias(conversationID: String): String? =
+        runCatching { WeshContactStore.get(context).contact(conversationID)?.alias }.getOrNull()
+
+    /** Rebuilds already-visible conversation notifications after a local contact rename. */
+    fun refreshPrivateConversationName(senderPeerID: String, senderNickname: String?) {
+        val conversationID = ContactDirectory.canonicalConversationId(senderPeerID)
+        val notifications = pendingNotifications[conversationID] ?: return
+        val displayName = remoteName.show(senderNickname)
+        synchronized(notifications) {
+            notifications.indices.forEach { index ->
+                notifications[index] = notifications[index].copy(senderNickname = displayName)
+            }
+        }
+        showNotificationForSender(conversationID)
+        if (pendingNotifications.size > 1) showSummaryNotification()
     }
 
     private fun showNotificationForSender(senderPeerID: String) {

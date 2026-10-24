@@ -40,7 +40,13 @@
     <string name="wesh_pave_fluo_contact_actions_title">This contact</string>
     <string name="wesh_pave_fluo_contact_block">Block this contact</string>
     <string name="wesh_pave_fluo_contact_remove">Remove the contact</string>
-    <string name="wesh_pave_fluo_contact_remove_body">A new QR exchange will be needed to write privately. History and draft stay.</string>
+    <string name="wesh_pave_fluo_contact_remove_body">A new QR exchange will be needed to write privately. History and draft stay. The name and memo on this phone are erased.</string>
+    <string name="wesh_pave_fluo_contact_qr_name">Name from QR code: %1$s</string>
+    <string name="wesh_pave_fluo_contact_alias">Name on this phone</string>
+    <string name="wesh_pave_fluo_contact_memo">Memo</string>
+    <string name="wesh_pave_fluo_contact_note_body">The name and memo stay on this phone. They are never sent.</string>
+    <string name="wesh_pave_fluo_contact_note_saved">Saved on this phone.</string>
+    <string name="wesh_pave_fluo_contact_note_failed">Not saved. Your text is kept.</string>
     <string name="wesh_pave_fluo_block_body">Blocking stays on this phone. It does not delete copies held by others.</string>
     <string name="wesh_pave_fluo_block_request_body">Blocking stays on this phone. Their next requests will be ignored.</string>
     <string name="wesh_pave_fluo_block_unknown">Unknown identity: blocking unavailable.</string>
@@ -104,4 +110,6 @@
     <string name="wesh_pave_fluo_meeting_loading">Loading your note…</string>
     <string name="wesh_pave_fluo_meeting_unavailable">Your note is unavailable. Retry before editing it.</string>
     <string name="wesh_pave_fluo_meeting_retry">Retry</string>
+    <string name="wesh_pave_fluo_contact_alias_refused">This name can’t be shown safely. Use one alphabet, and no app word.</string>
+    <string name="wesh_pave_private_contact_settings">Contact settings</string>
 </resources>
