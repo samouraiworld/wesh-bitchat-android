@@ -62,6 +62,9 @@ class OnboardingActivityCallbackTest {
 
         fixture.bluetoothDisabled()
 
+        // Some tablets turn Bluetooth off on every sleep: the page waits out a short grace period.
+        assertEquals(OnboardingState.COMPLETE, fixture.model.onboardingState.value)
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idleFor(java.time.Duration.ofSeconds(6))
         assertEquals(OnboardingState.BLUETOOTH_CHECK, fixture.model.onboardingState.value)
     }
 

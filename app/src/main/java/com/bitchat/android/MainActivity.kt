@@ -541,12 +541,39 @@ class MainActivity : OrientationAwareActivity() {
                 // Actual permission state owns recovery; platform error wording varies.
                 mainViewModel.updateOnboardingState(OnboardingState.PERMISSION_EXPLANATION)
             }
+            mainViewModel.onboardingState.value == OnboardingState.COMPLETE -> showBluetoothCheckUnlessItReturns()
             else -> {
                 // Stay on Bluetooth check screen for retry
                 mainViewModel.updateOnboardingState(OnboardingState.BLUETOOTH_CHECK)
             }
         }
     }
+
+    private var bluetoothOffCheck: kotlinx.coroutines.Job? = null
+
+    /**
+     * Shows the Bluetooth page only if Bluetooth stays off: some tablets turn it off on every
+     * sleep and back on a few seconds after waking, and the page would flash each time.
+     */
+    private fun showBluetoothCheckUnlessItReturns() {
+        if (bluetoothOffCheck?.isActive == true) return
+        bluetoothOffCheck = lifecycleScope.launch {
+            delay(BLUETOOTH_OFF_GRACE_MS)
+            var waited = 0L
+            while (bluetoothTurningOn() && waited < BLUETOOTH_TURNING_ON_MAX_MS) { delay(500); waited += 500 }
+            val status = bluetoothStatusManager.checkBluetoothStatus()
+            mainViewModel.updateBluetoothStatus(status)
+            if (status != BluetoothStatus.ENABLED) {
+                mainViewModel.updateOnboardingState(OnboardingState.BLUETOOTH_CHECK)
+                mainViewModel.updateBluetoothLoading(false)
+            }
+        }
+    }
+
+    private fun bluetoothTurningOn(): Boolean = try {
+        (getSystemService(android.bluetooth.BluetoothManager::class.java)?.adapter?.state) ==
+            android.bluetooth.BluetoothAdapter.STATE_TURNING_ON
+    } catch (_: SecurityException) { false }
     
     private fun handleOnboardingComplete() {
         // After permissions are granted, re-check Bluetooth, Location, and Battery Optimization status
@@ -788,8 +815,7 @@ class MainActivity : OrientationAwareActivity() {
             if (bleRequired && currentBluetoothStatus != BluetoothStatus.ENABLED) {
                 Log.w("MainActivity", "Bluetooth disabled while app was backgrounded")
                 mainViewModel.updateBluetoothStatus(currentBluetoothStatus)
-                mainViewModel.updateOnboardingState(OnboardingState.BLUETOOTH_CHECK)
-                mainViewModel.updateBluetoothLoading(false)
+                showBluetoothCheckUnlessItReturns()
                 return
             }
             
@@ -888,3 +914,8 @@ internal fun welcomeStart(welcomed: Boolean, requiredGranted: Boolean, notificat
     notificationsPending -> com.bitchat.android.ui.pave.OnboardingStart.Notifications
     else -> com.bitchat.android.ui.pave.OnboardingStart.Welcome
 }
+
+/** How long Bluetooth may stay off before the app asks to turn it on. */
+private const val BLUETOOTH_OFF_GRACE_MS = 5_000L
+/** How much longer to wait while Android reports Bluetooth as turning on. */
+private const val BLUETOOTH_TURNING_ON_MAX_MS = 10_000L
