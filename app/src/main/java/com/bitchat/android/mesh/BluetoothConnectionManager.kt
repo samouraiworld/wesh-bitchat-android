@@ -14,6 +14,8 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /**
  * Power-optimized Bluetooth connection manager with comprehensive memory management
@@ -83,10 +85,14 @@ class BluetoothConnectionManager(
         }
 
         override fun onDeviceDisconnected(device: BluetoothDevice, linkID: String?, peerID: String?) {
-            packetBroadcaster.onLinkDisconnected(device.address, linkID)
+            onLinkClosed(device.address, linkID)
+            delegate?.onDeviceDisconnected(device, linkID, peerID)
+        }
+
+        override fun onLinkClosed(deviceAddress: String, linkID: String?) {
+            packetBroadcaster.onLinkDisconnected(deviceAddress, linkID)
             // A reconnection gets a new link ID: free the fragment slots this link opened.
             linkID?.let { fragmentManager?.onIngressLinkClosed(PacketProcessor.linkQuotaKey(it)) }
-            delegate?.onDeviceDisconnected(device, linkID, peerID)
         }
 
         override fun onGattClientWriteComplete(deviceAddress: String, linkID: String, status: Int) {
@@ -113,8 +119,13 @@ class BluetoothConnectionManager(
     
     // Service state
     @Volatile private var isActive = false
+    @Volatile private var transportReady = false
     /** Set once by [stopServices]: this instance never starts again, whatever Bluetooth does. */
     @Volatile private var stopped = false
+    private val lifecycleEpoch = BluetoothLifecycleEpoch()
+    private val componentLifecycleMutex = Mutex()
+    private var startupJob: Job? = null
+    private var releaseJob: Job? = null
 
     // Bluetooth turning off, or its system service dying, leaves every GATT object bound to the
     // dead stack: release them, and start again once the adapter is back on. Events run in order.
@@ -175,7 +186,7 @@ class BluetoothConnectionManager(
             powerManager.profile.collect { profile ->
                 val modeChanged = previousMode != null && previousMode != profile.mode
                 previousMode = profile.mode
-                if (!isActive || !isBleTransportEnabled()) return@collect
+                if (!transportReady || !isBleTransportEnabled()) return@collect
 
                 if (modeChanged && isGattServerEnabled()) {
                     serverManager.restartAdvertising()
@@ -198,13 +209,13 @@ class BluetoothConnectionManager(
             // Role enable/disable
             connectionScope.launch {
                 dbg.gattServerEnabled.collect { enabled ->
-                    if (!isActive) return@collect
+                    if (!transportReady) return@collect
                     if (enabled && isBleTransportEnabled()) startServer() else stopServer()
                 }
             }
             connectionScope.launch {
                 dbg.gattClientEnabled.collect { enabled ->
-                    if (!isActive) return@collect
+                    if (!transportReady) return@collect
                     if (enabled && isBleTransportEnabled()) startClient() else stopClient()
                 }
             }
@@ -219,7 +230,7 @@ class BluetoothConnectionManager(
                     // We don't need the values here, we just need to trigger enforcement
                     Unit 
                 }.collect {
-                    if (isActive) {
+                    if (transportReady) {
                         enforceStrictLimits()
                     }
                 }
@@ -267,6 +278,10 @@ class BluetoothConnectionManager(
      */
     @Synchronized fun startServices(): Boolean {
         if (stopped) return false
+        if (transportReady) {
+            delegate?.onTransportStateChanged(true)
+            return true
+        }
         if (isActive) return true
         if (!isBleTransportEnabled()) {
             Log.i(TAG, "BLE transport disabled by debug settings; not starting Bluetooth services")
@@ -300,6 +315,9 @@ class BluetoothConnectionManager(
         try {
             isActive = true
             resumeWhenBluetoothOn = false
+            val generation = lifecycleEpoch.begin()
+            startupJob?.cancel()
+            val pendingRelease = releaseJob
 
         // set the adapter's name to our 8-character peerID for iOS privacy, TODO: Make this configurable
         // try {
@@ -312,38 +330,53 @@ class BluetoothConnectionManager(
         // }
 
             // Start all component managers
-            connectionScope.launch {
-                // Start connection tracker first
-                connectionTracker.start()
-                
-                // Start power manager
-                powerManager.start()
-                
-                // Start server/client based on debug settings
-                val startServer = isGattServerEnabled()
-                val startClient = isGattClientEnabled()
+            startupJob = connectionScope.launch {
+                pendingRelease?.join()
+                componentLifecycleMutex.withLock {
+                    if (!isCurrentLifecycleGeneration(generation)) return@withLock
+                    // OFF/stop queues release behind this mutex, so a platform start that has
+                    // already entered cannot complete after its cleanup.
+                    connectionTracker.start()
+                    if (!isCurrentLifecycleGeneration(generation)) return@withLock
 
-                if (startServer) {
-                    if (!serverManager.start()) {
-                        Log.e(TAG, "Failed to start server manager")
-                        this@BluetoothConnectionManager.isActive = false
-                        return@launch
-                    }
-                } else {
-                    Log.i(TAG, "GATT Server disabled by debug settings; not starting")
-                }
+                    powerManager.start()
+                    if (!isCurrentLifecycleGeneration(generation)) return@withLock
 
-                if (startClient) {
-                    if (!clientManager.start()) {
-                        Log.e(TAG, "Failed to start client manager")
-                        this@BluetoothConnectionManager.isActive = false
-                        return@launch
+                    val startServer = isGattServerEnabled()
+                    val startClient = isGattClientEnabled()
+
+                    if (startServer) {
+                        if (!serverManager.start()) {
+                            Log.e(TAG, "Failed to start server manager")
+                            failLifecycleGeneration(generation)
+                            return@withLock
+                        }
+                        if (!isCurrentLifecycleGeneration(generation)) return@withLock
+                    } else {
+                        Log.i(TAG, "GATT Server disabled by debug settings; not starting")
                     }
-                } else {
-                    Log.i(TAG, "GATT Client disabled by debug settings; not starting")
+
+                    if (startClient) {
+                        if (!clientManager.start()) {
+                            Log.e(TAG, "Failed to start client manager")
+                            failLifecycleGeneration(generation)
+                            return@withLock
+                        }
+                        if (!isCurrentLifecycleGeneration(generation)) return@withLock
+                    } else {
+                        Log.i(TAG, "GATT Client disabled by debug settings; not starting")
+                    }
+
+                    synchronized(this@BluetoothConnectionManager) {
+                        if (!isCurrentLifecycleGenerationLocked(generation)) return@synchronized
+                        startupJob = null
+                        transportReady = true
+                        delegate?.onTransportStateChanged(true)
+                    }
+                    if (isCurrentLifecycleGeneration(generation)) {
+                        Log.i(TAG, "Bluetooth services started successfully")
+                    }
                 }
-                
-                Log.i(TAG, "Bluetooth services started successfully")
             }
             
             return true
@@ -351,6 +384,7 @@ class BluetoothConnectionManager(
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start Bluetooth services: ${e.message}")
             isActive = false
+            transportReady = false
             return false
         }
     }
@@ -360,9 +394,19 @@ class BluetoothConnectionManager(
      */
     fun disableTransport() {
         Log.i(TAG, "Disabling BLE transport")
-        isActive = false
-        resumeWhenBluetoothOn = false
-        connectionScope.launch { releaseComponents() }
+        val oldStartup = synchronized(this) {
+            val active = isActive
+            isActive = false
+            transportReady = false
+            resumeWhenBluetoothOn = false
+            lifecycleEpoch.invalidate()
+            val old = startupJob
+            old?.cancel()
+            startupJob = null
+            if (active) delegate?.onTransportStateChanged(false)
+            old
+        }
+        enqueueRelease(oldStartup, terminal = false)
     }
 
     private fun releaseComponents() {
@@ -375,35 +419,51 @@ class BluetoothConnectionManager(
      * Stop all Bluetooth services with proper cleanup
      */
     fun stopServices() {
-        synchronized(this) {
+        val oldStartup = synchronized(this) {
+            val active = isActive
             stopped = true
             isActive = false
+            transportReady = false
             resumeWhenBluetoothOn = false
+            lifecycleEpoch.invalidate()
+            val old = startupJob
+            old?.cancel()
+            startupJob = null
             unregisterAdapterReceiver()
+            if (active) delegate?.onTransportStateChanged(false)
+            old
         }
-
-        connectionScope.launch {
-            releaseComponents()
-
-            // Cancel the coroutine scope
-            connectionScope.cancel()
-            
-            Log.i(TAG, "All Bluetooth services stopped")
-        }
+        enqueueRelease(oldStartup, terminal = true)
     }
 
-    @Synchronized private fun onAdapterState(state: Int) {
-        if (stopped) return
-        when (adapterReaction(state, isActive, resumeWhenBluetoothOn)) {
+    private fun onAdapterState(state: Int) {
+        val reaction = synchronized(this) {
+            if (stopped) return
+            adapterReaction(state, isActive, resumeWhenBluetoothOn)
+        }
+        when (reaction) {
             AdapterReaction.RELEASE -> {
                 Log.i(TAG, "Bluetooth turning off: releasing GATT server and client")
-                resumeWhenBluetoothOn = true
-                isActive = false
-                releaseComponents()
+                val oldStartup = synchronized(this) {
+                    if (stopped) return
+                    resumeWhenBluetoothOn = true
+                    isActive = false
+                    transportReady = false
+                    lifecycleEpoch.invalidate()
+                    val old = startupJob
+                    old?.cancel()
+                    startupJob = null
+                    delegate?.onTransportStateChanged(false)
+                    old
+                }
+                enqueueRelease(oldStartup, terminal = false)
             }
             AdapterReaction.RESTART -> {
                 Log.i(TAG, "Bluetooth back on: restarting GATT server and client")
-                resumeWhenBluetoothOn = false
+                synchronized(this) {
+                    if (stopped) return
+                    resumeWhenBluetoothOn = false
+                }
                 startServices()
             }
             AdapterReaction.NONE -> Unit
@@ -435,13 +495,47 @@ class BluetoothConnectionManager(
     fun isReusable(): Boolean {
         return connectionScope.isActive
     }
+
+    private fun isCurrentLifecycleGeneration(generation: Long): Boolean = synchronized(this) {
+        isCurrentLifecycleGenerationLocked(generation)
+    }
+
+    private fun isCurrentLifecycleGenerationLocked(generation: Long): Boolean =
+        !stopped && isActive && lifecycleEpoch.isCurrent(generation)
+
+    private fun failLifecycleGeneration(generation: Long) {
+        synchronized(this) {
+            if (!isCurrentLifecycleGenerationLocked(generation)) return
+            isActive = false
+            transportReady = false
+            lifecycleEpoch.invalidate()
+            startupJob = null
+            releaseComponents()
+            delegate?.onTransportStateChanged(false)
+        }
+    }
+
+    private fun enqueueRelease(oldStartup: Job?, terminal: Boolean) {
+        synchronized(this) {
+            val previousRelease = releaseJob
+            releaseJob = connectionScope.launch {
+                previousRelease?.join()
+                oldStartup?.cancelAndJoin()
+                componentLifecycleMutex.withLock { releaseComponents() }
+                if (terminal) {
+                    connectionScope.cancel()
+                    Log.i(TAG, "All Bluetooth services stopped")
+                }
+            }
+        }
+    }
     
     /**
      * Broadcast packet to connected devices with connection limit enforcement
      * Automatically fragments large packets to fit within BLE MTU limits
      */
     fun broadcastPacket(routed: RoutedPacket): Boolean {
-        if (!isActive || !isBleTransportEnabled()) return false
+        if (!transportReady || !isBleTransportEnabled()) return false
 
         return packetBroadcaster.broadcastPacket(
             routed,
@@ -451,19 +545,19 @@ class BluetoothConnectionManager(
     }
 
     suspend fun broadcastPacketAndAwaitAcceptance(routed: RoutedPacket, authorized: () -> Boolean): Boolean {
-        if (!isActive || !isBleTransportEnabled()) return false
+        if (!transportReady || !isBleTransportEnabled()) return false
         return packetBroadcaster.broadcastPacketAndAwaitAcceptance(routed, serverManager.getGattServer(),
             serverManager.getCharacteristic(), authorized)
     }
 
     suspend fun broadcastPacketAndAwaitOutcome(routed: RoutedPacket, authorized: () -> Boolean): BoundSendOutcome {
-        if (!isActive || !isBleTransportEnabled()) return BoundSendOutcome.NOT_SENT
+        if (!transportReady || !isBleTransportEnabled()) return BoundSendOutcome.NOT_SENT
         return packetBroadcaster.broadcastPacketAndAwaitOutcome(routed, serverManager.getGattServer(),
             serverManager.getCharacteristic(), authorized)
     }
 
     suspend fun broadcastControlPacketAndAwaitAcceptance(routed: RoutedPacket): Boolean {
-        if (!isActive || !isBleTransportEnabled()) return false
+        if (!transportReady || !isBleTransportEnabled()) return false
 
         return packetBroadcaster.broadcastControlPacketAndAwaitAcceptance(
             routed,
@@ -473,7 +567,7 @@ class BluetoothConnectionManager(
     }
 
     fun sendToPeer(peerID: String, routed: RoutedPacket): Boolean {
-        if (!isActive || !isBleTransportEnabled()) return false
+        if (!transportReady || !isBleTransportEnabled()) return false
         return packetBroadcaster.sendToPeer(
             peerID,
             routed,
@@ -486,7 +580,7 @@ class BluetoothConnectionManager(
      * Send a packet directly to a specific peer, without broadcasting to others.
      */
     fun sendPacketToPeer(peerID: String, packet: BitchatPacket): Boolean {
-        if (!isActive || !isBleTransportEnabled()) return false
+        if (!transportReady || !isBleTransportEnabled()) return false
         return packetBroadcaster.sendPacketToPeer(
             RoutedPacket(packet),
             peerID,
@@ -496,7 +590,7 @@ class BluetoothConnectionManager(
     }
 
     fun sendPacketToLink(deviceAddress: String, linkID: String, packet: BitchatPacket): Boolean {
-        if (!isActive || !isBleTransportEnabled()) return false
+        if (!transportReady || !isBleTransportEnabled()) return false
         return packetBroadcaster.sendPacketToLink(
             RoutedPacket(packet),
             deviceAddress,
@@ -509,12 +603,12 @@ class BluetoothConnectionManager(
 
     // Expose role controls for debug UI
     fun startServer() {
-        if (!isActive || !isBleTransportEnabled()) return
+        if (!transportReady || !isBleTransportEnabled()) return
         connectionScope.launch { if (isGattServerEnabled()) serverManager.start() }
     }
     fun stopServer() { connectionScope.launch { serverManager.stop() } }
     fun startClient() {
-        if (!isActive || !isBleTransportEnabled()) return
+        if (!transportReady || !isBleTransportEnabled()) return
         connectionScope.launch { if (isGattClientEnabled()) clientManager.start() }
     }
     fun stopClient() { connectionScope.launch { clientManager.stop() } }
@@ -542,7 +636,7 @@ class BluetoothConnectionManager(
      * Public: connect/disconnect helpers for debug UI
      */
     fun connectToAddress(address: String): Boolean {
-        if (!isActive || !isBleTransportEnabled()) return false
+        if (!transportReady || !isBleTransportEnabled()) return false
         return clientManager.connectToAddress(address)
     }
     fun disconnectAddress(address: String) { connectionTracker.disconnectDevice(address) }
@@ -555,7 +649,7 @@ class BluetoothConnectionManager(
             clientManager.stop()
             serverManager.stop()
             delay(200)
-            if (isActive && isBleTransportEnabled()) {
+            if (transportReady && isBleTransportEnabled()) {
                 // Restart managers if service is active
                 if (isGattServerEnabled()) serverManager.start()
                 if (isGattClientEnabled()) clientManager.start()
@@ -607,9 +701,12 @@ interface BluetoothConnectionManagerDelegate {
     fun onServerConnectionRegistered(device: BluetoothDevice) = Unit
     fun onDeviceConnected(device: BluetoothDevice)
     fun onDeviceDisconnected(device: BluetoothDevice, linkID: String?, peerID: String?)
+    /** Release per-physical-link queues/quotas without declaring the logical peer offline. */
+    fun onLinkClosed(deviceAddress: String, linkID: String?) = Unit
     fun onRSSIUpdated(deviceAddress: String, rssi: Int)
     fun onGattClientWriteComplete(deviceAddress: String, linkID: String, status: Int) = Unit
     fun onGattServerNotificationComplete(deviceAddress: String, linkID: String?, status: Int) = Unit
+    fun onTransportStateChanged(active: Boolean) = Unit
 }
 
 internal enum class AdapterReaction { RELEASE, RESTART, NONE }
@@ -625,3 +722,12 @@ internal fun adapterReaction(state: Int, active: Boolean, resumePending: Boolean
 /** A reusable manager started while Bluetooth is off must keep listening for STATE_ON. */
 internal fun initialResumeWhenBluetoothOn(bluetoothEnabled: Boolean, stopped: Boolean): Boolean =
     !bluetoothEnabled && !stopped
+
+/** Monotonic ownership token for asynchronous manager starts. */
+internal class BluetoothLifecycleEpoch {
+    private var value = 0L
+
+    @Synchronized fun begin(): Long = ++value
+    @Synchronized fun invalidate(): Long = ++value
+    @Synchronized fun isCurrent(token: Long): Boolean = token == value
+}

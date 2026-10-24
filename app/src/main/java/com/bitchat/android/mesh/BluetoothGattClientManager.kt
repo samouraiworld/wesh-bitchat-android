@@ -406,18 +406,12 @@ class BluetoothGattClientManager(
         lastScanResultTime = currentTimeMillis()
         scanRetryCount = 0
 
-        // Try to extract peerID from Service Data (if available) for stable identity
+        // Legacy peers may expose an identity-shaped value. It is untrusted debug metadata only.
         val serviceData = scanRecord?.getServiceData(ParcelUuid(AppConstants.Mesh.Gatt.SERVICE_UUID))
-        val peerID = if (serviceData != null && serviceData.size >= 8) {
+        val advertisedPeerIDHint = if (serviceData != null && serviceData.size >= 8) {
             serviceData.joinToString("") { "%02x".format(it) }
         } else {
             null
-        }
-
-        if (peerID != null) {
-            if (connectionTracker.isPeerConnected(peerID)) {
-                 return
-            }
         }
 
         // Store RSSI from scan results for later use (especially for server connections)
@@ -443,7 +437,7 @@ class BluetoothGattClientManager(
                     deviceName = deviceName,
                     deviceAddress = deviceAddress,
                     rssi = rssi,
-                    peerID = peerID // Use the discovered peerID if available
+                    peerID = advertisedPeerIDHint
                 )
             )
         } catch (_: Exception) { }
@@ -457,7 +451,7 @@ class BluetoothGattClientManager(
                         deviceName = deviceName,
                         deviceAddress = deviceAddress,
                         rssi = rssi,
-                        peerID = peerID
+                        peerID = advertisedPeerIDHint
                     )
                 )
             } catch (_: Exception) { }
@@ -483,19 +477,21 @@ class BluetoothGattClientManager(
             return
         }
         
-        connectToDevice(device, rssi, peerID)
+        // Service data is an unauthenticated compatibility/debug hint. It must never select,
+        // suppress, or authenticate a connection; only a validated ANNOUNCE may bind identity.
+        connectToDevice(device, rssi)
     }
     
     /**
      * Connect to a device as GATT client
      */
-    private fun connectToDevice(device: BluetoothDevice, rssi: Int, peerID: String? = null): Boolean =
+    private fun connectToDevice(device: BluetoothDevice, rssi: Int): Boolean =
         synchronized(clientLock) {
             if (!isClientRoleEnabled() || !permissionManager.hasBluetoothPermissions()) return@synchronized false
             val address = device.address
             if (clientAttempts.containsKey(address) || connectionTracker.isDeviceConnected(address) ||
                 !connectionTracker.addPendingConnection(address)) return@synchronized false
-            val attempt = ClientAttempt(device, address, rssi, peerID)
+            val attempt = ClientAttempt(device, address, rssi)
             clientAttempts[address] = attempt
             attempt.timeout = connectionScope.launch {
                 delay(30_000)
@@ -534,8 +530,7 @@ class BluetoothGattClientManager(
     private inner class ClientAttempt(
         val device: BluetoothDevice,
         val address: String,
-        val rssi: Int,
-        val peerID: String?
+        val rssi: Int
     ) : BluetoothGattCallback() {
         val linkID = UUID.randomUUID().toString()
         var gatt: BluetoothGatt? = null
@@ -636,7 +631,7 @@ class BluetoothGattClientManager(
                 return@synchronized
             }
             connectionTracker.addDeviceConnection(address, BluetoothConnectionTracker.DeviceConnection(
-                device = device, gatt = gatt, rssi = rssi, isClient = true, peerID = peerID, linkID = linkID
+                device = device, gatt = gatt, rssi = rssi, isClient = true, linkID = linkID
             ))
             phase = ClientPhase.DISCOVERY
             if (!discoverServices(gatt)) finish()

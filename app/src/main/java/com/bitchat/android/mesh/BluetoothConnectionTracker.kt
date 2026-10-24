@@ -244,6 +244,12 @@ class BluetoothConnectionTracker(
     }
 
     fun getAllDeviceConnections(): List<DeviceConnection> = linksByID.values.toList()
+
+    fun getAllTrackedLinks(): List<LinkToClose> = synchronized(connectionStateLock) {
+        linksByID.values.mapNotNull { connection ->
+            linkAddressByID[connection.linkID]?.let { LinkToClose(it, connection) }
+        }
+    }
     
     /**
      * Get subscribed devices (for server connections)

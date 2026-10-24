@@ -417,7 +417,12 @@ class BluetoothGattClientCallbacksTest {
         verify(device, never()).connectGatt(eq(context), eq(false), any(), eq(BluetoothDevice.TRANSPORT_LE))
     }
 
-    private fun scanDebugResult(advertisedName: String?, rssi: Int, beforeDelivery: () -> Unit = {}): DebugScanResult {
+    private fun scanDebugResult(
+        advertisedName: String?,
+        rssi: Int,
+        advertisedPeerHint: ByteArray? = null,
+        beforeDelivery: () -> Unit = {}
+    ): DebugScanResult {
         val debug = DebugSettingsManager.getInstance()
         debug.clearScanResults()
         whenever(power.getRSSIThreshold()).thenReturn(-70)
@@ -426,6 +431,8 @@ class BluetoothGattClientCallbacksTest {
         val record = mock<ScanRecord> {
             on { serviceUuids }.thenReturn(listOf(ParcelUuid(AppConstants.Mesh.Gatt.SERVICE_UUID)))
             on { deviceName }.thenReturn(advertisedName)
+            on { getServiceData(ParcelUuid(AppConstants.Mesh.Gatt.SERVICE_UUID)) }
+                .thenReturn(advertisedPeerHint)
         }
         val result = mock<ScanResult> {
             on { device }.thenReturn(this@BluetoothGattClientCallbacksTest.device)
@@ -483,6 +490,26 @@ class BluetoothGattClientCallbacksTest {
         verify(device).name
         verify(device).connectGatt(eq(context), eq(false), any(), eq(BluetoothDevice.TRANSPORT_LE))
         verify(delegate, never()).onDeviceConnected(any())
+    }
+
+    @Test fun `advertised peer hint cannot suppress or authenticate a new physical link`() {
+        val claimedPeer = byteArrayOf(0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x7F)
+        val claimedPeerHex = claimedPeer.joinToString("") { "%02x".format(it) }
+        tracker.addDeviceConnection("AA:BB:CC:DD:EE:02",
+            BluetoothConnectionTracker.DeviceConnection(
+                mock(), peerID = claimedPeerHex, linkID = "authenticated-other-link"
+            ))
+
+        val debug = scanDebugResult(null, -30, advertisedPeerHint = claimedPeer)
+        assertEquals(claimedPeerHex, debug.peerID)
+        verify(device).connectGatt(eq(context), eq(false), any(), eq(BluetoothDevice.TRANSPORT_LE))
+
+        val callback = callbacks.last()
+        mtu(callback)
+        callback.onMtuChanged(gatt, 517, BluetoothGatt.GATT_SUCCESS)
+        val linkID = tracker.getAllDeviceConnections().single { it.isClient }.linkID
+        assertNull(tracker.getPeerForLink(linkID))
+        assertFalse(tracker.addressPeerMap.containsKey(address))
     }
 
 }

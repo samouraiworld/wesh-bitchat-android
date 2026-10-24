@@ -91,4 +91,26 @@ class BluetoothConnectionManagerTest {
         assertFalse(initialResumeWhenBluetoothOn(bluetoothEnabled = true, stopped = false))
         assertFalse(initialResumeWhenBluetoothOn(bluetoothEnabled = false, stopped = true))
     }
+
+    @Test
+    fun `off or stop during async start invalidates every pending component mutation`() {
+        val epoch = BluetoothLifecycleEpoch()
+        val starting = epoch.begin()
+        assertTrue(epoch.isCurrent(starting))
+
+        epoch.invalidate() // Bluetooth OFF or terminal stop happens before the job resumes.
+
+        assertFalse(epoch.isCurrent(starting))
+    }
+
+    @Test
+    fun `old startup job cannot mutate a restarted generation`() {
+        val epoch = BluetoothLifecycleEpoch()
+        val oldStart = epoch.begin()
+        epoch.invalidate()
+        val restarted = epoch.begin()
+
+        assertFalse(epoch.isCurrent(oldStart))
+        assertTrue(epoch.isCurrent(restarted))
+    }
 }

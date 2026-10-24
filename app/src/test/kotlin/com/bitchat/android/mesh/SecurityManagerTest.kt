@@ -304,6 +304,33 @@ class SecurityManagerTest {
     }
 
     @Test
+    fun `validatePacket accepts only a bound signed self announce for transport fail-close`() {
+        val selfPeerID = NoisePeerIdentity.derivePeerID(otherNoiseKey)!!
+        val selfManager = SecurityManager(fakeEncryptionService, selfPeerID).also {
+            it.delegate = mockDelegate
+        }
+        try {
+            val announce = BitchatPacket(
+                type = MessageType.ANNOUNCE.value,
+                ttl = 7u,
+                senderID = selfPeerID,
+                payload = IdentityAnnouncement("Self", otherNoiseKey, otherSigningKey).encode()!!
+            ).also { it.signature = validSignature }
+            val ordinary = BitchatPacket(
+                type = MessageType.MESSAGE.value,
+                ttl = 7u,
+                senderID = selfPeerID,
+                payload = dummyPayload
+            ).also { it.signature = validSignature }
+
+            assertTrue(selfManager.validatePacket(announce, selfPeerID))
+            assertFalse(selfManager.validatePacket(ordinary, selfPeerID))
+        } finally {
+            selfManager.shutdown()
+        }
+    }
+
+    @Test
     fun `validatePacket - rejects ANNOUNCE packet with invalid signature`() {
         val announcement = IdentityAnnouncement(
             nickname = "New User",

@@ -59,6 +59,7 @@ class BluetoothGattServerManager(
     // GATT server for peripheral mode
     private var gattServer: BluetoothGattServer? = null
     private val serverLinkIDs = ConcurrentHashMap<String, String>()
+    private val closingServerLinks = ConcurrentHashMap<String, String>()
     private var characteristic: BluetoothGattCharacteristic? = null
     private data class ActiveAdvertising(
         val advertiser: BluetoothLeAdvertiser,
@@ -75,9 +76,8 @@ class BluetoothGattServerManager(
     @Volatile private var serviceReady = false
     private data class DetachedServer(
         val server: BluetoothGattServer?,
-        val links: Map<String, String>,
         val advertising: ActiveAdvertising?,
-        val connections: List<BluetoothConnectionTracker.DeviceConnection>
+        val connections: List<BluetoothConnectionTracker.LinkToClose>
     )
 
     private fun isBleTransportEnabled(): Boolean {
@@ -110,7 +110,7 @@ class BluetoothGattServerManager(
     fun disconnectLink(device: BluetoothDevice, linkID: String) {
         val shouldClose = synchronized(serverStateLock) {
             if (serverLinkIDs[device.address] != linkID) return@synchronized false
-            serverLinkIDs.remove(device.address)
+            closingServerLinks[device.address] = linkID
             connectionTracker.removeSubscribedDevice(device)
             true
         }
@@ -177,19 +177,19 @@ class BluetoothGattServerManager(
             val server = gattServer
             gattServer = null
             characteristic = null
-            val links = serverLinkIDs.toMap()
             serverLinkIDs.clear()
+            closingServerLinks.clear()
             val advertising = activeAdvertising
             activeAdvertising = null
-            DetachedServer(server, links, advertising,
-                connectionTracker.getAllDeviceConnections().filter { !it.isClient })
+            DetachedServer(server, advertising,
+                connectionTracker.getAllTrackedLinks().filter { !it.connection.isClient })
         }
         stopAdvertising(detached.advertising)
         val server = detached.server
         if (server != null) {
-            detached.connections.forEach { connection ->
+            detached.connections.forEach { link ->
                 try {
-                    server.cancelConnection(connection.device)
+                    server.cancelConnection(link.connection.device)
                 } catch (_: SecurityException) {
                     Log.w(TAG, "Bluetooth permission revoked while cancelling server connection")
                 } catch (e: Exception) {
@@ -198,8 +198,24 @@ class BluetoothGattServerManager(
             }
             closeServer(server)
         }
-        detached.links.forEach { (address, linkID) ->
-            connectionTracker.cleanupDeviceConnectionIfCurrent(address, linkID)
+        detached.connections.forEach { link ->
+            if (connectionTracker.cleanupDeviceConnectionIfCurrent(
+                    link.deviceAddress,
+                    link.connection.linkID
+                )
+            ) {
+                connectionTracker.removeSubscribedDevice(link.connection.device)
+                val peerID = link.connection.peerID
+                if (peerID != null && !connectionTracker.isPeerConnected(peerID)) {
+                    delegate?.onDeviceDisconnected(
+                        link.connection.device,
+                        link.connection.linkID,
+                        peerID
+                    )
+                } else {
+                    delegate?.onLinkClosed(link.deviceAddress, link.connection.linkID)
+                }
+            }
         }
         Log.i(TAG, "GATT server stopped")
     }
@@ -272,31 +288,49 @@ class BluetoothGattServerManager(
                 when (newState) {
                     BluetoothProfile.STATE_CONNECTED -> {
                         if (status != BluetoothGatt.GATT_SUCCESS) return
-                        synchronized(serverStateLock) {
+                        val registered = synchronized(serverStateLock) {
                             if (!isActive || serverGeneration != generation) return
+                            if (closingServerLinks.containsKey(address)) {
+                                return@synchronized false
+                            }
+                            val existing = serverLinkIDs[address]
+                            if (existing != null && connectionTracker.hasLink(address, existing)) {
+                                return@synchronized false
+                            }
                             val linkID = UUID.randomUUID().toString()
                             serverLinkIDs[address] = linkID
                             connectionTracker.addServerConnection(address,
                                 BluetoothConnectionTracker.DeviceConnection(device = device,
                                     rssi = connectionTracker.getBestRSSI(address) ?: Int.MIN_VALUE,
                                     isClient = false, linkID = linkID))
+                            true
                         }
                         // A central can remain connected without ever writing CCCD.
                         // Enforce connection budgets now, separately from readiness.
-                        if (isCurrentGeneration(generation)) delegate?.onServerConnectionRegistered(device)
+                        if (registered && isCurrentGeneration(generation)) {
+                            delegate?.onServerConnectionRegistered(device)
+                        }
                         // Readiness is announced only after the CCCD response is accepted.
                     }
                     BluetoothProfile.STATE_DISCONNECTED -> {
                         val disconnected = synchronized(serverStateLock) {
                             if (!isActive || serverGeneration != generation) return
                             val linkID = serverLinkIDs.remove(address)
+                            closingServerLinks.remove(address)
                             val peerID = linkID?.let(connectionTracker::getPeerForLink)
                             val removed = linkID != null && connectionTracker.cleanupDeviceConnectionIfCurrent(address, linkID)
                             if (removed) connectionTracker.removeSubscribedDevice(device)
                             Triple(linkID, peerID, removed)
                         }
                         if (disconnected.third) {
-                            delegate?.onDeviceDisconnected(device, disconnected.first, disconnected.second)
+                            val peerID = disconnected.second
+                            if (peerID != null && connectionTracker.isPeerConnected(peerID)) {
+                                delegate?.onLinkClosed(address, disconnected.first)
+                            } else if (peerID != null) {
+                                delegate?.onDeviceDisconnected(device, disconnected.first, peerID)
+                            } else {
+                                delegate?.onLinkClosed(address, disconnected.first)
+                            }
                         }
                     }
                 }
