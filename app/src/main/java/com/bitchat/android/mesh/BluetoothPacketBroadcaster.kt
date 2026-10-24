@@ -199,7 +199,8 @@ class BluetoothPacketBroadcaster(
         var inFlight = false
         var retryScheduled = false
         var operationGeneration = 0L
-        var callbackTimeout: Job? = null
+        var timeoutGeneration = 0L
+        var operationTimeout: Job? = null
     }
 
     private val sendLock = Any()
@@ -693,6 +694,25 @@ class BluetoothPacketBroadcaster(
             request.apiState = GattApiState.API_PENDING
             request.handoffEvidence.beginApiCall()
         }
+        // The platform call is a Binder boundary and can stall while Android's Bluetooth service
+        // is unhealthy. Run it off the queue actor and arm the same exact-link watchdog used for a
+        // missing callback, so callers cannot hang before the callback timer is installed.
+        armGattOperationTimeout(key, request, operationGeneration)
+        broadcasterScope.launch {
+            finishGattApiCall(key, request, operationGeneration)
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    @SuppressLint("MissingPermission", "ObsoleteSdkInt")
+    private fun finishGattApiCall(key: SendKey, request: PendingSend, operationGeneration: Long) {
+        val shouldCallPlatform = synchronized(sendLock) {
+            val state = sendStates[key]
+            state != null && state.pending.peekFirst() === request && state.inFlight &&
+                state.operationGeneration == operationGeneration &&
+                request.apiState == GattApiState.API_PENDING
+        }
+        if (!shouldCallPlatform) return
         val accepted = try {
             when (key.direction) {
                 SendDirection.CLIENT_WRITE -> {
@@ -735,14 +755,31 @@ class BluetoothPacketBroadcaster(
         // Test hook deliberately widens the otherwise tiny return/publication race. Production is
         // null; callbacks that arrive while it is held are recorded under sendLock and replayed.
         afterGattApiResultForTesting?.invoke(accepted)
-        val deferredCallback = synchronized(sendLock) {
+        var deferredCallback: Int? = null
+        val stillCurrent = synchronized(sendLock) {
             request.handoffEvidence.finishApiCall(accepted)
             request.apiState = if (accepted) GattApiState.ACCEPTED else GattApiState.REJECTED
-            request.deferredCallbackStatus.also { request.deferredCallbackStatus = null }
+            val state = sendStates[key]
+            if (state == null || state.pending.peekFirst() !== request || !state.inFlight ||
+                state.operationGeneration != operationGeneration
+            ) {
+                false
+            } else {
+                // Invalidate a watchdog that has already resumed but is waiting for sendLock.
+                state.timeoutGeneration += 1
+                state.operationTimeout?.cancel()
+                state.operationTimeout = null
+                deferredCallback = request.deferredCallbackStatus
+                request.deferredCallbackStatus = null
+                true
+            }
         }
+        // A watchdog or disconnect already invalidated this exact generation. Never let a late
+        // Binder return recreate its queue or arm another timer on a replacement link.
+        if (!stillCurrent) return
         if (accepted) {
             if (deferredCallback != null) completeSend(key, deferredCallback)
-            else armGattCallbackTimeout(key, request, operationGeneration)
+            else armGattOperationTimeout(key, request, operationGeneration)
         }
         else if (request.accepted != null) failBoundHead(key, request) else rejectStart(key)
     }
@@ -750,13 +787,14 @@ class BluetoothPacketBroadcaster(
     /**
      * Android accepting write/notify only means that the operation entered the local Bluetooth
      * stack. The exact-link queue advances, and a bound send succeeds, only after its GATT callback.
-     * A missing callback invalidates that generation so no later operation can cross over to a
-     * replacement link which happens to reuse the same address.
+     * A stuck platform call or missing callback invalidates that generation so no later operation
+     * can cross over to a replacement link which happens to reuse the same address.
      */
-    private fun armGattCallbackTimeout(key: SendKey, request: PendingSend, operationGeneration: Long) {
-        val timeout = broadcasterScope.launch {
+    private fun armGattOperationTimeout(key: SendKey, request: PendingSend, operationGeneration: Long) {
+        var timeoutGeneration = 0L
+        val timeout = broadcasterScope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
             delay(gattCallbackTimeoutMs)
-            onGattCallbackTimeout(key, request, operationGeneration)
+            onGattOperationTimeout(key, request, operationGeneration, timeoutGeneration)
         }
         synchronized(sendLock) {
             val state = sendStates[key]
@@ -765,23 +803,32 @@ class BluetoothPacketBroadcaster(
             ) {
                 timeout.cancel()
             } else {
-                state.callbackTimeout?.cancel()
-                state.callbackTimeout = timeout
+                state.timeoutGeneration += 1
+                timeoutGeneration = state.timeoutGeneration
+                state.operationTimeout?.cancel()
+                state.operationTimeout = timeout
             }
         }
+        timeout.start()
     }
 
     @SuppressLint("MissingPermission")
-    private fun onGattCallbackTimeout(key: SendKey, request: PendingSend, operationGeneration: Long) {
+    private fun onGattOperationTimeout(
+        key: SendKey,
+        request: PendingSend,
+        operationGeneration: Long,
+        timeoutGeneration: Long
+    ) {
         val abandoned = synchronized(sendLock) {
             val state = sendStates[key] ?: return
             if (state.pending.peekFirst() !== request || !state.inFlight ||
-                state.operationGeneration != operationGeneration
+                state.operationGeneration != operationGeneration ||
+                state.timeoutGeneration != timeoutGeneration
             ) return
-            state.callbackTimeout = null
+            state.operationTimeout = null
             sendStates.remove(key)?.pending?.toList().orEmpty()
         }
-        Log.w(TAG, "BLE ${key.direction} callback timed out; invalidating exact link")
+        Log.w(TAG, "BLE ${key.direction} operation timed out; invalidating exact link")
         try {
             val timeoutHandler = linkTimeoutHandler
             var needsFallback = timeoutHandler == null
@@ -846,7 +893,7 @@ class BluetoothPacketBroadcaster(
         val startNext = synchronized(sendLock) {
             val state = sendStates[key] ?: return
             if (state.pending.peekFirst() !== request) return
-            state.callbackTimeout?.cancel(); state.callbackTimeout = null
+            state.operationTimeout?.cancel(); state.operationTimeout = null
             state.pending.removeFirst(); state.pendingBytes -= request.data.size; state.inFlight = false
             if (state.pending.isEmpty()) { sendStates.remove(key); false }
             else { state.inFlight = true; true }
@@ -905,7 +952,7 @@ class BluetoothPacketBroadcaster(
                 if (head.deferredCallbackStatus == null) head.deferredCallbackStatus = status
                 return
             }
-            state.callbackTimeout?.cancel(); state.callbackTimeout = null
+            state.operationTimeout?.cancel(); state.operationTimeout = null
             state.inFlight = false
             if (status != BluetoothGatt.GATT_SUCCESS && head.callbackFailures < MAX_CALLBACK_RETRIES) {
                 head.callbackFailures++
@@ -940,7 +987,7 @@ class BluetoothPacketBroadcaster(
         synchronized(sendLock) {
             sendStates.keys.filter { key -> key.deviceAddress == deviceAddress && (linkID == null || key.linkID == linkID) }
                 .forEach { key -> sendStates.remove(key)?.let { state ->
-                    state.callbackTimeout?.cancel()
+                    state.operationTimeout?.cancel()
                     state.pending.forEach { it.accepted?.complete(it.failureResult()) }
                 } }
         }
@@ -969,7 +1016,7 @@ class BluetoothPacketBroadcaster(
     fun shutdown() {
         synchronized(sendLock) {
             sendStates.values.forEach { state ->
-                state.callbackTimeout?.cancel()
+                state.operationTimeout?.cancel()
                 state.pending.forEach { it.accepted?.complete(it.failureResult()) }
             }
             sendStates.clear()
