@@ -17,6 +17,7 @@ import com.bitchat.android.ui.pave.PaveStringResources
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -93,11 +94,49 @@ class WeshNotificationPrivacyTest {
         WeshContactStore.installForTesting(store)
         try {
             WeshPreferences(app).notificationShowsSender = true
-            backgroundManager().showPrivateMessageNotification(id, "Broadcast name", secret)
+            val manager = backgroundManager()
+            manager.showPrivateMessageNotification(id, "Broadcast name", secret)
             assertEquals("Lab fox", postedNotifications().single().extras.getCharSequence(Notification.EXTRA_TITLE).toString())
+            assertTrue(store.setNote(id, "Renamed fox", ""))
+            manager.refreshPrivateConversationName(id, store.contact(id)?.displayName)
+            assertEquals("Renamed fox", shadowOf(systemNotifications()).getNotification(id.hashCode())
+                .extras.getCharSequence(Notification.EXTRA_TITLE).toString())
         } finally {
             WeshContactStore.resetForTesting()
         }
+    }
+
+    @Test
+    fun `refreshing a contact name keeps sender and content hidden without opt in`() {
+        val manager = backgroundManager()
+        val id = "aaaabbbbccccdddd"
+        manager.showPrivateMessageNotification(id, nickname, secret)
+
+        manager.refreshPrivateConversationName(id, "Synthetic local alias")
+
+        val text = flatten(shadowOf(systemNotifications()).getNotification(id.hashCode()).extras)
+        assertFalse(text.contains(nickname))
+        assertFalse(text.contains("Synthetic local alias"))
+        assertFalse(text.contains(secret))
+    }
+
+    @Test
+    fun `refreshing a contact name rebuilds its notification and the multi-contact summary`() {
+        WeshPreferences(app).notificationShowsSender = true
+        val manager = backgroundManager()
+        val renamedID = "aaaabbbbccccdddd"
+        manager.showPrivateMessageNotification(renamedID, "Synthetic alpha", secret)
+        manager.showPrivateMessageNotification("1111222233334444", "Synthetic beta", secret)
+        val beforeSummary = postedNotifications().single { it.flags and Notification.FLAG_GROUP_SUMMARY != 0 }
+
+        manager.refreshPrivateConversationName(renamedID, "Synthetic renamed")
+
+        val renamed = shadowOf(systemNotifications()).getNotification(renamedID.hashCode())
+        val afterSummary = postedNotifications().single { it.flags and Notification.FLAG_GROUP_SUMMARY != 0 }
+        assertEquals("Synthetic renamed", renamed.extras.getCharSequence(Notification.EXTRA_TITLE).toString())
+        assertNotSame(beforeSummary, afterSummary)
+        assertTrue(ShortcutManagerCompat.getDynamicShortcuts(context).isEmpty())
+        postedNotifications().forEach { assertFalse(flatten(it.extras).contains(secret)) }
     }
 
     @Test

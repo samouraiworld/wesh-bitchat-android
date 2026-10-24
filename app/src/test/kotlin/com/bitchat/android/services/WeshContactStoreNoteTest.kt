@@ -14,6 +14,11 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
+import org.mockito.kotlin.any
+import org.mockito.kotlin.anyOrNull
+import org.mockito.kotlin.mock
+import org.mockito.kotlin.verify
+import org.mockito.kotlin.whenever
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [28], manifest = Config.NONE, application = Application::class)
@@ -132,5 +137,25 @@ class WeshContactStoreNoteTest {
         assertEquals(id, store.contacts.value.single().conversationID)
         assertFalse(store.setNote(id, "Synthetic", "Synthetic memo"))
         assertEquals("{not json", stored())
+    }
+
+    @Test
+    fun `a failed durable write neither reports success nor publishes the note`() {
+        val raw = """[{"noise":"${"09".repeat(32)}","nickname":"Synthetic Fox"}]"""
+        val preferences = mock<android.content.SharedPreferences>()
+        val editor = mock<android.content.SharedPreferences.Editor>()
+        whenever(preferences.getString(storageKey, null)).thenReturn(raw)
+        whenever(preferences.edit()).thenReturn(editor)
+        whenever(editor.putString(any(), anyOrNull())).thenReturn(editor)
+        whenever(editor.commit()).thenReturn(false)
+        val store = WeshContactStore(SecureIdentityStateManager(preferences, true), blocks)
+        val original = store.contacts.value.single()
+
+        assertFalse(store.setNote(original.conversationID, "Lab fox", "Synthetic memo"))
+
+        assertEquals(original, store.contacts.value.single())
+        assertNull(store.contacts.value.single().alias)
+        assertNull(store.contacts.value.single().memo)
+        verify(editor).commit()
     }
 }

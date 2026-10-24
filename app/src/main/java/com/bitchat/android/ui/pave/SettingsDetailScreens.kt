@@ -200,6 +200,7 @@ fun ContactSettingsScreen(
     onAliasChange: (String) -> Unit,
     memo: String,
     onMemoChange: (String) -> Unit,
+    saving: Boolean,
     onSave: () -> Unit,
     feedback: String?,
     feedbackIsError: Boolean,
@@ -211,11 +212,11 @@ fun ContactSettingsScreen(
     SettingsDetailFrame(stringResource(R.string.wesh_pave_fluo_contact_actions_title), onBack) {
         if (qrName != null) {
             Text(stringResource(R.string.wesh_pave_fluo_contact_qr_name, remoteDisplayName(qrName)), style = WeshType.body, color = c.ink)
-            PaveTextArea(alias, onAliasChange, stringResource(R.string.wesh_pave_fluo_contact_alias), singleLine = true)
-            PaveTextArea(memo, onMemoChange, stringResource(R.string.wesh_pave_fluo_contact_memo), singleLine = false)
+            PaveTextArea(alias, onAliasChange, stringResource(R.string.wesh_pave_fluo_contact_alias), singleLine = true, enabled = !saving)
+            PaveTextArea(memo, onMemoChange, stringResource(R.string.wesh_pave_fluo_contact_memo), singleLine = false, enabled = !saving)
             Text(stringResource(R.string.wesh_pave_fluo_contact_note_body), style = WeshType.caption, color = c.inkMuted)
             Feedback(feedback, feedbackIsError)
-            PrimaryButton(stringResource(R.string.wesh_pave_fluo_save), onSave)
+            PrimaryButton(stringResource(R.string.wesh_pave_fluo_save), onSave, enabled = !saving)
         }
         DangerButton(stringResource(R.string.wesh_pave_fluo_contact_block), onBlock, Modifier.fillMaxWidth())
         SecondaryButton(stringResource(R.string.wesh_pave_fluo_contact_remove), onRemove, Modifier.fillMaxWidth())

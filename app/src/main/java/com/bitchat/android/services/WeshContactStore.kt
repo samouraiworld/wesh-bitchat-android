@@ -121,8 +121,7 @@ class WeshContactStore internal constructor(
             warning = true
         }
         val self = Contact(hex, displayName(nickname), npub, npub != null && enrollment?.proven == true, warning, existing?.alias, existing?.memo)
-        persist((others + self).takeLast(256))
-        return true
+        return persist((others + self).takeLast(256))
     }
 
     /**
@@ -132,8 +131,10 @@ class WeshContactStore internal constructor(
     @Synchronized fun setNote(conversationID: String, alias: String, memo: String): Boolean {
         if (_loadFailed.value) return false
         val contact = contact(conversationID) ?: return false
-        persist(_contacts.value.map { if (it.noiseHex == contact.noiseHex) it.copy(alias = cleanAlias(alias), memo = cleanMemo(memo)) else it })
-        return true
+        return persist(
+            _contacts.value.map { if (it.noiseHex == contact.noiseHex) it.copy(alias = cleanAlias(alias), memo = cleanMemo(memo)) else it },
+            durable = true,
+        )
     }
     /** Bumped by every removal or wipe, so a verification checked before it never enrolls after it. */
     @Volatile var removalEpoch = 0L
@@ -144,14 +145,12 @@ class WeshContactStore internal constructor(
         if (_loadFailed.value) return false
         val remaining = _contacts.value.filterNot { it.conversationID == conversationID }
         if (remaining.size == _contacts.value.size) return false
-        persist(remaining)
-        return true
+        return persist(remaining)
     }
     /** Panic wipe is the only write allowed after a failed load: it removes what could not be read. */
     @Synchronized fun clear() {
         removalEpoch++
-        persist(emptyList())
-        _loadFailed.value = false
+        if (persist(emptyList())) _loadFailed.value = false
     }
     /** Inbound resolution: the proven holder, else a single unproven holder; ambiguous is null. */
     fun forNpub(npub: String): Contact? {
@@ -174,14 +173,18 @@ class WeshContactStore internal constructor(
      * remote rule. Empty when nothing visible is left, so it shows unnamed rather than as hex.
      */
     private fun displayName(nickname: String): String = safeDisplayName(nickname, "")
-    private fun persist(contacts: List<Contact>) {
+    /** A durable write publishes only after encrypted preferences acknowledge the replacement. */
+    private fun persist(contacts: List<Contact>, durable: Boolean = false): Boolean {
         val array = JSONArray()
         contacts.forEach { array.put(JSONObject().put("noise", it.noiseHex).put("nickname", it.nickname).putOpt("npub", it.npub)
             .putOpt("npubProven", if (it.npubProven) true else null)
             .putOpt("npubWarning", if (it.npubWarning) true else null)
             .putOpt("alias", it.alias).putOpt("memo", it.memo)) }
-        identity.storeSecureValue(storageKey, array.toString())
+        val encoded = array.toString()
+        if (durable && !identity.storeSecureValueDurably(storageKey, encoded)) return false
+        if (!durable) identity.storeSecureValue(storageKey, encoded)
         publish(contacts)
+        return true
     }
     companion object {
         const val MAX_MEMO_LENGTH = 500

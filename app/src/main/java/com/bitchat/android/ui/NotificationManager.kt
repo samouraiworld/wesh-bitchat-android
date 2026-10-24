@@ -189,6 +189,20 @@ class NotificationManager(
     private fun contactAlias(conversationID: String): String? =
         runCatching { WeshContactStore.get(context).contact(conversationID)?.alias }.getOrNull()
 
+    /** Rebuilds already-visible conversation notifications after a local contact rename. */
+    fun refreshPrivateConversationName(senderPeerID: String, senderNickname: String?) {
+        val conversationID = ContactDirectory.canonicalConversationId(senderPeerID)
+        val notifications = pendingNotifications[conversationID] ?: return
+        val displayName = remoteName.show(senderNickname)
+        synchronized(notifications) {
+            notifications.indices.forEach { index ->
+                notifications[index] = notifications[index].copy(senderNickname = displayName)
+            }
+        }
+        showNotificationForSender(conversationID)
+        if (pendingNotifications.size > 1) showSummaryNotification()
+    }
+
     private fun showNotificationForSender(senderPeerID: String) {
         val notifications = pendingNotifications[senderPeerID] ?: return
         if (notifications.isEmpty()) return

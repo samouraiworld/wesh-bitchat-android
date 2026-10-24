@@ -451,6 +451,10 @@ class SecureIdentityStateManager {
     fun storeSecureValue(key: String, value: String) {
         prefs.edit().putString(key, value).apply()
     }
+
+    /** Store a value synchronously when the caller must not report success before disk accepts it. */
+    internal fun storeSecureValueDurably(key: String, value: String): Boolean =
+        runCatching { prefs.edit().putString(key, value).commit() }.getOrDefault(false)
     
     /**
      * Retrieve a string value from secure preferences

@@ -947,8 +947,14 @@ class ChatViewModel(
         }
     }
     /** Local alias and memo of a QR contact; false when nothing could be written. */
-    fun setWeshContactNote(conversationID: String, alias: String, memo: String): Boolean =
-        weshContactStore.setNote(conversationID, alias, memo)
+    suspend fun setWeshContactNote(conversationID: String, alias: String, memo: String): Boolean {
+        if (!withContext(Dispatchers.IO) { weshContactStore.setNote(conversationID, alias, memo) }) return false
+        notificationManager.refreshPrivateConversationName(
+            conversationID,
+            weshContactStore.contact(conversationID)?.displayName,
+        )
+        return true
+    }
     fun removeWeshContact(conversationID: String) {
         verificationHandler.cancelWeshVerification(conversationID)
         weshContactStore.remove(conversationID)

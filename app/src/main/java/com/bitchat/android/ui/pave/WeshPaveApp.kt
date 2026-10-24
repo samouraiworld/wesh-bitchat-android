@@ -52,11 +52,13 @@ import com.bitchat.android.ui.WeshMessagePolicy
 import com.bitchat.android.ui.WeshPreferences
 import com.bitchat.android.ui.weshNamesakes
 import com.bitchat.android.util.dataFromHexString
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.text.DateFormat
 import java.util.Locale
@@ -236,8 +238,8 @@ private fun PaveNavHost(viewModel: ChatViewModel, appearance: WeshAppearance, on
     var reportOffer by remember { mutableStateOf<PaveReportTarget?>(null) }
     var confirmAction by remember { mutableStateOf<Pair<String, String>?>(null) }
     var requestToBlock by remember { mutableStateOf<WeshMessageRequests.Request?>(null) }
-    // The chat whose contact card is open; saved, so typed text survives a rotation.
-    var contactCardFor by rememberSaveable { mutableStateOf<String?>(null) }
+    // Contact identifiers and locally typed notes stay out of Android's saved-instance bundle.
+    var contactCardFor by remember { mutableStateOf<String?>(null) }
     // Bumped by local actions (block, unblock) whose effect is not observable as a flow.
     var revision by remember { mutableIntStateOf(0) }
 
@@ -835,10 +837,12 @@ private fun ContactSettingsRoute(
     onRemove: () -> Unit,
     onBack: () -> Unit,
 ) {
-    var alias by rememberSaveable(conversationID) { mutableStateOf(contact?.alias.orEmpty()) }
-    var memo by rememberSaveable(conversationID) { mutableStateOf(contact?.memo.orEmpty()) }
+    var alias by remember(conversationID) { mutableStateOf(contact?.alias.orEmpty()) }
+    var memo by remember(conversationID) { mutableStateOf(contact?.memo.orEmpty()) }
     var feedback by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf(false) }
+    var saving by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
     val saved = stringResource(R.string.wesh_pave_fluo_contact_note_saved)
     val failed = stringResource(R.string.wesh_pave_fluo_contact_note_failed)
     val refused = stringResource(R.string.wesh_pave_fluo_contact_alias_refused)
@@ -852,14 +856,35 @@ private fun ContactSettingsRoute(
         onAliasChange = { alias = NicknameGenerator.clean(it); feedback = null },
         memo = memo,
         onMemoChange = { memo = WeshContactStore.codePointPrefix(it, WeshContactStore.MAX_MEMO_LENGTH); feedback = null },
+        saving = saving,
         onSave = {
-            val stored = !unshowable && viewModel.setWeshContactNote(conversationID, alias, memo)
-            if (stored) {
-                alias = cleanAlias.orEmpty()
-                memo = WeshContactStore.cleanMemo(memo).orEmpty()
+            if (saving) return@ContactSettingsScreen
+            if (unshowable) {
+                feedback = refused
+                error = true
+                return@ContactSettingsScreen
             }
-            feedback = if (stored) saved else if (unshowable) refused else failed
-            error = !stored
+            val requestedAlias = alias
+            val requestedMemo = memo
+            saving = true
+            scope.launch {
+                try {
+                    val stored = viewModel.setWeshContactNote(conversationID, requestedAlias, requestedMemo)
+                    if (stored) {
+                        alias = WeshContactStore.cleanAlias(requestedAlias).orEmpty()
+                        memo = WeshContactStore.cleanMemo(requestedMemo).orEmpty()
+                    }
+                    feedback = if (stored) saved else failed
+                    error = !stored
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    feedback = failed
+                    error = true
+                } finally {
+                    if (currentCoroutineContext().isActive) saving = false
+                }
+            }
         },
         feedback = feedback,
         feedbackIsError = error,
