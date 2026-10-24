@@ -4,7 +4,6 @@ import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
-import androidx.activity.OnBackPressedCallback
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
@@ -344,23 +343,8 @@ class MainActivity : OrientationAwareActivity() {
             }
 
             OnboardingState.CHECKING, OnboardingState.INITIALIZING, OnboardingState.COMPLETE -> {
-                // Set up back navigation handling for the chat screen
-                val backCallback = object : OnBackPressedCallback(true) {
-                    override fun handleOnBackPressed() {
-                        // Let ChatViewModel handle navigation state
-                        val handled = chatViewModel.handleBackPressed()
-                        if (!handled) {
-                            // If ChatViewModel doesn't handle it, disable this callback
-                            // and let the system handle it (which will exit the app)
-                            this.isEnabled = false
-                            onBackPressedDispatcher.onBackPressed()
-                            this.isEnabled = true
-                        }
-                    }
-                }
-
-                // Add the callback - this will be automatically removed when the activity is destroyed
-                onBackPressedDispatcher.addCallback(this, backCallback)
+                // Back is handled by the Wesh screens: an activity callback here would end the
+                // private chat before the screen leaves it, showing it a frame without a contact.
                 com.bitchat.android.ui.WeshScreen(viewModel = chatViewModel)
             }
             
@@ -557,12 +541,65 @@ class MainActivity : OrientationAwareActivity() {
                 // Actual permission state owns recovery; platform error wording varies.
                 mainViewModel.updateOnboardingState(OnboardingState.PERMISSION_EXPLANATION)
             }
+            mainViewModel.onboardingState.value == OnboardingState.COMPLETE -> showBluetoothCheckUnlessItReturns()
             else -> {
                 // Stay on Bluetooth check screen for retry
                 mainViewModel.updateOnboardingState(OnboardingState.BLUETOOTH_CHECK)
             }
         }
     }
+
+    private var bluetoothOffCheck: kotlinx.coroutines.Job? = null
+
+    /**
+     * Shows the Bluetooth page only if Bluetooth stays off: some tablets turn it off on every
+     * sleep and back on a few seconds after waking, and the page would flash each time.
+     */
+    private fun showBluetoothCheckUnlessItReturns() {
+        if (bluetoothOffCheck?.isActive == true) return
+        bluetoothOffCheck = lifecycleScope.launch {
+            delay(BLUETOOTH_OFF_GRACE_MS)
+            var waited = 0L
+            while (bluetoothTurningOn() && waited < BLUETOOTH_TURNING_ON_MAX_MS) {
+                delay(500)
+                waited += 500
+                if (!shouldApplyBluetoothGraceResult(
+                        mainViewModel.onboardingState.value,
+                        permissionManager.areRequiredPermissionsGranted(),
+                    )) return@launch
+            }
+            // A later resume/callback may already have moved onboarding to a more accurate gate
+            // while this grace timer was sleeping. Never let the stale timer overwrite it.
+            if (!shouldApplyBluetoothGraceResult(
+                    mainViewModel.onboardingState.value,
+                    permissionManager.areRequiredPermissionsGranted(),
+                )) return@launch
+            val status = bluetoothStatusManager.checkBluetoothStatus()
+            mainViewModel.updateBluetoothStatus(status)
+            if (status != BluetoothStatus.ENABLED) {
+                mainViewModel.updateOnboardingState(OnboardingState.BLUETOOTH_CHECK)
+                mainViewModel.updateBluetoothLoading(false)
+                return@launch
+            }
+
+            // onResume returned as soon as Bluetooth entered the grace period. When the radio
+            // recovers on Android 11 and below, resume the remaining gate instead of silently
+            // skipping the system Location switch that BLE scanning still requires there.
+            if (requiresSystemLocationForMesh()) {
+                val location = locationStatusManager.checkLocationStatus()
+                mainViewModel.updateLocationStatus(location)
+                if (location != LocationStatus.ENABLED) {
+                    mainViewModel.updateOnboardingState(OnboardingState.LOCATION_CHECK)
+                    mainViewModel.updateLocationLoading(false)
+                }
+            }
+        }
+    }
+
+    private fun bluetoothTurningOn(): Boolean = try {
+        (getSystemService(android.bluetooth.BluetoothManager::class.java)?.adapter?.state) ==
+            android.bluetooth.BluetoothAdapter.STATE_TURNING_ON
+    } catch (_: SecurityException) { false }
     
     private fun handleOnboardingComplete() {
         // After permissions are granted, re-check Bluetooth, Location, and Battery Optimization status
@@ -804,8 +841,7 @@ class MainActivity : OrientationAwareActivity() {
             if (bleRequired && currentBluetoothStatus != BluetoothStatus.ENABLED) {
                 Log.w("MainActivity", "Bluetooth disabled while app was backgrounded")
                 mainViewModel.updateBluetoothStatus(currentBluetoothStatus)
-                mainViewModel.updateOnboardingState(OnboardingState.BLUETOOTH_CHECK)
-                mainViewModel.updateBluetoothLoading(false)
+                showBluetoothCheckUnlessItReturns()
                 return
             }
             
@@ -904,3 +940,14 @@ internal fun welcomeStart(welcomed: Boolean, requiredGranted: Boolean, notificat
     notificationsPending -> com.bitchat.android.ui.pave.OnboardingStart.Notifications
     else -> com.bitchat.android.ui.pave.OnboardingStart.Welcome
 }
+
+/** A delayed Bluetooth result only owns navigation while its original COMPLETE gate still does. */
+internal fun shouldApplyBluetoothGraceResult(
+    onboardingState: OnboardingState,
+    requiredPermissionsGranted: Boolean,
+): Boolean = onboardingState == OnboardingState.COMPLETE && requiredPermissionsGranted
+
+/** How long Bluetooth may stay off before the app asks to turn it on. */
+private const val BLUETOOTH_OFF_GRACE_MS = 5_000L
+/** How much longer to wait while Android reports Bluetooth as turning on. */
+private const val BLUETOOTH_TURNING_ON_MAX_MS = 10_000L

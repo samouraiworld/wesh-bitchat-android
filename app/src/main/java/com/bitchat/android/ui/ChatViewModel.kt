@@ -1347,31 +1347,6 @@ class ChatViewModel(
         state.setShowAppInfo(true)
     }
     
-    fun hideAppInfo() {
-        state.setShowAppInfo(false)
-    }
-
-    /**
-     * Handle Android back navigation
-     * Returns true if the back press was handled, false if it should be passed to the system
-     */
-    fun handleBackPressed(): Boolean {
-        return when {
-            // Close app info dialog
-            state.getShowAppInfoValue() -> {
-                hideAppInfo()
-                true
-            }
-            // Exit private chat
-            state.getSelectedPrivateChatPeerValue() != null || state.getPrivateChatSheetPeerValue() != null -> {
-                endPrivateChat()
-                true
-            }
-            // No special navigation state - let system handle (usually exits app)
-            else -> false
-        }
-    }
-
     // MARK: - Canonical peer identities
 
     /**

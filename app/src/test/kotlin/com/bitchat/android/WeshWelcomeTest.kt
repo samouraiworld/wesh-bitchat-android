@@ -5,6 +5,8 @@ import com.bitchat.android.ui.pave.OnboardingStart
 import com.bitchat.android.ui.pave.BluetoothStepAction
 import com.bitchat.android.ui.pave.bluetoothRefusal
 import com.bitchat.android.ui.pave.bluetoothStepAction
+import com.bitchat.android.ui.pave.OnboardingStep
+import com.bitchat.android.ui.pave.onboardingCanGoBack
 import java.io.File
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
@@ -33,6 +35,13 @@ class WeshWelcomeTest {
         assertEquals(OnboardingStart.Bluetooth, welcomeStart(welcomed = true, requiredGranted = false, notificationsPending = true))
         assertEquals(OnboardingStart.Notifications, welcomeStart(welcomed = true, requiredGranted = true, notificationsPending = true))
         assertEquals(OnboardingStart.Notifications, welcomeStart(welcomed = false, requiredGranted = true, notificationsPending = true))
+    }
+
+    @Test
+    fun `Bluetooth Back returns to nickname only when Welcome started the flow`() {
+        assertEquals(true, onboardingCanGoBack(OnboardingStep.Bluetooth, OnboardingStart.Welcome))
+        assertEquals(false, onboardingCanGoBack(OnboardingStep.Bluetooth, OnboardingStart.Bluetooth))
+        assertEquals(false, onboardingCanGoBack(OnboardingStep.Notifications, OnboardingStart.Welcome))
     }
 
     @Test

@@ -5,6 +5,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -30,6 +31,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Casino
 import androidx.compose.material.icons.rounded.Sensors
 import androidx.compose.material3.Icon
@@ -71,7 +73,10 @@ import com.bitchat.android.ui.WeshLinks
 /** Where the welcome starts: first launch, back for a missing Bluetooth permission, or notifications only. */
 enum class OnboardingStart { Welcome, Bluetooth, Notifications }
 
-private enum class OnboardingStep { Welcome, Bluetooth, Notifications }
+internal fun onboardingCanGoBack(step: OnboardingStep, start: OnboardingStart): Boolean =
+    step == OnboardingStep.Bluetooth && start == OnboardingStart.Welcome
+
+internal enum class OnboardingStep { Welcome, Bluetooth, Notifications }
 
 /** How the person answered the Bluetooth prompt. A simple refusal keeps "Continuer"; only a permanent one sends to Settings. */
 internal enum class BluetoothRefusal { None, Once, Permanent }
@@ -182,6 +187,10 @@ fun OnboardingFlow(
         onPauseOrDispose {}
     }
 
+    // From Bluetooth, back returns to the nickname, when the flow started there.
+    val canGoBack = onboardingCanGoBack(step, start)
+    BackHandler(canGoBack) { step = OnboardingStep.Welcome }
+
     Box(modifier.fillMaxSize().background(WeshPave.colors.bg).systemBarsPadding().imePadding()) {
         when (step) {
             OnboardingStep.Welcome -> WelcomeStep(
@@ -193,6 +202,7 @@ fun OnboardingFlow(
             OnboardingStep.Bluetooth -> BluetoothStep(
                 legacyLocation = sdkInt < Build.VERSION_CODES.S,
                 refusal = refusal,
+                onBack = if (canGoBack) ({ step = OnboardingStep.Welcome }) else null,
                 onContinue = request,
                 onOpenSettings = {
                     context.startActivity(
@@ -324,12 +334,20 @@ private fun TermsLine() {
 private fun BluetoothStep(
     legacyLocation: Boolean,
     refusal: BluetoothRefusal,
+    onBack: (() -> Unit)?,
     onContinue: () -> Unit,
     onOpenSettings: () -> Unit,
 ) {
     val c = WeshPave.colors
+    // Back sits where PaveHeader puts it on other screens, above the scrolling content.
+    Column(Modifier.fillMaxSize()) {
+    if (onBack != null) {
+        PaveIconButton(Icons.AutoMirrored.Rounded.ArrowBack, stringResource(R.string.wesh_pave_back), onBack,
+            Modifier.padding(start = WeshSpace.s1, top = WeshSpace.s2))
+    }
     Column(
-        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = WeshSpace.gutter, vertical = WeshSpace.s8),
+        Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState())
+            .padding(horizontal = WeshSpace.gutter, vertical = WeshSpace.s8),
         verticalArrangement = Arrangement.spacedBy(WeshSpace.s4),
     ) {
         Icon(Icons.Rounded.Sensors, contentDescription = null, tint = c.success, modifier = Modifier.size(48.dp))
@@ -355,6 +373,7 @@ private fun BluetoothStep(
             BluetoothStepAction.OpenSettings -> PrimaryButton(stringResource(R.string.wesh_pave_open_settings), onOpenSettings)
         }
     }
+    }
 }
 
 @PaveScreenPreviews
@@ -364,11 +383,11 @@ private fun OnboardingWelcomePreview() = PavePreview(padded = false) { Onboardin
 @PaveScreenPreviews
 @Composable
 private fun OnboardingBluetoothPreview() = PavePreview(padded = false) {
-    BluetoothStep(legacyLocation = false, refusal = BluetoothRefusal.None, onContinue = {}, onOpenSettings = {})
+    BluetoothStep(legacyLocation = false, refusal = BluetoothRefusal.None, onBack = {}, onContinue = {}, onOpenSettings = {})
 }
 
 @PavePreviews
 @Composable
 private fun OnboardingBluetoothDeniedPreview() = PavePreview(padded = false) {
-    BluetoothStep(legacyLocation = true, refusal = BluetoothRefusal.Permanent, onContinue = {}, onOpenSettings = {})
+    BluetoothStep(legacyLocation = true, refusal = BluetoothRefusal.Permanent, onBack = null, onContinue = {}, onOpenSettings = {})
 }

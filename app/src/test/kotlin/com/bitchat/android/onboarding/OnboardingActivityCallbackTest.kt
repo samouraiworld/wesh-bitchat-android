@@ -3,6 +3,7 @@ package com.bitchat.android.onboarding
 import android.app.Application
 import com.bitchat.android.MainActivity
 import com.bitchat.android.MainViewModel
+import com.bitchat.android.shouldApplyBluetoothGraceResult
 import org.junit.Assert.assertEquals
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -62,7 +63,59 @@ class OnboardingActivityCallbackTest {
 
         fixture.bluetoothDisabled()
 
+        // Some tablets turn Bluetooth off on every sleep: the page waits out a short grace period.
+        assertEquals(OnboardingState.COMPLETE, fixture.model.onboardingState.value)
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idleFor(java.time.Duration.ofSeconds(6))
         assertEquals(OnboardingState.BLUETOOTH_CHECK, fixture.model.onboardingState.value)
+    }
+
+    @Test
+    @Config(sdk = [30])
+    fun `Bluetooth grace rechecks legacy Location after the radio returns`() {
+        val fixture = fixture(
+            location = LocationStatus.DISABLED,
+            bluetoothStatuses = listOf(BluetoothStatus.DISABLED, BluetoothStatus.ENABLED),
+        )
+
+        fixture.bluetoothDisabled()
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper())
+            .idleFor(java.time.Duration.ofSeconds(6))
+
+        assertEquals(OnboardingState.LOCATION_CHECK, fixture.model.onboardingState.value)
+        verify(fixture.locationManager).checkLocationStatus()
+    }
+
+    @Test
+    fun `Bluetooth grace does not consult the obsolete Location gate on modern Android`() {
+        val fixture = fixture(
+            bluetoothStatuses = listOf(BluetoothStatus.DISABLED, BluetoothStatus.ENABLED),
+        )
+
+        fixture.bluetoothDisabled()
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper())
+            .idleFor(java.time.Duration.ofSeconds(6))
+
+        assertEquals(OnboardingState.COMPLETE, fixture.model.onboardingState.value)
+        verify(fixture.locationManager, never()).checkLocationStatus()
+    }
+
+    @Test
+    fun `stale Bluetooth grace cannot overwrite a newer permission gate`() {
+        val fixture = fixture(requiredGranted = true)
+
+        fixture.bluetoothDisabled()
+        fixture.model.updateOnboardingState(OnboardingState.PERMISSION_EXPLANATION)
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper())
+            .idleFor(java.time.Duration.ofSeconds(6))
+
+        assertEquals(OnboardingState.PERMISSION_EXPLANATION, fixture.model.onboardingState.value)
+    }
+
+    @Test
+    fun `Bluetooth grace result requires both complete state and current permissions`() {
+        assertEquals(true, shouldApplyBluetoothGraceResult(OnboardingState.COMPLETE, true))
+        assertEquals(false, shouldApplyBluetoothGraceResult(OnboardingState.COMPLETE, false))
+        assertEquals(false, shouldApplyBluetoothGraceResult(OnboardingState.PERMISSION_EXPLANATION, true))
     }
 
     @Test
@@ -98,6 +151,7 @@ class OnboardingActivityCallbackTest {
     private fun fixture(
         location: LocationStatus = LocationStatus.DISABLED,
         bluetooth: BluetoothStatus = BluetoothStatus.DISABLED,
+        bluetoothStatuses: List<BluetoothStatus> = listOf(bluetooth),
         requiredGranted: Boolean = true
     ): Fixture {
         // Attach only: onCreate would construct the unrelated mesh/UI graph. Existing callback
@@ -107,7 +161,10 @@ class OnboardingActivityCallbackTest {
         val locationManager = mock<LocationStatusManager>()
         whenever(locationManager.checkLocationStatus()).thenReturn(location)
         val bluetoothManager = mock<BluetoothStatusManager>()
-        whenever(bluetoothManager.checkBluetoothStatus()).thenReturn(bluetooth)
+        whenever(bluetoothManager.checkBluetoothStatus()).thenReturn(
+            bluetoothStatuses.first(),
+            *bluetoothStatuses.drop(1).toTypedArray(),
+        )
         val permissionManager = mock<PermissionManager>()
         whenever(permissionManager.areRequiredPermissionsGranted()).thenReturn(requiredGranted)
         whenever(permissionManager.isFirstTimeLaunch()).thenReturn(false)

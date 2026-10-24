@@ -82,6 +82,47 @@ class WeshPaveAppLogicTest {
     }
 
     @Test
+    fun `private open completion closes late sessions and recovers failures`() {
+        val canonical = "synthetic-conversation"
+
+        // Slow open completed after Back: its newly selected session must not remain orphaned.
+        assertEquals(
+            PrivateOpenFollowUp.EndSession,
+            privateOpenFollowUp(canonical, canonical, PaveRoute.Home, failed = false),
+        )
+        // An exception while the loading screen is visible returns Home and closes partial state.
+        assertEquals(
+            PrivateOpenFollowUp.ReturnHomeAndEndSession,
+            privateOpenFollowUp(canonical, null, PaveRoute.Private, failed = true),
+        )
+        // Exchange and Home use the same opener; leaving either loading route is fail-closed.
+        assertEquals(
+            PrivateOpenFollowUp.EndSession,
+            privateOpenFollowUp(canonical, null, PaveRoute.Exchange, failed = true),
+        )
+        // A successful open still on its intended screen needs no follow-up.
+        assertEquals(
+            PrivateOpenFollowUp.None,
+            privateOpenFollowUp(canonical, canonical, PaveRoute.Private, failed = false),
+        )
+        // Any unexpected identity selection is closed rather than shown under the requested name.
+        assertEquals(
+            PrivateOpenFollowUp.ReturnHomeAndEndSession,
+            privateOpenFollowUp(canonical, "other-conversation", PaveRoute.Private, failed = false),
+        )
+
+        // A second tap while the first history load is in flight is ignored.
+        assertTrue(canStartPrivateOpen(null))
+        assertFalse(canStartPrivateOpen(canonical))
+
+        // A late successful selection after Back cannot auto-route while the explicit open owns
+        // the transition. Once no open is in flight, external selections may route normally.
+        assertFalse(shouldAutoRoutePrivate(canonical, PaveRoute.Home, opening = canonical))
+        assertTrue(shouldAutoRoutePrivate(canonical, PaveRoute.Home, opening = null))
+        assertFalse(shouldAutoRoutePrivate(canonical, PaveRoute.Exchange, opening = null))
+    }
+
+    @Test
     fun `an unknown appearance falls back to Nuit`() {
         assertEquals(WeshAppearance.Jour, parseAppearance("Jour"))
         assertEquals(WeshAppearance.Nuit, parseAppearance("synthetic"))

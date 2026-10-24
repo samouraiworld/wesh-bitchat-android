@@ -25,7 +25,10 @@ class WeshMessagePolicyTest {
     @Test fun `public text remains literal and cannot select a private or internet channel`() = runTest {
         val effects = mutableListOf<String>()
         assertTrue(WeshMessagePolicy.sendPublicText("/join synthetic", "Synthetic", "peer-local",
-            store = { message -> assertFalse(message.isPrivate); assertNull(message.channel); effects += "stored" },
+            store = { message ->
+                assertFalse(message.isPrivate); assertNull(message.channel)
+                assertEquals(DeliveryStatus.Sent, message.deliveryStatus); effects += "stored"
+            },
             bluetoothSend = { content ->
                 assertEquals("/join synthetic", content); effects += "bluetooth"; true
             }))
