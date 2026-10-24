@@ -63,6 +63,7 @@ fun SettingsScreen(
     onOpen: (PaveSettingsEntry) -> Unit,
     autoStartOnBoot: Boolean,
     onAutoStartOnBoot: (Boolean) -> Unit,
+    onBack: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val c = WeshPave.colors
@@ -70,11 +71,12 @@ fun SettingsScreen(
         modifier
             .fillMaxSize()
             .background(c.bg)
+            .systemBarsPadding()
             .verticalScroll(rememberScrollState())
             .padding(horizontal = WeshSpace.gutter, vertical = WeshSpace.s2),
         verticalArrangement = Arrangement.spacedBy(WeshSpace.s4),
     ) {
-        PaveHeader(stringResource(R.string.wesh_pave_settings_title))
+        PaveHeader(stringResource(R.string.wesh_pave_settings_title), onBack = onBack)
         HoldToErase(
             onErase = onErase,
             compact = true,
@@ -223,7 +225,7 @@ fun LicensesScreen(onBack: () -> Unit, modifier: Modifier = Modifier) {
 private fun SettingsScreenPreview() = PavePreview(padded = false) {
     SettingsScreen(
         PaveSettingsSummary("Renard 42", previewsHidden = true, meeting = "Fontaine, 18 h", blockedCount = 2, appearance = WeshAppearance.Nuit),
-        onErase = {}, onOpen = {}, autoStartOnBoot = true, onAutoStartOnBoot = {},
+        onErase = {}, onOpen = {}, autoStartOnBoot = true, onAutoStartOnBoot = {}, onBack = {},
     )
 }
 
