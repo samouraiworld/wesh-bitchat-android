@@ -154,6 +154,13 @@ class BluetoothConnectionTrackerLinkObservationTest {
         assertTrue(tracker.hasLink(ADDRESS, "legacy-server"))
         assertTrue(tracker.hasLink(ADDRESS, "legacy-client"))
         assertFalse(tracker.shouldSuppressClientDial(ADDRESS))
+
+        assertTrue(tracker.cleanupDeviceConnectionIfCurrent(ADDRESS, "legacy-server"))
+        assertEquals(1, tracker.getConnectedDeviceCount())
+        assertEquals("legacy-client", tracker.getCurrentLinkID(ADDRESS))
+        assertEquals("legacy-client", tracker.getDeviceConnection(ADDRESS)?.linkID)
+        assertEquals(REMOTE_HIGH, tracker.addressPeerMap[ADDRESS])
+        assertTrue(tracker.isPeerConnected(REMOTE_HIGH))
     }
 
     @Test

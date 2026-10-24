@@ -512,7 +512,7 @@ class BluetoothGattClientCallbacksTest {
         assertFalse(tracker.addressPeerMap.containsKey(address))
     }
 
-    @Test fun `scan scheduler cannot recreate authenticated cooperative tie break loser`() {
+    @Test fun `repeated scan scheduling cannot recreate authenticated cooperative tie break loser`() {
         val winnerAddress = "AA:BB:CC:DD:EE:02"
         val winnerDevice = mock<BluetoothDevice> { on { getAddress() }.thenReturn(winnerAddress) }
         tracker.addDeviceConnection(address,
@@ -538,7 +538,7 @@ class BluetoothGattClientCallbacksTest {
         assertEquals(listOf("rejected-client"), election.linksToClose.map { it.connection.linkID })
         clearInvocations(device)
 
-        scanDebugResult(null, -30)
+        repeat(30) { scanDebugResult(null, -30) }
 
         verify(device, never()).connectGatt(eq(context), eq(false), any(), eq(BluetoothDevice.TRANSPORT_LE))
         assertTrue(tracker.hasLink(winnerAddress, "authenticated-server"))
