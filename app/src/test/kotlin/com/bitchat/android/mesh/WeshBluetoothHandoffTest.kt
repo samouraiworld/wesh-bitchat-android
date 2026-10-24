@@ -78,6 +78,39 @@ class WeshBluetoothHandoffTest {
         assertEquals(BoundSendOutcome.UNCONFIRMED, withTimeout(1_000) { outcome.await() })
     }
 
+    @Test fun `disconnect between GATT API return and result publication stays unconfirmed`() = runBlocking<Unit> {
+        val apiReturned = java.util.concurrent.CountDownLatch(1)
+        val publishResult = java.util.concurrent.CountDownLatch(1)
+        broadcaster.shutdown()
+        broadcaster = BluetoothPacketBroadcaster(
+            scope,
+            tracker,
+            FragmentManager(),
+            "1111222233334444",
+            afterGattApiResultForTesting = { accepted ->
+                if (accepted) {
+                    apiReturned.countDown()
+                    publishResult.await(5, java.util.concurrent.TimeUnit.SECONDS)
+                }
+            }
+        )
+        whenever(gatt.writeCharacteristic(any())).thenReturn(true)
+        val outcome = async {
+            broadcaster.broadcastPacketAndAwaitOutcome(packet(32), null, null) { true }
+        }
+
+        try {
+            withTimeout(1_000) {
+                while (apiReturned.count != 0L) delay(10)
+            }
+            broadcaster.onLinkDisconnected(address, "synthetic-generation")
+        } finally {
+            publishResult.countDown()
+        }
+
+        assertEquals(BoundSendOutcome.UNCONFIRMED, withTimeout(1_000) { outcome.await() })
+    }
+
     @Test fun `local API acceptance without a callback is unconfirmed`() = runBlocking<Unit> {
         broadcaster.shutdown()
         broadcaster = BluetoothPacketBroadcaster(

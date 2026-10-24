@@ -48,7 +48,8 @@ class BluetoothPacketBroadcaster(
     private val connectionTracker: BluetoothConnectionTracker,
     private val fragmentManager: FragmentManager?,
     private val myPeerID: String,
-    private val gattCallbackTimeoutMs: Long = GATT_CALLBACK_TIMEOUT_MS
+    private val gattCallbackTimeoutMs: Long = GATT_CALLBACK_TIMEOUT_MS,
+    private val afterGattApiResultForTesting: ((Boolean) -> Unit)? = null
 ) {
     
     companion object {
@@ -153,11 +154,22 @@ class BluetoothPacketBroadcaster(
     }
 
     private class GattHandoffEvidence {
-        @Volatile var apiAccepted: Boolean = false
+        private var acceptedCalls = 0
+        private var pendingCalls = 0
 
-        fun failureResult(): GattOperationResult =
-            if (apiAccepted) GattOperationResult.UNCONFIRMED else GattOperationResult.REJECTED
+        @Synchronized fun beginApiCall() { pendingCalls++ }
+
+        @Synchronized fun finishApiCall(accepted: Boolean) {
+            pendingCalls = (pendingCalls - 1).coerceAtLeast(0)
+            if (accepted) acceptedCalls++
+        }
+
+        @Synchronized fun failureResult(): GattOperationResult =
+            if (acceptedCalls > 0 || pendingCalls > 0) GattOperationResult.UNCONFIRMED
+            else GattOperationResult.REJECTED
     }
+
+    private enum class GattApiState { NOT_STARTED, API_PENDING, ACCEPTED, REJECTED }
 
     private data class SendKey(
         val deviceAddress: String,
@@ -174,6 +186,8 @@ class BluetoothPacketBroadcaster(
         var callbackFailures: Int = 0,
         val accepted: CompletableDeferred<GattOperationResult>? = null,
         val handoffEvidence: GattHandoffEvidence = GattHandoffEvidence(),
+        var apiState: GattApiState = GattApiState.NOT_STARTED,
+        var deferredCallbackStatus: Int? = null,
         val authorized: () -> Boolean = { true }
     ) {
         fun failureResult(): GattOperationResult = handoffEvidence.failureResult()
@@ -678,6 +692,12 @@ class BluetoothPacketBroadcaster(
         if (request.accepted?.isCancelled == true || !request.authorized() || !exactRole) {
             failBoundHead(key, request); return
         }
+        synchronized(sendLock) {
+            val state = sendStates[key] ?: return
+            if (state.pending.peekFirst() !== request || state.operationGeneration != operationGeneration) return
+            request.apiState = GattApiState.API_PENDING
+            request.handoffEvidence.beginApiCall()
+        }
         val accepted = try {
             when (key.direction) {
                 SendDirection.CLIENT_WRITE -> {
@@ -717,9 +737,17 @@ class BluetoothPacketBroadcaster(
             Log.w(TAG, "BLE ${key.direction} failed to start: ${error.message}")
             false
         }
+        // Test hook deliberately widens the otherwise tiny return/publication race. Production is
+        // null; callbacks that arrive while it is held are recorded under sendLock and replayed.
+        afterGattApiResultForTesting?.invoke(accepted)
+        val deferredCallback = synchronized(sendLock) {
+            request.handoffEvidence.finishApiCall(accepted)
+            request.apiState = if (accepted) GattApiState.ACCEPTED else GattApiState.REJECTED
+            request.deferredCallbackStatus.also { request.deferredCallbackStatus = null }
+        }
         if (accepted) {
-            request.handoffEvidence.apiAccepted = true
-            armGattCallbackTimeout(key, request, operationGeneration)
+            if (deferredCallback != null) completeSend(key, deferredCallback)
+            else armGattCallbackTimeout(key, request, operationGeneration)
         }
         else if (request.accepted != null) failBoundHead(key, request) else rejectStart(key)
     }
@@ -837,6 +865,12 @@ class BluetoothPacketBroadcaster(
             val state = sendStates[key] ?: return
             val head = state.pending.peekFirst() ?: run {
                 sendStates.remove(key)
+                return
+            }
+            if (head.apiState == GattApiState.API_PENDING) {
+                // Android is allowed to callback immediately. Publish the API return first so a
+                // successful callback cannot be mistaken for a pre-API refusal (or vice versa).
+                if (head.deferredCallbackStatus == null) head.deferredCallbackStatus = status
                 return
             }
             state.callbackTimeout?.cancel(); state.callbackTimeout = null
