@@ -17,6 +17,66 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
+internal enum class BluetoothRoleStartResult {
+    STARTED,
+    DISABLED,
+    PERMISSION_DENIED,
+    ADAPTER_OFF,
+    ROLE_UNSUPPORTED,
+    RESOURCE_UNAVAILABLE
+}
+
+enum class BluetoothRoleFailureAction {
+    RETRY_STACK,
+    STOP_TRANSPORT,
+    DISABLE_ROLE
+}
+
+internal fun stackRecoveryDelayMs(attempt: Int): Long = when (attempt.coerceAtLeast(0)) {
+    0 -> 3_000L
+    1 -> 6_000L
+    2 -> 12_000L
+    3 -> 24_000L
+    else -> 30_000L
+}
+
+internal class BluetoothStackRecoveryState {
+    private var attempts = 0
+    private var serverReady = false
+    private var serverDisabled = false
+    private var ownerGeneration = 0L
+
+    @Synchronized fun beginGeneration(ownerGeneration: Long) {
+        this.ownerGeneration = ownerGeneration
+        serverReady = false
+        serverDisabled = false
+    }
+
+    @Synchronized fun nextDelayMs(): Long = stackRecoveryDelayMs(attempts++)
+
+    @Synchronized fun markServerReady(ownerGeneration: Long, transportReady: Boolean): Boolean {
+        if (ownerGeneration != this.ownerGeneration) return false
+        serverReady = true
+        if (transportReady) attempts = 0
+        return true
+    }
+
+    @Synchronized fun markServerDisabled(ownerGeneration: Long, transportReady: Boolean): Boolean {
+        if (ownerGeneration != this.ownerGeneration) return false
+        serverDisabled = true
+        if (transportReady) attempts = 0
+        return true
+    }
+
+    @Synchronized fun markTransportReady(ownerGeneration: Long, serverEnabled: Boolean): Boolean {
+        if (ownerGeneration != this.ownerGeneration) return false
+        if (!serverEnabled || serverReady || serverDisabled) attempts = 0
+        return true
+    }
+}
+
+internal fun recoveryOwnsNextStart(recoveryPending: Boolean): Boolean = recoveryPending
+
 /**
  * Power-optimized Bluetooth connection manager with comprehensive memory management
  * Integrates with PowerManager for adaptive power consumption
@@ -111,10 +171,12 @@ class BluetoothConnectionManager(
     // One limiter for both roles, so its shared ceiling covers every inbound link.
     private val inboundLimiter = InboundLinkRateLimiter()
     private val serverManager = BluetoothGattServerManager(
-        context, connectionScope, connectionTracker, permissionManager, powerManager, componentDelegate, inboundLimiter
+        context, connectionScope, connectionTracker, permissionManager, powerManager, componentDelegate,
+        inboundLimiter, ::onBluetoothRoleFailure, ::onBluetoothRoleReady
     )
     private val clientManager = BluetoothGattClientManager(
-        context, connectionScope, connectionTracker, permissionManager, powerManager, componentDelegate, inboundLimiter
+        context, connectionScope, connectionTracker, permissionManager, powerManager, componentDelegate,
+        inboundLimiter
     )
     
     // Service state
@@ -134,6 +196,9 @@ class BluetoothConnectionManager(
     @Volatile private var resumeWhenBluetoothOn = false
     private val adapterStates = Channel<Int>(Channel.UNLIMITED)
     private var adapterReceiver: BroadcastReceiver? = null
+    private var stackRecoveryJob: Job? = null
+    private var stackRecoveryEpoch = 0L
+    private val stackRecoveryState = BluetoothStackRecoveryState()
 
     // Delegate for callbacks
     var delegate: BluetoothConnectionManagerDelegate? = null
@@ -317,6 +382,10 @@ class BluetoothConnectionManager(
      */
     @Synchronized fun startServices(): Boolean {
         if (stopped) return false
+        if (recoveryOwnsNextStart(stackRecoveryJob != null)) {
+            Log.d(TAG, "Bluetooth stack recovery already owns the next start")
+            return true
+        }
         if (transportReady) {
             delegate?.onTransportStateChanged(true)
             return true
@@ -355,6 +424,7 @@ class BluetoothConnectionManager(
             isActive = true
             resumeWhenBluetoothOn = false
             val generation = lifecycleEpoch.begin()
+            stackRecoveryState.beginGeneration(generation)
             startupJob?.cancel()
 
         // set the adapter's name to our 8-character peerID for iOS privacy, TODO: Make this configurable
@@ -380,22 +450,21 @@ class BluetoothConnectionManager(
 
                     val startServer = isGattServerEnabled()
                     val startClient = isGattClientEnabled()
+                    var serverReadinessRequired = false
 
                     if (startServer) {
-                        if (!serverManager.start()) {
-                            Log.e(TAG, "Failed to start server manager")
-                            failLifecycleGeneration(generation)
+                        val serverResult = serverManager.startResult(generation)
+                        if (!acceptRoleStart(generation, "server", serverResult)) {
                             return@newStart
                         }
+                        serverReadinessRequired = serverResult == BluetoothRoleStartResult.STARTED
                         if (!isCurrentLifecycleGeneration(generation)) return@newStart
                     } else {
                         Log.i(TAG, "GATT Server disabled by debug settings; not starting")
                     }
 
                     if (startClient) {
-                        if (!clientManager.start()) {
-                            Log.e(TAG, "Failed to start client manager")
-                            failLifecycleGeneration(generation)
+                        if (!acceptRoleStart(generation, "client", clientManager.startResult())) {
                             return@newStart
                         }
                         if (!isCurrentLifecycleGeneration(generation)) return@newStart
@@ -407,6 +476,7 @@ class BluetoothConnectionManager(
                         if (!isCurrentLifecycleGenerationLocked(generation)) return@synchronized
                         startupJob = null
                         transportReady = true
+                        stackRecoveryState.markTransportReady(generation, serverReadinessRequired)
                         delegate?.onTransportStateChanged(true)
                     }
                     if (isCurrentLifecycleGeneration(generation)) {
@@ -436,6 +506,9 @@ class BluetoothConnectionManager(
             isActive = false
             transportReady = false
             resumeWhenBluetoothOn = false
+            ++stackRecoveryEpoch
+            stackRecoveryJob?.cancel()
+            stackRecoveryJob = null
             lifecycleEpoch.invalidate()
             val old = startupJob
             old?.cancel()
@@ -463,6 +536,9 @@ class BluetoothConnectionManager(
             isActive = false
             transportReady = false
             resumeWhenBluetoothOn = false
+            ++stackRecoveryEpoch
+            stackRecoveryJob?.cancel()
+            stackRecoveryJob = null
             lifecycleEpoch.invalidate()
             val old = startupJob
             old?.cancel()
@@ -477,16 +553,34 @@ class BluetoothConnectionManager(
     }
 
     private fun onAdapterState(state: Int) {
-        val reaction = synchronized(this) {
+        val transition = synchronized(this) {
             if (stopped) return
-            adapterReaction(state, isActive, resumeWhenBluetoothOn)
+            adapterStateTransition(
+                state = state,
+                active = isActive,
+                resumePending = resumeWhenBluetoothOn,
+                recoveryPending = stackRecoveryJob != null
+            ).also { decision ->
+                if (decision.cancelRecovery) {
+                    ++stackRecoveryEpoch
+                    stackRecoveryJob?.cancel()
+                    stackRecoveryJob = null
+                    transportReady = false
+                    lifecycleEpoch.invalidate()
+                    Log.i(TAG, "Bluetooth turned off during stack recovery: cancelling retry immediately")
+                }
+                resumeWhenBluetoothOn = decision.resumePending
+            }
         }
-        when (reaction) {
+        when (transition.reaction) {
             AdapterReaction.RELEASE -> {
                 Log.i(TAG, "Bluetooth turning off: releasing GATT server and client")
                 synchronized(this) {
                     if (stopped) return
                     resumeWhenBluetoothOn = true
+                    ++stackRecoveryEpoch
+                    stackRecoveryJob?.cancel()
+                    stackRecoveryJob = null
                     isActive = false
                     transportReady = false
                     lifecycleEpoch.invalidate()
@@ -528,6 +622,133 @@ class BluetoothConnectionManager(
     }
 
     /**
+     * A server/advertiser generation failed after start() had already returned. Recycle both BLE
+     * roles through the same serialized release barrier used by adapter OFF/ON, with bounded
+     * backoff. A stale role callback cannot schedule a second recovery because the first one drops
+     * manager ownership before releasing components.
+     */
+    private fun onBluetoothRoleFailure(
+        ownerGeneration: Long,
+        reason: String,
+        action: BluetoothRoleFailureAction = BluetoothRoleFailureAction.RETRY_STACK
+    ) {
+        when (action) {
+            BluetoothRoleFailureAction.DISABLE_ROLE -> {
+                synchronized(this) {
+                    if (!isCurrentLifecycleGenerationLocked(ownerGeneration)) return
+                    stackRecoveryState.markServerDisabled(ownerGeneration, transportReady)
+                }
+                Log.w(TAG, "Bluetooth role unavailable ($reason): keeping the other role active")
+                return
+            }
+            BluetoothRoleFailureAction.STOP_TRANSPORT -> {
+                Log.e(TAG, "Bluetooth role failed permanently ($reason): stopping transport")
+                failCurrentLifecycleWithoutRetry(ownerGeneration)
+                return
+            }
+            BluetoothRoleFailureAction.RETRY_STACK -> Unit
+        }
+        val recovery = synchronized(this) {
+            if (stopped || !isActive || !lifecycleEpoch.isCurrent(ownerGeneration) ||
+                !isBleTransportEnabled() || stackRecoveryJob != null) return
+            Log.w(TAG, "Bluetooth role failed ($reason): recycling BLE stack")
+            isActive = false
+            transportReady = false
+            lifecycleEpoch.invalidate()
+            val old = startupJob
+            old?.cancel()
+            startupJob = null
+            delegate?.onTransportStateChanged(false)
+            val release = componentLifecycle.newRelease(old)
+            // Publish and start the release before exposing a cancellable retry job. Otherwise a
+            // concurrent disable/stop could cancel the lazy owner and leave releaseTail pointing
+            // at a release which never starts, blocking every later lifecycle command.
+            release.start()
+            val token = ++stackRecoveryEpoch
+            val delayMs = stackRecoveryState.nextDelayMs()
+            connectionScope.launch(start = CoroutineStart.LAZY) {
+                release.join()
+                delay(delayMs)
+                val restart = synchronized(this@BluetoothConnectionManager) {
+                    if (stopped || token != stackRecoveryEpoch || !isBleTransportEnabled()) {
+                        stackRecoveryJob = null
+                        false
+                    } else {
+                        val adapterOn = try { bluetoothAdapter?.isEnabled == true } catch (_: SecurityException) { false }
+                        if (!adapterOn) {
+                            resumeWhenBluetoothOn = true
+                            stackRecoveryJob = null
+                            false
+                        } else {
+                            stackRecoveryJob = null
+                            true
+                        }
+                    }
+                }
+                if (restart) startServices()
+            }.also { stackRecoveryJob = it }
+        }
+        recovery.start()
+    }
+
+    private fun onBluetoothRoleReady(ownerGeneration: Long) = synchronized(this) {
+        if (!stopped && isActive && lifecycleEpoch.isCurrent(ownerGeneration)) {
+            stackRecoveryState.markServerReady(ownerGeneration, transportReady)
+        }
+    }
+
+    private fun acceptRoleStart(
+        generation: Long,
+        role: String,
+        result: BluetoothRoleStartResult
+    ): Boolean = when (result) {
+        BluetoothRoleStartResult.STARTED, BluetoothRoleStartResult.DISABLED -> true
+        BluetoothRoleStartResult.ROLE_UNSUPPORTED -> {
+            Log.w(TAG, "Bluetooth $role role is unsupported; keeping the other role active")
+            true
+        }
+        BluetoothRoleStartResult.RESOURCE_UNAVAILABLE -> {
+            Log.w(TAG, "Bluetooth $role resource unavailable during start; scheduling recovery")
+            onBluetoothRoleFailure(
+                generation,
+                "$role-resource-unavailable",
+                action = BluetoothRoleFailureAction.RETRY_STACK
+            )
+            false
+        }
+        BluetoothRoleStartResult.ADAPTER_OFF -> {
+            Log.i(TAG, "Bluetooth turned off while starting $role; waiting for STATE_ON")
+            failLifecycleGeneration(generation, resumeOnBluetooth = true)
+            false
+        }
+        BluetoothRoleStartResult.PERMISSION_DENIED -> {
+            Log.e(TAG, "Bluetooth permission unavailable while starting $role; not retrying")
+            failLifecycleGeneration(generation)
+            false
+        }
+    }
+
+    private fun failCurrentLifecycleWithoutRetry(ownerGeneration: Long) {
+        synchronized(this) {
+            if (stopped || !isActive || !lifecycleEpoch.isCurrent(ownerGeneration)) return
+            isActive = false
+            transportReady = false
+            resumeWhenBluetoothOn = false
+            ++stackRecoveryEpoch
+            stackRecoveryJob?.cancel()
+            stackRecoveryJob = null
+            lifecycleEpoch.invalidate()
+            val old = startupJob
+            old?.cancel()
+            startupJob = null
+            delegate?.onTransportStateChanged(false)
+            // Async role callbacks are outside the component mutex. Register a release behind any
+            // in-flight start instead of mutating platform components concurrently.
+            componentLifecycle.newRelease(old).start()
+        }
+    }
+
+    /**
      * Indicates whether this instance can be safely reused for a future start.
      * Returns false if its coroutine scope has been cancelled.
      */
@@ -542,15 +763,24 @@ class BluetoothConnectionManager(
     private fun isCurrentLifecycleGenerationLocked(generation: Long): Boolean =
         !stopped && isActive && lifecycleEpoch.isCurrent(generation)
 
-    private fun failLifecycleGeneration(generation: Long) {
+    private fun failLifecycleGeneration(generation: Long, resumeOnBluetooth: Boolean = false) {
+        var recheckAdapter = false
         synchronized(this) {
             if (!isCurrentLifecycleGenerationLocked(generation)) return
             isActive = false
             transportReady = false
+            resumeWhenBluetoothOn = resumeOnBluetooth
             lifecycleEpoch.invalidate()
+            val old = startupJob
+            old?.cancel()
             startupJob = null
-            releaseComponents()
             delegate?.onTransportStateChanged(false)
+            componentLifecycle.newRelease(old).start()
+            recheckAdapter = resumeOnBluetooth
+        }
+        if (recheckAdapter) {
+            val adapterOn = try { bluetoothAdapter?.isEnabled == true } catch (_: SecurityException) { false }
+            if (adapterOn) adapterStates.trySend(BluetoothAdapter.STATE_ON)
         }
     }
 
@@ -628,14 +858,30 @@ class BluetoothConnectionManager(
     // Expose role controls for debug UI
     fun startServer() {
         if (!transportReady || !isBleTransportEnabled()) return
-        connectionScope.launch { if (isGattServerEnabled()) serverManager.start() }
+        componentLifecycle.newStart {
+            val generation = synchronized(this@BluetoothConnectionManager) {
+                if (!transportReady || !isActive) return@newStart
+                lifecycleEpoch.current()
+            }
+            if (isGattServerEnabled() && isCurrentLifecycleGeneration(generation)) {
+                acceptRoleStart(generation, "server", serverManager.startResult(generation))
+            }
+        }.start()
     }
-    fun stopServer() { connectionScope.launch { serverManager.stop() } }
+    fun stopServer() { componentLifecycle.newStart { serverManager.stop() }.start() }
     fun startClient() {
         if (!transportReady || !isBleTransportEnabled()) return
-        connectionScope.launch { if (isGattClientEnabled()) clientManager.start() }
+        componentLifecycle.newStart {
+            val generation = synchronized(this@BluetoothConnectionManager) {
+                if (!transportReady || !isActive) return@newStart
+                lifecycleEpoch.current()
+            }
+            if (isGattClientEnabled() && isCurrentLifecycleGeneration(generation)) {
+                acceptRoleStart(generation, "client", clientManager.startResult())
+            }
+        }.start()
     }
-    fun stopClient() { connectionScope.launch { clientManager.stop() } }
+    fun stopClient() { componentLifecycle.newStart { clientManager.stop() }.start() }
 
     // Inject nickname resolver for broadcaster logs
     fun setNicknameResolver(resolver: (String) -> String?) { packetBroadcaster.setNicknameResolver(resolver) }
@@ -668,17 +914,30 @@ class BluetoothConnectionManager(
 
     // Optionally disconnect all connections (server and client)
     fun disconnectAll() {
-        connectionScope.launch {
+        componentLifecycle.newStart {
             // Stop and restart to force disconnects
             clientManager.stop()
             serverManager.stop()
             delay(200)
-            if (transportReady && isBleTransportEnabled()) {
-                // Restart managers if service is active
-                if (isGattServerEnabled()) serverManager.start()
-                if (isGattClientEnabled()) clientManager.start()
+            val generation = synchronized(this@BluetoothConnectionManager) {
+                if (stopped || !transportReady || !isActive || !isBleTransportEnabled()) {
+                    return@newStart
+                }
+                lifecycleEpoch.current()
             }
-        }
+            if (isGattServerEnabled()) {
+                if (!isCurrentLifecycleGeneration(generation)) return@newStart
+                if (!acceptRoleStart(generation, "server", serverManager.startResult(generation))) {
+                    return@newStart
+                }
+            }
+            if (isGattClientEnabled()) {
+                if (!isCurrentLifecycleGeneration(generation)) return@newStart
+                if (!acceptRoleStart(generation, "client", clientManager.startResult())) {
+                    return@newStart
+                }
+            }
+        }.start()
     }
 
 
@@ -735,6 +994,32 @@ interface BluetoothConnectionManagerDelegate {
 
 internal enum class AdapterReaction { RELEASE, RESTART, NONE }
 
+internal data class AdapterStateTransition(
+    val cancelRecovery: Boolean,
+    val reaction: AdapterReaction,
+    val resumePending: Boolean
+)
+
+/** Resolve recovery cancellation and lifecycle action from one adapter event atomically. */
+internal fun adapterStateTransition(
+    state: Int,
+    active: Boolean,
+    resumePending: Boolean,
+    recoveryPending: Boolean
+): AdapterStateTransition {
+    val turningOff = state == BluetoothAdapter.STATE_TURNING_OFF || state == BluetoothAdapter.STATE_OFF
+    val nextResumePending = if (turningOff && (active || recoveryPending || resumePending)) {
+        true
+    } else {
+        resumePending
+    }
+    return AdapterStateTransition(
+        cancelRecovery = turningOff && recoveryPending,
+        reaction = adapterReaction(state, active, nextResumePending),
+        resumePending = nextResumePending
+    )
+}
+
 /** What a Bluetooth adapter [state] asks of a manager that is [active], or waiting to resume. */
 internal fun adapterReaction(state: Int, active: Boolean, resumePending: Boolean): AdapterReaction = when (state) {
     BluetoothAdapter.STATE_TURNING_OFF, BluetoothAdapter.STATE_OFF ->
@@ -754,6 +1039,7 @@ internal class BluetoothLifecycleEpoch {
     @Synchronized fun begin(): Long = ++value
     @Synchronized fun invalidate(): Long = ++value
     @Synchronized fun isCurrent(token: Long): Boolean = token == value
+    @Synchronized fun current(): Long = value
 }
 
 /**

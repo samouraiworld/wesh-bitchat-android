@@ -6,6 +6,10 @@ import com.bitchat.android.model.RoutedPacket
 import com.bitchat.android.protocol.BitchatPacket
 import com.bitchat.android.protocol.MessageType
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
@@ -92,6 +96,110 @@ class BluetoothConnectionManagerTest {
     }
 
     @Test
+    fun `Bluetooth off cancels recovery and still releases a concurrently active generation`() {
+        val off = adapterStateTransition(
+            BluetoothAdapter.STATE_OFF,
+            active = true,
+            resumePending = false,
+            recoveryPending = true
+        )
+        assertTrue(off.cancelRecovery)
+        assertEquals(AdapterReaction.RELEASE, off.reaction)
+        assertTrue(off.resumePending)
+
+        val on = adapterStateTransition(
+            BluetoothAdapter.STATE_ON,
+            active = false,
+            resumePending = off.resumePending,
+            recoveryPending = false
+        )
+        assertFalse(on.cancelRecovery)
+        assertEquals(AdapterReaction.RESTART, on.reaction)
+    }
+
+    @Test
+    fun `Bluetooth off cancels an inactive recovery immediately and on restarts once`() {
+        val off = adapterStateTransition(
+            BluetoothAdapter.STATE_TURNING_OFF,
+            active = false,
+            resumePending = false,
+            recoveryPending = true
+        )
+        assertTrue(off.cancelRecovery)
+        assertEquals(AdapterReaction.NONE, off.reaction)
+        assertTrue(off.resumePending)
+        assertEquals(
+            AdapterReaction.RESTART,
+            adapterStateTransition(
+                BluetoothAdapter.STATE_ON,
+                active = false,
+                resumePending = off.resumePending,
+                recoveryPending = false
+            ).reaction
+        )
+    }
+
+    @Test
+    fun `stack recovery backs off across server ready client failures until full transport readiness`() {
+        val recovery = BluetoothStackRecoveryState()
+
+        recovery.beginGeneration(1)
+        recovery.markServerReady(1, transportReady = false)
+        assertEquals(3_000L, recovery.nextDelayMs())
+
+        recovery.beginGeneration(2)
+        recovery.markServerReady(2, transportReady = false)
+        assertEquals(6_000L, recovery.nextDelayMs())
+
+        recovery.beginGeneration(3)
+        recovery.markServerReady(3, transportReady = false)
+        assertEquals(12_000L, recovery.nextDelayMs())
+        assertEquals(24_000L, recovery.nextDelayMs())
+        assertEquals(30_000L, recovery.nextDelayMs())
+        assertEquals(30_000L, recovery.nextDelayMs())
+
+        recovery.beginGeneration(4)
+        recovery.markServerReady(4, transportReady = false)
+        recovery.markTransportReady(4, serverEnabled = true)
+        assertEquals(3_000L, recovery.nextDelayMs())
+    }
+
+    @Test
+    fun `late server readiness from an old lifecycle cannot reset recovery backoff`() {
+        val recovery = BluetoothStackRecoveryState()
+        recovery.beginGeneration(10)
+        assertEquals(3_000L, recovery.nextDelayMs())
+        recovery.beginGeneration(11)
+
+        assertFalse(recovery.markServerReady(10, transportReady = true))
+        assertFalse(recovery.markTransportReady(10, serverEnabled = false))
+        assertEquals(6_000L, recovery.nextDelayMs())
+
+        assertTrue(recovery.markServerReady(11, transportReady = false))
+        assertTrue(recovery.markTransportReady(11, serverEnabled = true))
+        assertEquals(3_000L, recovery.nextDelayMs())
+    }
+
+    @Test
+    fun `stable client-only transport resets backoff after permanent server disable`() {
+        val recovery = BluetoothStackRecoveryState()
+        recovery.beginGeneration(20)
+        assertEquals(3_000L, recovery.nextDelayMs())
+
+        recovery.beginGeneration(21)
+        assertTrue(recovery.markServerDisabled(21, transportReady = false))
+        assertTrue(recovery.markTransportReady(21, serverEnabled = true))
+
+        assertEquals(3_000L, recovery.nextDelayMs())
+    }
+
+    @Test
+    fun `duplicate public start is deferred while recovery owns the next generation`() {
+        assertTrue(recoveryOwnsNextStart(recoveryPending = true))
+        assertFalse(recoveryOwnsNextStart(recoveryPending = false))
+    }
+
+    @Test
     fun `cold start while Bluetooth is off waits for state on unless manager is terminal`() {
         assertTrue(initialResumeWhenBluetoothOn(bluetoothEnabled = false, stopped = false))
         assertFalse(initialResumeWhenBluetoothOn(bluetoothEnabled = true, stopped = false))
@@ -145,5 +253,82 @@ class BluetoothConnectionManagerTest {
         advanceUntilIdle()
 
         assertEquals(listOf("release-enter", "release-exit", "restart-start"), events)
+    }
+
+    @Test
+    fun `cancelling recovery delay cannot strand the started release barrier`() = runTest {
+        val events = mutableListOf<String>()
+        val lifecycle = BluetoothComponentLifecycleQueue(this) { events += "release" }
+        val release = lifecycle.newRelease(startupToCancel = null)
+        release.start()
+        val retryOwner = launch(start = CoroutineStart.LAZY) {
+            release.join()
+            events += "retry"
+        }
+        retryOwner.start()
+        retryOwner.cancelAndJoin() // disable/stop cancels only the delayed restart owner.
+
+        val next = lifecycle.newStart { events += "next-start" }
+        next.start()
+        advanceUntilIdle()
+
+        assertEquals(listOf("release", "next-start"), events)
+    }
+
+    @Test
+    fun `permanent async failure cancels startup before serialized release`() = runTest {
+        val startEntered = CompletableDeferred<Unit>()
+        val events = mutableListOf<String>()
+        val lifecycle = BluetoothComponentLifecycleQueue(this) { events += "release" }
+        val startup = lifecycle.newStart {
+            events += "start-enter"
+            startEntered.complete(Unit)
+            try {
+                awaitCancellation()
+            } finally {
+                events += "start-cancelled"
+            }
+        }
+        startup.start()
+        runCurrent()
+        assertTrue(startEntered.isCompleted)
+
+        val release = lifecycle.newRelease(startup)
+        release.start()
+        advanceUntilIdle()
+
+        assertEquals(listOf("start-enter", "start-cancelled", "release"), events)
+    }
+
+    @Test
+    fun `direct role control waits for release and can enqueue failure teardown safely`() = runTest {
+        val releaseEntered = CompletableDeferred<Unit>()
+        val finishRelease = CompletableDeferred<Unit>()
+        val events = mutableListOf<String>()
+        lateinit var lifecycle: BluetoothComponentLifecycleQueue
+        lifecycle = BluetoothComponentLifecycleQueue(this) {
+            events += "release-enter"
+            if (!releaseEntered.isCompleted) {
+                releaseEntered.complete(Unit)
+                finishRelease.await()
+            }
+            events += "release-exit"
+        }
+        lifecycle.newRelease(startupToCancel = null).start()
+        val roleControl = lifecycle.newStart {
+            events += "role-control"
+            lifecycle.newRelease(startupToCancel = null).start()
+        }
+        roleControl.start()
+        runCurrent()
+
+        assertEquals(listOf("release-enter"), events)
+        finishRelease.complete(Unit)
+        advanceUntilIdle()
+
+        assertEquals(
+            listOf("release-enter", "release-exit", "role-control", "release-enter", "release-exit"),
+            events
+        )
     }
 }

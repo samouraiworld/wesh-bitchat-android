@@ -115,19 +115,21 @@ class BluetoothGattClientManager(
     /**
      * Start client manager
      */
-    fun start(): Boolean {
+    fun start(): Boolean = startResult() == BluetoothRoleStartResult.STARTED
+
+    internal fun startResult(): BluetoothRoleStartResult {
         // Respect debug setting
         if (!isClientRoleEnabled()) {
             Log.i(TAG, "Client start skipped: BLE/GATT Client disabled in debug settings")
-            return false
+            return BluetoothRoleStartResult.DISABLED
         }
 
         if (isActive) {
-            return true
+            return BluetoothRoleStartResult.STARTED
         }
         if (!permissionManager.hasBluetoothPermissions()) {
             Log.e(TAG, "Missing Bluetooth permissions")
-            return false
+            return BluetoothRoleStartResult.PERMISSION_DENIED
         }
         
         val bluetoothEnabled = try {
@@ -138,12 +140,18 @@ class BluetoothGattClientManager(
         }
         if (!bluetoothEnabled) {
             Log.e(TAG, "Bluetooth is not enabled or permission is unavailable")
-            return false
+            return BluetoothRoleStartResult.ADAPTER_OFF
         }
-        
-        if (bleScanner == null) {
+
+        val scannerAvailable = try {
+            bleScanner != null
+        } catch (_: SecurityException) {
+            Log.w(TAG, "Bluetooth permission revoked while acquiring scanner")
+            return BluetoothRoleStartResult.PERMISSION_DENIED
+        }
+        if (!scannerAvailable) {
             Log.e(TAG, "BLE scanner not available")
-            return false
+            return BluetoothRoleStartResult.RESOURCE_UNAVAILABLE
         }
         
         isActive = true
@@ -152,7 +160,7 @@ class BluetoothGattClientManager(
             applyPowerProfile(powerManager.profile.value)
         }
         
-        return true
+        return BluetoothRoleStartResult.STARTED
     }
     
     /**

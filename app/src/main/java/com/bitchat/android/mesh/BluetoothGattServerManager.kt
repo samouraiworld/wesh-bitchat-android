@@ -11,8 +11,10 @@ import android.util.Log
 import com.bitchat.android.protocol.BitchatPacket
 import com.bitchat.android.util.AppConstants
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.yield
 import java.util.*
 import java.util.concurrent.ConcurrentHashMap
 
@@ -26,15 +28,16 @@ class BluetoothGattServerManager(
     private val permissionManager: BluetoothPermissionManager,
     private val powerManager: PowerManager,
     private val delegate: BluetoothConnectionManagerDelegate?,
-    private val inboundLimiter: InboundLinkRateLimiter = InboundLinkRateLimiter()
+    private val inboundLimiter: InboundLinkRateLimiter = InboundLinkRateLimiter(),
+    private val roleFailure: (ownerGeneration: Long, reason: String, action: BluetoothRoleFailureAction) -> Unit = { _, _, _ -> },
+    private val roleReady: (ownerGeneration: Long) -> Unit = {},
+    private val serviceCallbackTimeoutMs: Long = 5_000L,
+    private val advertiseCallbackTimeoutMs: Long = 5_000L,
+    private val beforePlatformAdvertiseStart: (() -> Unit)? = null
 ) {
     
     companion object {
         private const val TAG = "BluetoothGattServerManager"
-        // Self-healing advertising recovery tuning
-        private const val ADVERTISE_RETRY_BASE_MS = 3_000L      // base backoff for transient advertise failures
-        private const val ADVERTISE_MAX_RETRY_DELAY_MS = 30_000L // cap on backoff delay
-
         internal fun advertiseData(): AdvertiseData = AdvertiseData.Builder()
             .addServiceUuid(ParcelUuid(AppConstants.Mesh.Gatt.SERVICE_UUID))
             .setIncludeTxPowerLevel(false)
@@ -63,21 +66,29 @@ class BluetoothGattServerManager(
     private var characteristic: BluetoothGattCharacteristic? = null
     private data class ActiveAdvertising(
         val advertiser: BluetoothLeAdvertiser,
-        val callback: AdvertiseCallback
+        val callback: AdvertiseCallback,
+        val generation: Long,
+        var startDeadline: Job? = null,
+        var confirmed: Boolean = false
     )
     @Volatile private var activeAdvertising: ActiveAdvertising? = null
     private val advertiseLock = Any()
-    private var advertiseRetryCount = 0
     
     // State management
     @Volatile private var isActive = false
     private val serverStateLock = Any()
     private var serverGeneration = 0L
+    private var ownerGeneration = 0L
     @Volatile private var serviceReady = false
+    private var serviceDeadline: Job? = null
     private data class DetachedServer(
         val server: BluetoothGattServer?,
         val advertising: ActiveAdvertising?,
         val connections: List<BluetoothConnectionTracker.LinkToClose>
+    )
+    private data class ClaimedGeneration(
+        val ownerGeneration: Long,
+        val detached: DetachedServer
     )
 
     private fun isBleTransportEnabled(): Boolean {
@@ -121,19 +132,21 @@ class BluetoothGattServerManager(
     /**
      * Start GATT server
      */
-    fun start(): Boolean {
+    fun start(): Boolean = startResult() == BluetoothRoleStartResult.STARTED
+
+    internal fun startResult(ownerGeneration: Long = 0L): BluetoothRoleStartResult {
         // Respect debug setting
         if (!isServerRoleEnabled()) {
             Log.i(TAG, "Server start skipped: BLE/GATT Server disabled in debug settings")
-            return false
+            return BluetoothRoleStartResult.DISABLED
         }
 
         if (isActive) {
-            return true
+            return BluetoothRoleStartResult.STARTED
         }
         if (!permissionManager.hasBluetoothPermissions()) {
             Log.e(TAG, "Missing Bluetooth permissions")
-            return false
+            return BluetoothRoleStartResult.PERMISSION_DENIED
         }
         
         val bluetoothEnabled = try {
@@ -144,23 +157,41 @@ class BluetoothGattServerManager(
         }
         if (!bluetoothEnabled) {
             Log.e(TAG, "Bluetooth is not enabled or permission is unavailable")
-            return false
+            return BluetoothRoleStartResult.ADAPTER_OFF
+        }
+
+        val peripheralModeSupported = try {
+            bluetoothAdapter?.isMultipleAdvertisementSupported == true
+        } catch (_: SecurityException) {
+            Log.w(TAG, "Bluetooth permission revoked while checking peripheral mode")
+            return BluetoothRoleStartResult.PERMISSION_DENIED
+        }
+        if (!peripheralModeSupported) {
+            Log.w(TAG, "BLE peripheral mode is unsupported; continuing client-only")
+            return BluetoothRoleStartResult.ROLE_UNSUPPORTED
         }
         
-        if (bleAdvertiser == null) {
+        val advertiserAvailable = try {
+            bleAdvertiser != null
+        } catch (_: SecurityException) {
+            Log.w(TAG, "Bluetooth permission revoked while acquiring advertiser")
+            return BluetoothRoleStartResult.PERMISSION_DENIED
+        }
+        if (!advertiserAvailable) {
             Log.e(TAG, "BLE advertiser not available")
-            return false
+            return BluetoothRoleStartResult.RESOURCE_UNAVAILABLE
         }
         
         val generation = synchronized(serverStateLock) {
-            if (isActive) return true
+            if (isActive) return BluetoothRoleStartResult.STARTED
             isActive = true
             serviceReady = false
+            this.ownerGeneration = ownerGeneration
             ++serverGeneration
         }
         connectionScope.launch { setupGattServer(generation) }
         
-        return true
+        return BluetoothRoleStartResult.STARTED
     }
     
     /**
@@ -168,22 +199,44 @@ class BluetoothGattServerManager(
      */
     fun stop() = stopGeneration(null)
 
-    private fun stopGeneration(expectedGeneration: Long?) {
-        val detached = synchronized(serverStateLock) {
-            if (expectedGeneration != null && expectedGeneration != serverGeneration) return
-            isActive = false
-            serviceReady = false
-            ++serverGeneration
-            val server = gattServer
-            gattServer = null
-            characteristic = null
-            serverLinkIDs.clear()
-            closingServerLinks.clear()
-            val advertising = activeAdvertising
-            activeAdvertising = null
-            DetachedServer(server, advertising,
-                connectionTracker.getAllTrackedLinks().filter { !it.connection.isClient })
+    private fun stopGeneration(expectedGeneration: Long?): Boolean {
+        val claimed = claimGeneration(expectedGeneration) ?: return false
+        releaseDetached(claimed.detached)
+        return true
+    }
+
+    private fun claimGeneration(
+        expectedGeneration: Long?,
+        predicate: () -> Boolean = { true }
+    ): ClaimedGeneration? = synchronized(advertiseLock) {
+        synchronized(serverStateLock) {
+                if (expectedGeneration != null &&
+                    (!isActive || expectedGeneration != serverGeneration)) return null
+                if (!predicate()) return null
+                val claimedOwner = ownerGeneration
+                isActive = false
+                serviceReady = false
+                serviceDeadline?.cancel()
+                serviceDeadline = null
+                ++serverGeneration
+                val server = gattServer
+                gattServer = null
+                characteristic = null
+                serverLinkIDs.clear()
+                closingServerLinks.clear()
+                val advertising = activeAdvertising
+                activeAdvertising = null
+                ClaimedGeneration(
+                    claimedOwner,
+                    DetachedServer(server, advertising,
+                        connectionTracker.getAllTrackedLinks().filter { !it.connection.isClient })
+                )
         }
+    }
+
+    private fun releaseDetached(detached: DetachedServer) {
+        // The generation is already invalid and no new start can adopt it. Platform calls and
+        // delegates deliberately run after both state locks are released.
         stopAdvertising(detached.advertising)
         val server = detached.server
         if (server != null) {
@@ -220,6 +273,31 @@ class BluetoothGattServerManager(
         Log.i(TAG, "GATT server stopped")
     }
 
+    /** Fail only the generation which observed the platform error; stale callbacks are inert. */
+    private fun failGeneration(
+        generation: Long,
+        reason: String,
+        action: BluetoothRoleFailureAction = BluetoothRoleFailureAction.RETRY_STACK
+    ) {
+        val claimed = claimGeneration(generation) ?: return
+        releaseDetached(claimed.detached)
+        Log.w(TAG, "GATT server generation failed: $reason")
+        notifyRoleFailure(claimed.ownerGeneration, reason, action)
+    }
+
+    private fun notifyRoleFailure(
+        failedOwner: Long,
+        reason: String,
+        action: BluetoothRoleFailureAction
+    ) {
+        // Framework callbacks may be synchronous inside advertiser.startAdvertising while the
+        // advertise lock is held. Never enter the manager lifecycle lock from that call stack.
+        connectionScope.launch {
+            yield()
+            roleFailure(failedOwner, reason, action)
+        }
+    }
+
     private fun closeServer(server: BluetoothGattServer) {
         try {
             server.close()
@@ -237,7 +315,11 @@ class BluetoothGattServerManager(
     private fun callbackServer(generation: Long): BluetoothGattServer? {
         if (!isCurrentGeneration(generation)) return null
         if (!permissionManager.hasBluetoothPermissions()) {
-            stopGeneration(generation)
+            failGeneration(
+                generation,
+                "callback-permission",
+                action = BluetoothRoleFailureAction.STOP_TRANSPORT
+            )
             return null
         }
         return synchronized(serverStateLock) {
@@ -253,11 +335,15 @@ class BluetoothGattServerManager(
             server.sendResponse(device, requestID, status, 0, null)
         } catch (_: SecurityException) {
             Log.w(TAG, "Bluetooth permission revoked while responding to GATT request")
-            stopGeneration(generation)
+            failGeneration(
+                generation,
+                "response-permission",
+                action = BluetoothRoleFailureAction.STOP_TRANSPORT
+            )
             false
         } catch (_: Exception) {
             Log.w(TAG, "GATT response failed")
-            stopGeneration(generation)
+            failGeneration(generation, "response-failure")
             false
         }
     }
@@ -278,7 +364,11 @@ class BluetoothGattServerManager(
     private fun setupGattServer(generation: Long) {
         if (!isCurrentGeneration(generation)) return
         if (!permissionManager.hasBluetoothPermissions()) {
-            stopGeneration(generation)
+            failGeneration(
+                generation,
+                "setup-permission",
+                action = BluetoothRoleFailureAction.STOP_TRANSPORT
+            )
             return
         }
         val serverCallback = object : BluetoothGattServerCallback() {
@@ -339,14 +429,17 @@ class BluetoothGattServerManager(
             override fun onServiceAdded(status: Int, service: BluetoothGattService) {
                 if (callbackServer(generation) == null || service.uuid != AppConstants.Mesh.Gatt.SERVICE_UUID) return
                 if (status != BluetoothGatt.GATT_SUCCESS) {
-                    stopGeneration(generation)
+                    failGeneration(generation, "service-callback-$status")
                     return
                 }
-                synchronized(serverStateLock) {
-                    if (!isActive || serverGeneration != generation) return
+                val accepted = synchronized(serverStateLock) {
+                    if (!isActive || serverGeneration != generation) return@synchronized false
                     serviceReady = true
+                    serviceDeadline?.cancel()
+                    serviceDeadline = null
+                    true
                 }
-                startAdvertising()
+                if (accepted) startAdvertising(generation)
             }
 
             override fun onCharacteristicWriteRequest(
@@ -426,17 +519,24 @@ class BluetoothGattServerManager(
                 delegate?.onGattServerNotificationComplete(device.address, serverLinkIDs[device.address], status)
             }
         }
+        var openRetryable = true
         val opened = try {
             bluetoothManager.openGattServer(context, serverCallback)
         } catch (_: SecurityException) {
             Log.w(TAG, "Bluetooth permission revoked while opening GATT server")
+            openRetryable = false
             null
         } catch (_: Exception) {
             Log.w(TAG, "GATT server open failed")
             null
         }
         if (opened == null) {
-            stopGeneration(generation)
+            failGeneration(
+                generation,
+                "open-gatt-server",
+                action = if (openRetryable) BluetoothRoleFailureAction.RETRY_STACK
+                else BluetoothRoleFailureAction.STOP_TRANSPORT
+            )
             return
         }
         val newCharacteristic = BluetoothGattCharacteristic(
@@ -459,49 +559,110 @@ class BluetoothGattServerManager(
             closeServer(opened)
             return
         }
+        var publicationRetryable = true
         val accepted = try {
             opened.addService(service)
         } catch (_: SecurityException) {
             Log.w(TAG, "Bluetooth permission revoked while publishing GATT service")
+            publicationRetryable = false
             false
         } catch (_: Exception) {
             Log.w(TAG, "GATT service publication failed")
             false
         }
-        if (!accepted) stopGeneration(generation)
+        if (!accepted) {
+            failGeneration(
+                generation,
+                "add-service",
+                action = if (publicationRetryable) BluetoothRoleFailureAction.RETRY_STACK
+                else BluetoothRoleFailureAction.STOP_TRANSPORT
+            )
+            return
+        }
+        val deadline = connectionScope.launch {
+            delay(serviceCallbackTimeoutMs)
+            failUnreadyServiceGeneration(generation, "service-callback-timeout")
+        }
+        synchronized(serverStateLock) {
+            if (isActive && serverGeneration == generation && !serviceReady) {
+                serviceDeadline?.cancel()
+                serviceDeadline = deadline
+            } else {
+                deadline.cancel()
+            }
+        }
     }
 
     /**
      * Start advertising
      */
     @Suppress("DEPRECATION")
-    private fun startAdvertising() {
+    private fun startAdvertising(expectedGeneration: Long? = null) {
         // Respect debug setting
         val enabled = isServerRoleEnabled()
+        val generation = synchronized(serverStateLock) {
+            if (!isActive || !serviceReady ||
+                (expectedGeneration != null && expectedGeneration != serverGeneration)) return
+            serverGeneration
+        }
 
         // Guard conditions – never throw here to avoid crashing the app from a background coroutine
         if (!permissionManager.hasBluetoothPermissions()) {
             Log.w(TAG, "Not starting advertising: missing Bluetooth permissions")
+            failGeneration(
+                generation,
+                "advertise-permission",
+                action = BluetoothRoleFailureAction.STOP_TRANSPORT
+            )
             return
         }
         if (bluetoothAdapter == null) {
             Log.w(TAG, "Not starting advertising: bluetoothAdapter is null")
-            return
-        }
-        if (!isActive || !serviceReady) {
+            failGeneration(
+                generation,
+                "advertise-adapter-unavailable",
+                action = BluetoothRoleFailureAction.STOP_TRANSPORT
+            )
             return
         }
         if (!enabled) {
             Log.d(TAG, "Not starting advertising: GATT Server disabled via debug settings")
             return
         }
-        val advertiser = bleAdvertiser
-        if (advertiser == null) {
-            Log.w(TAG, "Not starting advertising: BLE advertiser not available on this device")
+        val peripheralModeSupported = try {
+            bluetoothAdapter.isMultipleAdvertisementSupported
+        } catch (_: SecurityException) {
+            Log.w(TAG, "Bluetooth permission revoked while checking peripheral mode")
+            failGeneration(
+                generation,
+                "advertise-capability-permission",
+                action = BluetoothRoleFailureAction.STOP_TRANSPORT
+            )
             return
         }
-        if (!bluetoothAdapter.isMultipleAdvertisementSupported) {
+        if (!peripheralModeSupported) {
             Log.w(TAG, "Not starting advertising: multiple advertisement not supported on this device")
+            failGeneration(
+                generation,
+                "advertise-unsupported",
+                action = BluetoothRoleFailureAction.DISABLE_ROLE
+            )
+            return
+        }
+        val advertiser = try {
+            bleAdvertiser
+        } catch (_: SecurityException) {
+            Log.w(TAG, "Bluetooth permission revoked while acquiring advertiser")
+            failGeneration(
+                generation,
+                "advertise-getter-permission",
+                action = BluetoothRoleFailureAction.STOP_TRANSPORT
+            )
+            return
+        }
+        if (advertiser == null) {
+            Log.w(TAG, "Not starting advertising: BLE advertiser not available on this device")
+            failGeneration(generation, "advertiser-unavailable")
             return
         }
 
@@ -510,14 +671,26 @@ class BluetoothGattServerManager(
         val data = advertiseData()
         val scanResponse = scanResponseData()
 
-        val generation = synchronized(serverStateLock) {
-            if (!isActive || !serviceReady) return
-            serverGeneration
-        }
         val callback = object : AdvertiseCallback() {
             override fun onStartSuccess(settingsInEffect: AdvertiseSettings) {
-                if (!isCurrentGeneration(generation)) return
-                advertiseRetryCount = 0
+                val acceptedOwner = synchronized(advertiseLock) {
+                    synchronized(serverStateLock) {
+                        val active = activeAdvertising
+                        if (!isActive || serverGeneration != generation || active?.callback !== this) {
+                            null
+                        } else {
+                            active.startDeadline?.cancel()
+                            active.startDeadline = null
+                            active.confirmed = true
+                            ownerGeneration
+                        }
+                    }
+                }
+                if (acceptedOwner == null) return
+                connectionScope.launch {
+                    yield()
+                    roleReady(acceptedOwner)
+                }
                 val mode = try {
                     powerManager.getPowerInfo().split("Current Mode: ")[1].split("\n")[0]
                 } catch (_: Exception) { "unknown" }
@@ -525,23 +698,32 @@ class BluetoothGattServerManager(
             }
 
             override fun onStartFailure(errorCode: Int) {
-                // A set a later start replaced must not restart the one now running.
-                if (!isCurrentGeneration(generation) || activeAdvertising?.callback !== this) return
                 Log.e(TAG, "Advertising failed: $errorCode")
-                // Previously this only logged, so if advertising failed this device became
-                // undiscoverable until a manual BLE toggle. Retry transient failures with backoff.
                 when (errorCode) {
-                    ADVERTISE_FAILED_ALREADY_STARTED -> Unit // already advertising, no retry
-                    ADVERTISE_FAILED_DATA_TOO_LARGE -> Unit // config issue, not retrying
-                    ADVERTISE_FAILED_FEATURE_UNSUPPORTED -> Unit // unsupported, not retrying
+                    ADVERTISE_FAILED_ALREADY_STARTED ->
+                        failAdvertisingAttempt(generation, this, "advertise-already-started")
+                    ADVERTISE_FAILED_DATA_TOO_LARGE ->
+                        failAdvertisingAttempt(
+                            generation,
+                            this,
+                            "advertise-data-too-large",
+                            action = BluetoothRoleFailureAction.DISABLE_ROLE
+                        )
+                    ADVERTISE_FAILED_FEATURE_UNSUPPORTED ->
+                        failAdvertisingAttempt(
+                            generation,
+                            this,
+                            "advertise-unsupported",
+                            action = BluetoothRoleFailureAction.DISABLE_ROLE
+                        )
                     ADVERTISE_FAILED_TOO_MANY_ADVERTISERS -> {
-                        scheduleAdvertiseRestart("too-many-advertisers", generation)
+                        failAdvertisingAttempt(generation, this, "advertise-too-many-advertisers")
                     }
                     ADVERTISE_FAILED_INTERNAL_ERROR -> {
-                        scheduleAdvertiseRestart("internal-error", generation)
+                        failAdvertisingAttempt(generation, this, "advertise-internal-error")
                     }
                     else -> {
-                        scheduleAdvertiseRestart("unknown-$errorCode", generation)
+                        failAdvertisingAttempt(generation, this, "advertise-unknown-$errorCode")
                     }
                 }
             }
@@ -553,11 +735,12 @@ class BluetoothGattServerManager(
             val previous = synchronized(serverStateLock) {
                 if (!isActive || serverGeneration != generation) return
                 activeAdvertising.also {
-                    activeAdvertising = ActiveAdvertising(advertiser, callback)
+                    activeAdvertising = ActiveAdvertising(advertiser, callback, generation)
                 }
             }
             if (previous != null) stopAdvertising(previous)
             try {
+                beforePlatformAdvertiseStart?.invoke()
                 advertiser.startAdvertising(settings, data, scanResponse, callback)
                 if (!isCurrentGeneration(generation)) {
                     val stale = synchronized(serverStateLock) {
@@ -566,17 +749,37 @@ class BluetoothGattServerManager(
                         }
                     }
                     stopAdvertising(stale)
+                } else {
+                    armAdvertiseDeadline(generation, callback)
                 }
             } catch (se: SecurityException) {
                 Log.e(TAG, "SecurityException starting advertising (missing permission?): ${se.message}")
-                synchronized(serverStateLock) {
-                    if (activeAdvertising?.callback === callback) activeAdvertising = null
-                }
+                failAdvertisingAttempt(
+                    generation,
+                    callback,
+                    "advertise-security-exception",
+                    action = BluetoothRoleFailureAction.STOP_TRANSPORT
+                )
             } catch (e: Exception) {
                 Log.e(TAG, "Exception starting advertising: ${e.message}")
-                synchronized(serverStateLock) {
-                    if (activeAdvertising?.callback === callback) activeAdvertising = null
-                }
+                failAdvertisingAttempt(generation, callback, "advertise-start-exception")
+            }
+        }
+    }
+
+    private fun armAdvertiseDeadline(generation: Long, callback: AdvertiseCallback) {
+        val deadline = connectionScope.launch {
+            delay(advertiseCallbackTimeoutMs)
+            failAdvertisingAttempt(generation, callback, "advertise-callback-timeout")
+        }
+        synchronized(serverStateLock) {
+            val active = activeAdvertising
+            if (isActive && serverGeneration == generation && active?.callback === callback &&
+                !active.confirmed) {
+                active.startDeadline?.cancel()
+                active.startDeadline = deadline
+            } else {
+                deadline.cancel()
             }
         }
     }
@@ -585,18 +788,10 @@ class BluetoothGattServerManager(
      * Stop advertising
      */
     @Suppress("DEPRECATION")
-    private fun stopAdvertising() {
-        val active = synchronized(advertiseLock) {
-            synchronized(serverStateLock) {
-                activeAdvertising.also { activeAdvertising = null }
-            }
-        }
-        stopAdvertising(active)
-    }
-
-    @Suppress("DEPRECATION")
     private fun stopAdvertising(active: ActiveAdvertising?) {
         if (active == null) return
+        active.startDeadline?.cancel()
+        active.startDeadline = null
         try {
             active.advertiser.stopAdvertising(active.callback)
         } catch (_: SecurityException) {
@@ -606,21 +801,43 @@ class BluetoothGattServerManager(
         }
     }
     
-    /**
-     * Schedule an advertising restart with incremental backoff after a transient failure.
-     */
-    private fun scheduleAdvertiseRestart(reason: String, generation: Long) {
-        advertiseRetryCount++
-        val delayMs = (ADVERTISE_RETRY_BASE_MS * advertiseRetryCount).coerceAtMost(ADVERTISE_MAX_RETRY_DELAY_MS)
-        Log.w(TAG, "Scheduling advertising restart in ${delayMs}ms (attempt $advertiseRetryCount, reason=$reason)")
-        connectionScope.launch {
-            delay(delayMs)
-            if (isCurrentGeneration(generation) && isServerRoleEnabled()) {
-                stopAdvertising()
-                delay(100)
-                if (isCurrentGeneration(generation)) startAdvertising()
+    private fun failAdvertisingAttempt(
+        generation: Long,
+        callback: AdvertiseCallback,
+        reason: String,
+        action: BluetoothRoleFailureAction = BluetoothRoleFailureAction.RETRY_STACK
+    ) {
+        val claimed = claimGeneration(generation) {
+            val active = activeAdvertising
+            active?.callback === callback && !active.confirmed
+        } ?: return
+        releaseDetached(claimed.detached)
+        Log.w(TAG, "GATT advertising attempt failed: $reason")
+        notifyRoleFailure(claimed.ownerGeneration, reason, action)
+    }
+
+    private fun failUnreadyServiceGeneration(generation: Long, reason: String) {
+        val claimed = claimGeneration(generation) { !serviceReady } ?: return
+        releaseDetached(claimed.detached)
+        Log.w(TAG, "GATT service generation failed: $reason")
+        notifyRoleFailure(claimed.ownerGeneration, reason, BluetoothRoleFailureAction.RETRY_STACK)
+    }
+
+    private fun stopAdvertisingAttempt(
+        generation: Long,
+        expectedCallback: AdvertiseCallback?
+    ): Boolean {
+        val active = synchronized(advertiseLock) {
+            synchronized(serverStateLock) {
+                val current = activeAdvertising
+                val attemptMatches = if (expectedCallback == null) current == null
+                else current?.callback === expectedCallback
+                if (!isActive || serverGeneration != generation || !attemptMatches) return false
+                current.also { activeAdvertising = null }
             }
         }
+        stopAdvertising(active)
+        return active != null || expectedCallback == null
     }
 
     /**
@@ -629,17 +846,24 @@ class BluetoothGattServerManager(
     fun restartAdvertising() {
         // Respect debug setting
         val enabled = isServerRoleEnabled()
-        if (!isActive || !enabled) {
-            stopAdvertising()
-            return
+        if (!enabled) return
+        val attempt = synchronized(advertiseLock) {
+            synchronized(serverStateLock) {
+                if (!isActive) return
+                val active = activeAdvertising ?: return
+                active.generation to active.callback
+            }
         }
-
-        val generation = synchronized(serverStateLock) { serverGeneration }
+        val (generation, callback) = attempt
         connectionScope.launch {
-            if (!isCurrentGeneration(generation)) return@launch
-            stopAdvertising()
+            if (!stopAdvertisingAttempt(generation, callback)) return@launch
             delay(100)
-            if (isCurrentGeneration(generation)) startAdvertising()
+            synchronized(advertiseLock) {
+                val mayRestart = synchronized(serverStateLock) {
+                    isActive && serverGeneration == generation && activeAdvertising == null
+                }
+                if (mayRestart) startAdvertising(generation)
+            }
         }
     }
 }

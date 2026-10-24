@@ -103,6 +103,7 @@ class BluetoothPermissionRevocationTest {
     fun `server stop continues denied cancellations and releases denied close only once`() {
         whenever(adapter.bluetoothLeAdvertiser).thenReturn(mock<BluetoothLeAdvertiser>())
         whenever(adapter.isEnabled).thenReturn(true)
+        whenever(adapter.isMultipleAdvertisementSupported).thenReturn(true)
         val gatt = mock<BluetoothGattServer>()
         whenever(bluetoothManager.openGattServer(any(), any())).thenReturn(gatt)
         whenever(gatt.addService(any())).thenReturn(true)
@@ -132,6 +133,7 @@ class BluetoothPermissionRevocationTest {
     fun `denied server disconnect does not read permission protected device details in error path`() {
         whenever(adapter.bluetoothLeAdvertiser).thenReturn(mock<BluetoothLeAdvertiser>())
         whenever(adapter.isEnabled).thenReturn(true)
+        whenever(adapter.isMultipleAdvertisementSupported).thenReturn(true)
         val gatt = mock<BluetoothGattServer>()
         whenever(bluetoothManager.openGattServer(any(), any())).thenReturn(gatt)
         whenever(gatt.addService(any())).thenReturn(true)
