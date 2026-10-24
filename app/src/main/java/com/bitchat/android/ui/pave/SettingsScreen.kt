@@ -127,7 +127,8 @@ fun SettingsRow(title: String, value: String?, onClick: () -> Unit, modifier: Mo
     ) {
         Text(title, style = WeshType.body, color = c.ink, modifier = Modifier.weight(1f))
         if (value != null) {
-            Text(value, style = WeshType.label, color = c.inkMuted, textAlign = TextAlign.End, maxLines = 2, modifier = Modifier.weight(1f, fill = false).padding(start = WeshSpace.s3))
+            // Every value fills the right column from its left edge, so values and chevrons line up row to row.
+            Text(value, style = WeshType.label, color = c.inkMuted, textAlign = TextAlign.Start, maxLines = 2, modifier = Modifier.weight(1f).padding(start = WeshSpace.s3))
         }
         Icon(
             if (external) Icons.AutoMirrored.Rounded.OpenInNew else Icons.AutoMirrored.Rounded.KeyboardArrowRight,
