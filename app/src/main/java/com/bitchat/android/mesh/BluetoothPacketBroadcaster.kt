@@ -787,25 +787,50 @@ class BluetoothPacketBroadcaster(
             sendStates.remove(key)?.pending?.toList().orEmpty()
         }
         Log.w(TAG, "BLE ${key.direction} callback timed out; invalidating exact link")
-        abandoned.forEach { it.accepted?.complete(it.failureResult()) }
-        val timeoutHandler = linkTimeoutHandler
-        if (timeoutHandler != null) {
-            timeoutHandler(key.deviceAddress, key.linkID, key.direction == SendDirection.CLIENT_WRITE, request.device)
-            return
-        }
-        // Standalone/tests fallback. Production installs a manager handler so peer, Noise and
-        // direct-route state receive the same disconnect delegate event as a platform callback.
-        connectionTracker.cleanupDeviceConnectionIfCurrent(key.deviceAddress, key.linkID)
         try {
-            when (key.direction) {
-                SendDirection.CLIENT_WRITE -> {
-                    request.gatt?.disconnect()
-                    request.gatt?.close()
+            val timeoutHandler = linkTimeoutHandler
+            if (timeoutHandler != null) {
+                timeoutHandler(
+                    key.deviceAddress,
+                    key.linkID,
+                    key.direction == SendDirection.CLIENT_WRITE,
+                    request.device
+                )
+            } else {
+                // Standalone/tests fallback. Production installs a manager handler so peer,
+                // Noise and direct-route state receive the same disconnect delegate event as a
+                // platform callback. Always close the platform link even if tracker cleanup fails.
+                try {
+                    connectionTracker.cleanupDeviceConnectionIfCurrent(key.deviceAddress, key.linkID)
+                } finally {
+                    try {
+                        when (key.direction) {
+                            SendDirection.CLIENT_WRITE -> {
+                                request.gatt?.disconnect()
+                                request.gatt?.close()
+                            }
+                            SendDirection.SERVER_NOTIFICATION ->
+                                request.gattServer?.cancelConnection(request.device)
+                        }
+                    } catch (error: Exception) {
+                        Log.w(
+                            TAG,
+                            "BLE ${key.direction} timed-out link close failed " +
+                                "(${error.javaClass.simpleName})"
+                        )
+                    }
                 }
-                SendDirection.SERVER_NOTIFICATION -> request.gattServer?.cancelConnection(request.device)
             }
         } catch (error: Exception) {
-            Log.w(TAG, "BLE ${key.direction} timed-out link close failed: ${error.message}")
+            Log.w(
+                TAG,
+                "BLE ${key.direction} timed-out link invalidation failed " +
+                    "(${error.javaClass.simpleName})"
+            )
+        } finally {
+            // Do not publish UNCONFIRMED until the exact timed-out link has been invalidated (or
+            // invalidation was attempted). Callers may immediately retry on outcome completion.
+            abandoned.forEach { it.accepted?.complete(it.failureResult()) }
         }
     }
 

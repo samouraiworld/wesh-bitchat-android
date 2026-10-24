@@ -29,6 +29,7 @@ class WeshBluetoothHandoffTest {
     private lateinit var tracker: BluetoothConnectionTracker
     private lateinit var broadcaster: BluetoothPacketBroadcaster
     private lateinit var gatt: BluetoothGatt
+    private lateinit var device: BluetoothDevice
     private lateinit var characteristic: BluetoothGattCharacteristic
     @Before fun setup() {
         scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
@@ -36,7 +37,7 @@ class WeshBluetoothHandoffTest {
         gatt = mock()
         characteristic = BluetoothGattCharacteristic(java.util.UUID.fromString("00000000-0000-4000-8000-000000000001"),
             BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE, BluetoothGattCharacteristic.PERMISSION_WRITE)
-        val device: BluetoothDevice = mock()
+        device = mock()
         whenever(device.address).thenReturn(address)
         val link = BluetoothConnectionTracker.DeviceConnection(device, gatt, characteristic,
             isClient = true, peerID = peerID, linkID = "synthetic-generation")
@@ -111,17 +112,96 @@ class WeshBluetoothHandoffTest {
         assertEquals(BoundSendOutcome.UNCONFIRMED, withTimeout(1_000) { outcome.await() })
     }
 
-    @Test fun `local API acceptance without a callback is unconfirmed`() = runBlocking<Unit> {
+    @Test fun `local API acceptance waits for fallback invalidation before becoming unconfirmed`() = runBlocking<Unit> {
+        val cleanupStarted = java.util.concurrent.CountDownLatch(1)
+        val releaseCleanup = java.util.concurrent.CountDownLatch(1)
+        whenever(tracker.cleanupDeviceConnectionIfCurrent(address, "synthetic-generation")).thenAnswer {
+            cleanupStarted.countDown()
+            releaseCleanup.await(5, java.util.concurrent.TimeUnit.SECONDS)
+            throw IllegalStateException("private tracker detail")
+        }
         broadcaster.shutdown()
         broadcaster = BluetoothPacketBroadcaster(
             scope, tracker, FragmentManager(), "1111222233334444", gattCallbackTimeoutMs = 50L
         )
         whenever(gatt.writeCharacteristic(any())).thenReturn(true)
 
-        assertEquals(BoundSendOutcome.UNCONFIRMED, withTimeout(1_000) {
+        val outcome = async(Dispatchers.Default) {
             broadcaster.broadcastPacketAndAwaitOutcome(packet(32), null, null) { true }
-        })
+        }
+        try {
+            assertTrue(cleanupStarted.await(1, java.util.concurrent.TimeUnit.SECONDS))
+            assertFalse("outcome completed before exact-link cleanup returned", outcome.isCompleted)
+        } finally {
+            releaseCleanup.countDown()
+        }
+
+        assertEquals(BoundSendOutcome.UNCONFIRMED, withTimeout(1_000) { outcome.await() })
         verify(tracker).cleanupDeviceConnectionIfCurrent(address, "synthetic-generation")
+        verify(gatt).disconnect()
+        verify(gatt).close()
+    }
+
+    @Test fun `local API acceptance waits for manager invalidation before becoming unconfirmed`() = runBlocking<Unit> {
+        val handlerStarted = java.util.concurrent.CountDownLatch(1)
+        val releaseHandler = java.util.concurrent.CountDownLatch(1)
+        var handledAddress: String? = null
+        var handledLinkID: String? = null
+        var handledAsClient: Boolean? = null
+        var handledDevice: BluetoothDevice? = null
+        broadcaster.shutdown()
+        broadcaster = BluetoothPacketBroadcaster(
+            scope, tracker, FragmentManager(), "1111222233334444", gattCallbackTimeoutMs = 50L
+        )
+        broadcaster.setLinkTimeoutHandler { deviceAddress, linkID, isClient, device ->
+            handledAddress = deviceAddress
+            handledLinkID = linkID
+            handledAsClient = isClient
+            handledDevice = device
+            handlerStarted.countDown()
+            releaseHandler.await(5, java.util.concurrent.TimeUnit.SECONDS)
+            throw IllegalStateException("private manager detail")
+        }
+        whenever(gatt.writeCharacteristic(any())).thenReturn(true)
+
+        val outcome = async(Dispatchers.Default) {
+            broadcaster.broadcastPacketAndAwaitOutcome(packet(32), null, null) { true }
+        }
+        try {
+            assertTrue(handlerStarted.await(1, java.util.concurrent.TimeUnit.SECONDS))
+            assertFalse("outcome completed before manager invalidation returned", outcome.isCompleted)
+        } finally {
+            releaseHandler.countDown()
+        }
+
+        assertEquals(BoundSendOutcome.UNCONFIRMED, withTimeout(1_000) { outcome.await() })
+        assertEquals(address, handledAddress)
+        assertEquals("synthetic-generation", handledLinkID)
+        assertEquals(true, handledAsClient)
+        assertSame(device, handledDevice)
+        verify(tracker, never()).cleanupDeviceConnectionIfCurrent(any(), any())
+        verify(gatt, never()).disconnect()
+        verify(gatt, never()).close()
+    }
+
+    @Test fun `timeout invalidation precedes outcome across repeated sends`() = runBlocking<Unit> {
+        val invalidations = java.util.concurrent.atomic.AtomicInteger()
+        whenever(tracker.cleanupDeviceConnectionIfCurrent(address, "synthetic-generation")).thenAnswer {
+            invalidations.incrementAndGet()
+            true
+        }
+        broadcaster.shutdown()
+        broadcaster = BluetoothPacketBroadcaster(
+            scope, tracker, FragmentManager(), "1111222233334444", gattCallbackTimeoutMs = 1L
+        )
+        whenever(gatt.writeCharacteristic(any())).thenReturn(true)
+
+        repeat(50) { iteration ->
+            assertEquals(BoundSendOutcome.UNCONFIRMED, withTimeout(1_000) {
+                broadcaster.broadcastPacketAndAwaitOutcome(packet(32), null, null) { true }
+            })
+            assertEquals(iteration + 1, invalidations.get())
+        }
     }
 
     @Test fun `callback failures after local API acceptance are unconfirmed`() = runBlocking<Unit> {
