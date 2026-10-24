@@ -99,6 +99,26 @@ class WeshBluetoothHandoffTest {
         verify(gatt, times(1)).writeCharacteristic(any())
     }
 
+    @Test fun `tie break loser cleanup preserves messages queued on exact winner`() {
+        whenever(gatt.writeCharacteristic(any())).thenReturn(true)
+        val routed = packet(32)
+        assertTrue(broadcaster.sendPacketToLink(
+            routed, address, "synthetic-generation", null, null
+        ))
+        assertTrue(broadcaster.sendPacketToLink(
+            routed, address, "synthetic-generation", null, null
+        ))
+
+        broadcaster.onLinkDisconnected(address, "losing-server-generation")
+        broadcaster.onGattClientWriteComplete(
+            address,
+            "synthetic-generation",
+            BluetoothGatt.GATT_SUCCESS
+        )
+
+        verify(gatt, times(2)).writeCharacteristic(any())
+    }
+
     @Test fun `exact server link never falls back to replacement selected at same address`() {
         val device: BluetoothDevice = mock()
         whenever(device.address).thenReturn(address)

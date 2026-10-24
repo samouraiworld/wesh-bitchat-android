@@ -614,7 +614,10 @@ class BluetoothMeshService(
                     if (connectionManager.observePeerIfCurrent(
                             observation.relayAddress,
                             observation.ingressLinkID,
-                            observation.peerID
+                            observation.peerID,
+                            supportsDeterministicElection = result.capabilities?.contains(
+                                PeerCapabilities.DETERMINISTIC_BLE_LINK_ELECTION
+                            ) == true
                         )
                     ) {
                         Log.d(

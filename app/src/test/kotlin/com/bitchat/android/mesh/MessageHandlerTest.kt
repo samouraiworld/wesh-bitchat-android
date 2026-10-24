@@ -112,9 +112,10 @@ class MessageHandlerTest {
             )
             val packet = announcePacket(ageMs = 0, capabilities = capabilities)
 
-            val result = handler.handleAnnounce(RoutedPacket(packet, peerID, "direct-link"))
+            val result = handler.handleAnnounceWithResult(RoutedPacket(packet, peerID, "direct-link"))
 
-            assertTrue(result)
+            assertTrue(result is AnnounceHandlingResult.Accepted)
+            assertEquals(capabilities, (result as AnnounceHandlingResult.Accepted).capabilities)
             verify(delegate).updatePeerInfoFromVerifiedAnnouncement(
                 eq(peerID),
                 eq(nickname),

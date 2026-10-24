@@ -47,10 +47,16 @@ data class PeerCapabilities(val rawValue: Long) : Parcelable {
         val NON_DESTRUCTIVE_NOISE_REPLACEMENT = PeerCapabilities(1L shl 10)
 
         /**
+         * Both peers apply the same peer-ID-based BLE client/server election after a signed
+         * ANNOUNCE. Older BitChat clients omit this bit and retain their legacy address policy.
+         */
+        val DETERMINISTIC_BLE_LINK_ELECTION = PeerCapabilities(1L shl 11)
+
+        /**
          * Capabilities implemented by this Android build. Wesh ships no media, so it never
          * advertises [PRIVATE_MEDIA] or [PRIVATE_MEDIA_RECEIPTS].
          */
-        val LOCAL_SUPPORTED = NONE
+        val LOCAL_SUPPORTED = DETERMINISTIC_BLE_LINK_ELECTION
 
         /**
          * Decode the low 64 bits and ignore any future extension bytes, which

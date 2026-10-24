@@ -29,10 +29,14 @@ Existing TLVs (unchanged):
 
 Other optional extension:
 
-- `0x05` CAPABILITIES: Minimal little-endian feature bitfield. Assigned bits
-  match iOS: 0 prekeys, 1 Wi-Fi bulk, 2 gateway, 3 private groups, 4 board,
-  5 vouch, 6 mesh diagnostics, 7 bridge, 8 authenticated Noise private media,
-  9 private-media receipts, and 10 reserved non-destructive Noise replacement.
+- `0x05` CAPABILITIES: Minimal little-endian feature bitfield. Bits 0–10 match
+  iOS: 0 prekeys, 1 Wi-Fi bulk, 2 gateway, 3 private groups, 4 board, 5 vouch,
+  6 mesh diagnostics, 7 bridge, 8 authenticated Noise private media, 9
+  private-media receipts, and 10 reserved non-destructive Noise replacement.
+  Wesh assigns bit 11 to cooperative deterministic BLE link election. It means
+  both peers use the same authenticated peer-ID rule to retain one direction
+  when simultaneous client/server links exist; it MUST NOT be inferred from
+  advertising data.
   Bit 8's exact value is `00 01`. An empty value is valid and means no
   advertised capabilities. For this announcement TLV, unknown bits and bytes
   beyond the low 64 bits must be tolerated for forward compatibility. This
@@ -59,9 +63,9 @@ This matches the on‑wire 8‑byte `senderID`/`recipientID` encoding used in th
 - Optionally append TLV `0x04` with up to 10 unique, directly connected peer IDs.
   - Remove duplicates before encoding.
   - Order is arbitrary and not semantically significant.
-- Wesh includes TLV `0x05` with no bit set (`05 01 00`) in every broadcast and
-  peer-directed announcement: it ships no media, so it never advertises bit 8
-  or 9.
+- Wesh includes TLV `0x05` with only bit 11 set (`05 02 00 08`) in every
+  broadcast and peer-directed announcement. It ships no media, so it never
+  advertises bit 8 or 9.
 - Sign the ANNOUNCE packet so all extension TLVs are covered:
   - Signature algorithm: Ed25519 using the key in TLV `0x03`.
   - Signature input: the binary packet encoding with the signature field omitted and the TTL normalized to `0`. This allows TTL to change during relays without invalidating the signature.
@@ -78,6 +82,11 @@ This matches the on‑wire 8‑byte `senderID`/`recipientID` encoding used in th
 - Capability bits are independent discovery hints. Implementations advertise
   only wire features they implement and must not infer support from platform,
   app version, or unrelated transports with similar names.
+- Deterministic BLE link election (bit 11) is used only after a valid signed
+  ANNOUNCE arrives on the exact live link. When the bit is absent, an
+  implementation MUST retain both local candidates and allow the legacy peer's
+  connection policy to settle them. This preserves interoperability with older
+  BitChat clients that retain their server-side link during simultaneous dials.
 - Private-media receipts and retry (bit 9) require the current Noise
   generation's authenticated `0x21` peer state to prove both bits 8 and 9. An
   announcement alone never authorizes that behavior.
@@ -104,7 +113,8 @@ ANNOUNCE payload TLVs (concatenated):
 - `02 [len=32] [32 bytes X25519 pubkey]`
 - `03 [len=32] [32 bytes Ed25519 pubkey]`
 - `04 [len=8*M] [peerID1(8) || peerID2(8) || ... || peerIDM(8)]` (optional)
-- `05 01 00` (capability bitfield; Wesh sets no bit. BitChat's private-media bit 8 would be `05 02 00 01`)
+- `05 02 00 08` (capability bitfield; Wesh sets cooperative BLE election bit
+  11. BitChat's private-media bit 8 alone would be `05 02 00 01`)
 
 Where each `peerIDk(8)` is the 8‑byte binary form of the peer ID as specified above.
 

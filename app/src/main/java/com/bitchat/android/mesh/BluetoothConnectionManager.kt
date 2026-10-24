@@ -141,8 +141,18 @@ class BluetoothConnectionManager(
     // Public property for address-peer mapping
     val addressPeerMap get() = connectionTracker.addressPeerMap
 
-    fun observePeerIfCurrent(deviceAddress: String, linkID: String, peerID: String): Boolean {
-        val observation = connectionTracker.observePeerIfCurrent(deviceAddress, linkID, peerID)
+    fun observePeerIfCurrent(
+        deviceAddress: String,
+        linkID: String,
+        peerID: String,
+        supportsDeterministicElection: Boolean = false
+    ): Boolean {
+        val observation = connectionTracker.observePeerIfCurrent(
+            deviceAddress,
+            linkID,
+            peerID,
+            supportsDeterministicElection
+        )
         observation.linksToClose.forEach { link ->
             val loser = link.connection
             // Tie-break removes the loser from the tracker before Android reports disconnect, so

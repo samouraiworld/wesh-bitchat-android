@@ -54,9 +54,13 @@ class BluetoothConnectionTrackerLinkObservationTest {
 
         assertEquals(2, tracker.getConnectedDeviceCount())
         assertEquals(1, tracker.getConnectionsToEvict(maxOverall = 1, maxServer = 1, maxClient = 1).size)
-        assertTrue(tracker.observePeerIfCurrent(ADDRESS, "server", REMOTE_HIGH).accepted)
+        assertTrue(tracker.observePeerIfCurrent(
+            ADDRESS, "server", REMOTE_HIGH, supportsDeterministicElection = true
+        ).accepted)
 
-        val elected = tracker.observePeerIfCurrent(ADDRESS, "client", REMOTE_HIGH)
+        val elected = tracker.observePeerIfCurrent(
+            ADDRESS, "client", REMOTE_HIGH, supportsDeterministicElection = true
+        )
         assertTrue(elected.accepted)
         assertEquals(listOf("server"), elected.linksToClose.map { it.connection.linkID })
         assertEquals(1, tracker.getConnectedDeviceCount())
@@ -76,8 +80,12 @@ class BluetoothConnectionTrackerLinkObservationTest {
             BluetoothConnectionTracker.DeviceConnection(device = device, isClient = false,
                 connectedAt = 2, linkID = "server"))
 
-        assertTrue(high.observePeerIfCurrent(ADDRESS, "client", REMOTE_LOW).accepted)
-        val elected = high.observePeerIfCurrent(ADDRESS, "server", REMOTE_LOW)
+        assertTrue(high.observePeerIfCurrent(
+            ADDRESS, "client", REMOTE_LOW, supportsDeterministicElection = true
+        ).accepted)
+        val elected = high.observePeerIfCurrent(
+            ADDRESS, "server", REMOTE_LOW, supportsDeterministicElection = true
+        )
 
         assertTrue(elected.accepted)
         assertEquals(listOf("client"), elected.linksToClose.map { it.connection.linkID })
@@ -111,14 +119,116 @@ class BluetoothConnectionTrackerLinkObservationTest {
         tracker.addServerConnection(OTHER_ADDRESS,
             BluetoothConnectionTracker.DeviceConnection(serverDevice, isClient = false, linkID = "server"))
 
-        assertTrue(tracker.observePeerIfCurrent(OTHER_ADDRESS, "server", REMOTE_HIGH).accepted)
-        val elected = tracker.observePeerIfCurrent(ADDRESS, "client", REMOTE_HIGH)
+        assertTrue(tracker.observePeerIfCurrent(
+            OTHER_ADDRESS, "server", REMOTE_HIGH, supportsDeterministicElection = true
+        ).accepted)
+        val elected = tracker.observePeerIfCurrent(
+            ADDRESS, "client", REMOTE_HIGH, supportsDeterministicElection = true
+        )
 
         assertTrue(elected.accepted)
         assertEquals(listOf("server"), elected.linksToClose.map { it.connection.linkID })
         assertEquals(REMOTE_HIGH, tracker.addressPeerMap[ADDRESS])
         assertNull(tracker.addressPeerMap[OTHER_ADDRESS])
         assertEquals(1, tracker.getConnectedDeviceCount())
+    }
+
+    @Test
+    fun `legacy peer without signed election capability keeps both roles for legacy to settle`() {
+        val device = device(ADDRESS)
+        tracker.addServerConnection(ADDRESS,
+            BluetoothConnectionTracker.DeviceConnection(
+                device = device, isClient = false, linkID = "legacy-server"
+            ))
+        tracker.addDeviceConnection(ADDRESS,
+            BluetoothConnectionTracker.DeviceConnection(
+                device = device, isClient = true, linkID = "legacy-client"
+            ))
+
+        assertTrue(tracker.observePeerIfCurrent(ADDRESS, "legacy-server", REMOTE_HIGH).accepted)
+        val observation = tracker.observePeerIfCurrent(ADDRESS, "legacy-client", REMOTE_HIGH)
+
+        assertTrue(observation.accepted)
+        assertTrue(observation.linksToClose.isEmpty())
+        assertEquals(2, tracker.getConnectedDeviceCount())
+        assertTrue(tracker.hasLink(ADDRESS, "legacy-server"))
+        assertTrue(tracker.hasLink(ADDRESS, "legacy-client"))
+        assertFalse(tracker.shouldSuppressClientDial(ADDRESS))
+    }
+
+    @Test
+    fun `two cooperative peers dialing simultaneously converge and loser dial stays suppressed`() {
+        var now = 1_000L
+        val low = BluetoothConnectionTracker(scope, mock(), LOCAL_LOW) { now }
+        val high = BluetoothConnectionTracker(scope, mock(), REMOTE_HIGH) { now }
+
+        low.addDeviceConnection(ADDRESS,
+            BluetoothConnectionTracker.DeviceConnection(
+                device(ADDRESS), isClient = true, linkID = "low-client"
+            ))
+        low.addServerConnection(OTHER_ADDRESS,
+            BluetoothConnectionTracker.DeviceConnection(
+                device(OTHER_ADDRESS), isClient = false, linkID = "low-server"
+            ))
+        high.addDeviceConnection(OTHER_ADDRESS,
+            BluetoothConnectionTracker.DeviceConnection(
+                device(OTHER_ADDRESS), isClient = true, linkID = "high-client"
+            ))
+        high.addServerConnection(ADDRESS,
+            BluetoothConnectionTracker.DeviceConnection(
+                device(ADDRESS), isClient = false, linkID = "high-server"
+            ))
+
+        low.observePeerIfCurrent(
+            OTHER_ADDRESS, "low-server", REMOTE_HIGH, supportsDeterministicElection = true
+        )
+        val lowResult = low.observePeerIfCurrent(
+            ADDRESS, "low-client", REMOTE_HIGH, supportsDeterministicElection = true
+        )
+        high.observePeerIfCurrent(
+            OTHER_ADDRESS, "high-client", LOCAL_LOW, supportsDeterministicElection = true
+        )
+        val highResult = high.observePeerIfCurrent(
+            ADDRESS, "high-server", LOCAL_LOW, supportsDeterministicElection = true
+        )
+
+        assertEquals(listOf("low-server"), lowResult.linksToClose.map { it.connection.linkID })
+        assertEquals(listOf("high-client"), highResult.linksToClose.map { it.connection.linkID })
+        assertEquals(listOf("low-client"), low.getAllDeviceConnections().map { it.linkID })
+        assertEquals(listOf("high-server"), high.getAllDeviceConnections().map { it.linkID })
+        assertTrue(high.shouldSuppressClientDial(OTHER_ADDRESS))
+
+        assertTrue(high.cleanupDeviceConnectionIfCurrent(ADDRESS, "high-server"))
+        now += BluetoothConnectionTracker.TIE_BREAK_RECONNECT_COOLDOWN_MS - 1
+        assertTrue(high.shouldSuppressClientDial(OTHER_ADDRESS))
+        now += 1
+        assertFalse(high.shouldSuppressClientDial(OTHER_ADDRESS))
+    }
+
+    @Test
+    fun `Bluetooth off on clears cooperative loser suppression for a genuine reconnect`() {
+        val high = BluetoothConnectionTracker(scope, mock(), LOCAL_HIGH)
+        high.addDeviceConnection(ADDRESS,
+            BluetoothConnectionTracker.DeviceConnection(
+                device(ADDRESS), isClient = true, linkID = "outgoing-loser"
+            ))
+        high.addServerConnection(OTHER_ADDRESS,
+            BluetoothConnectionTracker.DeviceConnection(
+                device(OTHER_ADDRESS), isClient = false, linkID = "incoming-winner"
+            ))
+        high.observePeerIfCurrent(
+            ADDRESS, "outgoing-loser", REMOTE_LOW, supportsDeterministicElection = true
+        )
+        high.observePeerIfCurrent(
+            OTHER_ADDRESS, "incoming-winner", REMOTE_LOW, supportsDeterministicElection = true
+        )
+        assertTrue(high.shouldSuppressClientDial(ADDRESS))
+
+        high.stop()
+        high.start()
+
+        assertFalse(high.shouldSuppressClientDial(ADDRESS))
+        assertEquals(0, high.getConnectedDeviceCount())
     }
 
     @Test

@@ -25,9 +25,10 @@ class IdentityAnnouncementTest {
         assertEquals(1L shl 8, PeerCapabilities.PRIVATE_MEDIA.rawValue)
         assertEquals(1L shl 9, PeerCapabilities.PRIVATE_MEDIA_RECEIPTS.rawValue)
         assertEquals(1L shl 10, PeerCapabilities.NON_DESTRUCTIVE_NOISE_REPLACEMENT.rawValue)
+        assertEquals(1L shl 11, PeerCapabilities.DETERMINISTIC_BLE_LINK_ELECTION.rawValue)
 
-        val assigned = PeerCapabilities((1L shl 11) - 1)
-        assertArrayEquals(byteArrayOf(0xFF.toByte(), 0x07), assigned.encoded())
+        val assigned = PeerCapabilities((1L shl 12) - 1)
+        assertArrayEquals(byteArrayOf(0xFF.toByte(), 0x0F), assigned.encoded())
         assertEquals(assigned, PeerCapabilities.decode(assigned.encoded()))
     }
 
@@ -89,15 +90,15 @@ class IdentityAnnouncementTest {
     }
 
     @Test
-    fun `local announcement advertises no capability, private media included`() {
+    fun `local announcement advertises cooperative BLE election only`() {
         val encoded = IdentityAnnouncement.forLocalPeer(nickname, noiseKey, signingKey).encode()!!
 
-        // Wesh ships no media: the capability TLV stays, with no bit set.
-        assertArrayEquals(byteArrayOf(0x05, 0x01, 0x00), encoded.takeLast(3).toByteArray())
+        assertArrayEquals(byteArrayOf(0x05, 0x02, 0x00, 0x08), encoded.takeLast(4).toByteArray())
         val capabilities = IdentityAnnouncement.decode(encoded)!!.capabilities!!
-        assertEquals(PeerCapabilities.NONE, capabilities)
+        assertEquals(PeerCapabilities.DETERMINISTIC_BLE_LINK_ELECTION, capabilities)
+        assertTrue(capabilities.contains(PeerCapabilities.DETERMINISTIC_BLE_LINK_ELECTION))
         assertFalse(capabilities.contains(PeerCapabilities.PRIVATE_MEDIA))
         assertFalse(capabilities.contains(PeerCapabilities.PRIVATE_MEDIA_RECEIPTS))
-        assertEquals(PeerCapabilities.NONE, PeerCapabilities.LOCAL_SUPPORTED)
+        assertEquals(PeerCapabilities.DETERMINISTIC_BLE_LINK_ELECTION, PeerCapabilities.LOCAL_SUPPORTED)
     }
 }
