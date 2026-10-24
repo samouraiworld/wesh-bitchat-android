@@ -201,9 +201,8 @@ private fun StoreScene(scene: String, f: StoreFixture) {
             onOpen = {},
             autoStartOnBoot = true,
             onAutoStartOnBoot = {},
-            modifier = Modifier
-                .background(WeshPave.colors.bg)
-                .systemBarsPadding(),
+            onBack = {},
+            modifier = Modifier.background(WeshPave.colors.bg),
         )
 
         "connection" -> Box(

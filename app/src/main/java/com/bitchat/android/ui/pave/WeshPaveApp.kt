@@ -233,10 +233,12 @@ private fun PaveNavHost(viewModel: ChatViewModel, appearance: WeshAppearance, on
             PaveShortcuts.consumeErase()
         }
     }
+    // The chat whose history is loading: its screen is already up, named, with a spinner.
+    var opening by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(requestedContactSheet) { if (requestedContactSheet) route = PaveRoute.Exchange }
     LaunchedEffect(selectedPrivate) {
         if (selectedPrivate != null && route != PaveRoute.Exchange) route = PaveRoute.Private
-        if (selectedPrivate == null && route == PaveRoute.Private) route = PaveRoute.Home
+        if (selectedPrivate == null && route == PaveRoute.Private && opening == null) route = PaveRoute.Home
     }
 
     fun go(next: PaveRoute) {
@@ -247,6 +249,27 @@ private fun PaveNavHost(viewModel: ChatViewModel, appearance: WeshAppearance, on
             viewModel.weshIncomingQR.value = null
         }
         route = next
+    }
+    // Opens the chat screen at once while startPrivateChat loads the history, one open at a time.
+    // A chat the person left before it loaded is ended; one that could not open goes back Home.
+    fun openPrivate(conversationID: String) {
+        if (opening != null) return
+        val canonical = com.bitchat.android.services.ContactDirectory.canonicalConversationId(conversationID)
+        val seenToken = com.bitchat.android.services.SeenMessageStore.captureReceiptToken()
+        opening = canonical
+        go(PaveRoute.Private)
+        scope.launch {
+            try {
+                viewModel.startPrivateChat(conversationID, seenToken)
+            } finally {
+                opening = null
+            }
+            val selected = viewModel.selectedPrivateChatPeer.value
+            when {
+                selected == canonical && route != PaveRoute.Private -> viewModel.endPrivateChat()
+                selected == null && route == PaveRoute.Private -> route = PaveRoute.Home
+            }
+        }
     }
     BackHandler(route != PaveRoute.Home || connexionOpen) {
         if (connexionOpen) connexionOpen = false else go(route.parent ?: PaveRoute.Home)
@@ -285,6 +308,7 @@ private fun PaveNavHost(viewModel: ChatViewModel, appearance: WeshAppearance, on
         blockedReason = persistenceProblem ?: when {
             canSendConversation -> null
             publicOpen -> stringResource(R.string.wesh_pave_fluo_bluetooth_needed)
+            privatePeer == null && opening != null -> null
             else -> stringResource(R.string.wesh_pave_fluo_private_needs_qr)
         },
         feedback = feedback,
@@ -348,11 +372,7 @@ private fun PaveNavHost(viewModel: ChatViewModel, appearance: WeshAppearance, on
                         internetPill = paveHomeInternetPill(internet.available, internetEnabled, internetStatus),
                     ),
                     onOpenPublicRoom = { viewModel.endPrivateChat(); go(PaveRoute.Public) },
-                    onOpenContact = { id ->
-                        val seenToken = com.bitchat.android.services.SeenMessageStore.captureReceiptToken()
-                        scope.launch { viewModel.startPrivateChat(id, seenToken) }
-                        route = PaveRoute.Private
-                    },
+                    onOpenContact = { id -> openPrivate(id) },
                     onOpenRequests = { go(PaveRoute.Requests) },
                     onExchange = { go(PaveRoute.Exchange) },
                     onOpenSettings = { go(PaveRoute.Settings) },
@@ -387,8 +407,9 @@ private fun PaveNavHost(viewModel: ChatViewModel, appearance: WeshAppearance, on
                 )
             }
             PaveRoute.Private -> {
-                val contact = contacts.firstOrNull { it.conversationID == privatePeer }
-                val title = contact?.nickname ?: conversations.firstOrNull { it.conversationID == privatePeer }?.displayName.orEmpty()
+                val shown = privatePeer ?: opening
+                val contact = contacts.firstOrNull { it.conversationID == shown }
+                val title = contact?.nickname ?: conversations.firstOrNull { it.conversationID == shown }?.displayName.orEmpty()
                 PrivateChatScreen(
                     nickname = title,
                     fingerprint = contact?.let { PaveFingerprint.short(it.key) },
@@ -415,6 +436,7 @@ private fun PaveNavHost(viewModel: ChatViewModel, appearance: WeshAppearance, on
                     onRetry = { id -> privatePeer?.let { viewModel.retryWeshPrivate(it, id) } },
                     onBack = { go(PaveRoute.Home) },
                     onOpenContact = { contactActionsOpen = true },
+                    loading = privatePeer == null && opening != null,
                 )
             }
             PaveRoute.Requests -> RequestsScreen(
@@ -433,10 +455,7 @@ private fun PaveNavHost(viewModel: ChatViewModel, appearance: WeshAppearance, on
                 onBlock = { id -> requestToBlock = requests.firstOrNull { (it.fingerprint ?: it.peerID) == id } },
             )
             PaveRoute.Exchange -> ExchangeRoute(viewModel, nickname, onClose = { go(PaveRoute.Home) }, onOpenChat = { conversationID ->
-                val seenToken = com.bitchat.android.services.SeenMessageStore.captureReceiptToken()
-                scope.launch { viewModel.startPrivateChat(conversationID, seenToken) }
-                viewModel.weshContactSheet.value = false
-                route = PaveRoute.Private
+                openPrivate(conversationID)
             })
             PaveRoute.Settings -> {
                 var autoStartOnBoot by remember { mutableStateOf(MeshServicePreferences.isAutoStartEnabled()) }
@@ -462,6 +481,7 @@ private fun PaveNavHost(viewModel: ChatViewModel, appearance: WeshAppearance, on
                         MeshServicePreferences.setAutoStartEnabled(enabled)
                         autoStartOnBoot = enabled
                     },
+                    onBack = { go(PaveRoute.Home) },
                 )
             }
             PaveRoute.Profile -> ProfileRoute(viewModel, nickname, onBack = { go(PaveRoute.Settings) })

@@ -63,6 +63,7 @@ fun SettingsScreen(
     onOpen: (PaveSettingsEntry) -> Unit,
     autoStartOnBoot: Boolean,
     onAutoStartOnBoot: (Boolean) -> Unit,
+    onBack: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val c = WeshPave.colors
@@ -70,11 +71,12 @@ fun SettingsScreen(
         modifier
             .fillMaxSize()
             .background(c.bg)
+            .systemBarsPadding()
             .verticalScroll(rememberScrollState())
             .padding(horizontal = WeshSpace.gutter, vertical = WeshSpace.s2),
         verticalArrangement = Arrangement.spacedBy(WeshSpace.s4),
     ) {
-        PaveHeader(stringResource(R.string.wesh_pave_settings_title))
+        PaveHeader(stringResource(R.string.wesh_pave_settings_title), onBack = onBack)
         HoldToErase(
             onErase = onErase,
             compact = true,
@@ -125,7 +127,8 @@ fun SettingsRow(title: String, value: String?, onClick: () -> Unit, modifier: Mo
     ) {
         Text(title, style = WeshType.body, color = c.ink, modifier = Modifier.weight(1f))
         if (value != null) {
-            Text(value, style = WeshType.label, color = c.inkMuted, textAlign = TextAlign.End, maxLines = 2, modifier = Modifier.weight(1f, fill = false).padding(start = WeshSpace.s3))
+            // Every value fills the right column from its left edge, so values and chevrons line up row to row.
+            Text(value, style = WeshType.label, color = c.inkMuted, textAlign = TextAlign.Start, maxLines = 2, modifier = Modifier.weight(1f).padding(start = WeshSpace.s3))
         }
         Icon(
             if (external) Icons.AutoMirrored.Rounded.OpenInNew else Icons.AutoMirrored.Rounded.KeyboardArrowRight,
@@ -223,7 +226,7 @@ fun LicensesScreen(onBack: () -> Unit, modifier: Modifier = Modifier) {
 private fun SettingsScreenPreview() = PavePreview(padded = false) {
     SettingsScreen(
         PaveSettingsSummary("Renard 42", previewsHidden = true, meeting = "Fontaine, 18 h", blockedCount = 2, appearance = WeshAppearance.Nuit),
-        onErase = {}, onOpen = {}, autoStartOnBoot = true, onAutoStartOnBoot = {},
+        onErase = {}, onOpen = {}, autoStartOnBoot = true, onAutoStartOnBoot = {}, onBack = {},
     )
 }
 
