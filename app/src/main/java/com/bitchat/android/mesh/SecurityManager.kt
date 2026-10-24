@@ -52,9 +52,11 @@ class SecurityManager(private val encryptionService: EncryptionService, private 
      * Validate packet security (timestamp, replay attacks, duplicates, signatures)
      */
     fun validatePacket(packet: BitchatPacket, peerID: String): Boolean {
-        // Skip validation for our own packets
+        // Reflected self traffic is ignored, except a cryptographically valid direct ANNOUNCE:
+        // the packet processor consumes that case solely to fail-close an equal-identity link.
         if (peerID == myPeerID) {
-            return false
+            return MessageType.fromValue(packet.type) == MessageType.ANNOUNCE &&
+                verifyPacketSignature(packet, peerID)
         }
         
         // Replay attack protection (same 5-minute window as iOS)

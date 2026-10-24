@@ -5,6 +5,11 @@ import com.bitchat.android.model.FragmentPayload
 import com.bitchat.android.model.RoutedPacket
 import com.bitchat.android.protocol.BitchatPacket
 import com.bitchat.android.protocol.MessageType
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -16,6 +21,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 
 @RunWith(RobolectricTestRunner::class)
+@OptIn(ExperimentalCoroutinesApi::class)
 class BluetoothConnectionManagerTest {
     private lateinit var manager: BluetoothConnectionManager
 
@@ -72,5 +78,72 @@ class BluetoothConnectionManagerTest {
             withFragments.stopServices()
             fragments.shutdown()
         }
+    }
+
+    @Test
+    fun `Bluetooth off releases a running manager and on restarts only what it released`() {
+        assertEquals(AdapterReaction.RELEASE, adapterReaction(BluetoothAdapter.STATE_TURNING_OFF, active = true, resumePending = false))
+        assertEquals(AdapterReaction.RELEASE, adapterReaction(BluetoothAdapter.STATE_OFF, active = true, resumePending = false))
+        assertEquals(AdapterReaction.NONE, adapterReaction(BluetoothAdapter.STATE_OFF, active = false, resumePending = true))
+        assertEquals(AdapterReaction.RESTART, adapterReaction(BluetoothAdapter.STATE_ON, active = false, resumePending = true))
+        assertEquals(AdapterReaction.NONE, adapterReaction(BluetoothAdapter.STATE_ON, active = false, resumePending = false))
+        assertEquals(AdapterReaction.NONE, adapterReaction(BluetoothAdapter.STATE_ON, active = true, resumePending = true))
+        assertEquals(AdapterReaction.NONE, adapterReaction(BluetoothAdapter.STATE_TURNING_ON, active = true, resumePending = false))
+    }
+
+    @Test
+    fun `cold start while Bluetooth is off waits for state on unless manager is terminal`() {
+        assertTrue(initialResumeWhenBluetoothOn(bluetoothEnabled = false, stopped = false))
+        assertFalse(initialResumeWhenBluetoothOn(bluetoothEnabled = true, stopped = false))
+        assertFalse(initialResumeWhenBluetoothOn(bluetoothEnabled = false, stopped = true))
+    }
+
+    @Test
+    fun `off or stop during async start invalidates every pending component mutation`() {
+        val epoch = BluetoothLifecycleEpoch()
+        val starting = epoch.begin()
+        assertTrue(epoch.isCurrent(starting))
+
+        epoch.invalidate() // Bluetooth OFF or terminal stop happens before the job resumes.
+
+        assertFalse(epoch.isCurrent(starting))
+    }
+
+    @Test
+    fun `old startup job cannot mutate a restarted generation`() {
+        val epoch = BluetoothLifecycleEpoch()
+        val oldStart = epoch.begin()
+        epoch.invalidate()
+        val restarted = epoch.begin()
+
+        assertFalse(epoch.isCurrent(oldStart))
+        assertTrue(epoch.isCurrent(restarted))
+    }
+
+    @Test
+    fun `disable release is a real barrier before a concurrent restart mutates components`() = runTest {
+        val releaseEntered = CompletableDeferred<Unit>()
+        val finishRelease = CompletableDeferred<Unit>()
+        val events = mutableListOf<String>()
+        val lifecycle = BluetoothComponentLifecycleQueue(this) {
+            events += "release-enter"
+            releaseEntered.complete(Unit)
+            finishRelease.await()
+            events += "release-exit"
+        }
+
+        // disableTransport registers and starts this release while holding the manager lock.
+        lifecycle.newRelease(startupToCancel = null).start()
+        val restart = lifecycle.newStart { events += "restart-start" }
+        restart.start()
+        runCurrent()
+
+        assertTrue(releaseEntered.isCompleted)
+        assertEquals(listOf("release-enter"), events)
+
+        finishRelease.complete(Unit)
+        advanceUntilIdle()
+
+        assertEquals(listOf("release-enter", "release-exit", "restart-start"), events)
     }
 }

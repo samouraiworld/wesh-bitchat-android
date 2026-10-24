@@ -2,6 +2,7 @@ package com.bitchat.android.mesh
 
 import android.bluetooth.*
 import android.bluetooth.le.AdvertiseSettings
+import android.bluetooth.le.AdvertiseCallback
 import android.bluetooth.le.BluetoothLeAdvertiser
 import android.content.Context
 import com.bitchat.android.protocol.BitchatPacket
@@ -93,6 +94,46 @@ class BluetoothGattServerPermissionCallbacksTest {
         verify(advertiser, never()).startAdvertising(any(), any(), any(), any())
         publish()
         verify(advertiser).startAdvertising(any(), any(), any(), any())
+    }
+
+    @Test fun `overlapping advertising restarts leave one advertiser running`() {
+        start()
+        publish()
+        manager.restartAdvertising()
+        manager.restartAdvertising()
+        scope.advanceTimeBy(200)
+        scope.runCurrent()
+        val started = argumentCaptor<AdvertiseCallback>()
+        verify(advertiser, times(3)).startAdvertising(any(), any(), any(), started.capture())
+        val stopped = argumentCaptor<AdvertiseCallback>()
+        verify(advertiser, atLeast(0)).stopAdvertising(stopped.capture())
+        assertEquals(1, (started.allValues - stopped.allValues.toSet()).size)
+    }
+
+    @Test fun `advertising stop uses the advertiser instance that started it when adapter returns null`() {
+        start()
+        publish()
+        val started = argumentCaptor<AdvertiseCallback>()
+        verify(advertiser).startAdvertising(any(), any(), any(), started.capture())
+        whenever(adapter.bluetoothLeAdvertiser).thenReturn(null)
+
+        manager.stop()
+
+        verify(advertiser).stopAdvertising(started.firstValue)
+    }
+
+    @Test fun `advertising stop never targets a replacement advertiser instance`() {
+        val replacementAdvertiser = mock<BluetoothLeAdvertiser>()
+        start()
+        publish()
+        val started = argumentCaptor<AdvertiseCallback>()
+        verify(advertiser).startAdvertising(any(), any(), any(), started.capture())
+        whenever(adapter.bluetoothLeAdvertiser).thenReturn(replacementAdvertiser)
+
+        manager.stop()
+
+        verify(advertiser).stopAdvertising(started.firstValue)
+        verify(replacementAdvertiser, never()).stopAdvertising(any<AdvertiseCallback>())
     }
 
     @Test fun `null open leaves server unavailable and permits a new attempt`() {
@@ -195,6 +236,115 @@ class BluetoothGattServerPermissionCallbacksTest {
         verify(delegate, never()).onDeviceConnected(any())
         readyTime()
         verify(delegate).onDeviceConnected(device)
+    }
+
+    @Test fun `duplicate connected callback reuses one server link and disconnect leaves no ghost`() {
+        start(); publish()
+        connect()
+        connect()
+
+        assertEquals(1, tracker.getConnectedDeviceCount())
+        verify(delegate, times(1)).onServerConnectionRegistered(device)
+
+        callback.onConnectionStateChange(device, BluetoothGatt.GATT_SUCCESS,
+            BluetoothProfile.STATE_DISCONNECTED)
+        assertEquals(0, tracker.getConnectedDeviceCount())
+    }
+
+    @Test fun `late connected callback cannot resurrect a server link being closed by tie break`() {
+        start(); publish(); connect()
+        val rejectedLink = tracker.getAllDeviceConnections().single().linkID
+
+        // The authenticated tie-break removes the loser before Android confirms disconnect.
+        assertTrue(tracker.cleanupDeviceConnectionIfCurrent(device.address, rejectedLink))
+        manager.disconnectLink(device, rejectedLink)
+        connect()
+
+        assertEquals(0, tracker.getConnectedDeviceCount())
+        verify(delegate, times(1)).onServerConnectionRegistered(device)
+        verify(gatt).cancelConnection(device)
+
+        // Once the platform confirms closure, a genuinely new connection may be admitted.
+        callback.onConnectionStateChange(device, BluetoothGatt.GATT_SUCCESS,
+            BluetoothProfile.STATE_DISCONNECTED)
+        connect()
+        assertEquals(1, tracker.getConnectedDeviceCount())
+        verify(delegate, times(2)).onServerConnectionRegistered(device)
+    }
+
+    @Test fun `closing tie break loser rejects packets before platform disconnect callback`() {
+        start(); publish(); connect()
+        val rejectedLink = tracker.getAllDeviceConnections().single().linkID
+        assertTrue(tracker.cleanupDeviceConnectionIfCurrent(device.address, rejectedLink))
+        manager.disconnectLink(device, rejectedLink)
+        clearInvocations(gatt, delegate)
+
+        callback.onCharacteristicWriteRequest(
+            device, 41, manager.getCharacteristic()!!, false, true, 0, packet()
+        )
+
+        verify(gatt).sendResponse(device, 41, BluetoothGatt.GATT_FAILURE, 0, null)
+        verify(delegate, never()).onPacketReceived(any(), any(), anyOrNull(), any())
+    }
+
+    @Test fun `closing tie break loser rejects CCCD before platform disconnect callback`() {
+        start(); publish(); connect()
+        val rejectedLink = tracker.getAllDeviceConnections().single().linkID
+        assertTrue(tracker.cleanupDeviceConnectionIfCurrent(device.address, rejectedLink))
+        manager.disconnectLink(device, rejectedLink)
+        clearInvocations(gatt, delegate)
+
+        subscribe(id = 42)
+        readyTime()
+
+        verify(gatt).sendResponse(device, 42, BluetoothGatt.GATT_FAILURE, 0, null)
+        assertTrue(tracker.getSubscribedDevices().isEmpty())
+        verify(delegate, never()).onDeviceConnected(any())
+    }
+
+    @Test fun `server stop releases exact link resources without logical peer disconnect`() {
+        start(); publish(); connect(); subscribe(); readyTime()
+        val serverLink = tracker.getAllDeviceConnections().single()
+        tracker.observePeerIfCurrent(device.address, serverLink.linkID, "0011223344556677")
+        tracker.addDeviceConnection(device.address,
+            BluetoothConnectionTracker.DeviceConnection(
+                device, isClient = true, peerID = "0011223344556677", linkID = "client-survivor"
+            ))
+        clearInvocations(delegate)
+
+        manager.stop()
+
+        verify(delegate).onLinkClosed(device.address, serverLink.linkID)
+        verify(delegate, never()).onDeviceDisconnected(any(), anyOrNull(), anyOrNull())
+        assertTrue(tracker.hasLink(device.address, "client-survivor"))
+    }
+
+    @Test fun `server stop reports logical disconnect when it removes the final authenticated link`() {
+        start(); publish(); connect(); subscribe(); readyTime()
+        val serverLink = tracker.getAllDeviceConnections().single()
+        val peerID = "0011223344556677"
+        assertTrue(tracker.observePeerIfCurrent(device.address, serverLink.linkID, peerID).accepted)
+        clearInvocations(delegate)
+
+        manager.stop()
+
+        verify(delegate).onDeviceDisconnected(device, serverLink.linkID, peerID)
+        verify(delegate, never()).onLinkClosed(any(), anyOrNull())
+        assertEquals(0, tracker.getConnectedDeviceCount())
+        assertTrue(tracker.getSubscribedDevices().isEmpty())
+    }
+
+    @Test fun `server disconnect removes subscription while a client link at the address survives`() {
+        start(); publish(); connect(); subscribe(); readyTime()
+        tracker.addDeviceConnection(device.address,
+            BluetoothConnectionTracker.DeviceConnection(device, isClient = true, linkID = "client"))
+
+        callback.onConnectionStateChange(device, BluetoothGatt.GATT_SUCCESS,
+            BluetoothProfile.STATE_DISCONNECTED)
+
+        assertTrue(tracker.getSubscribedDevices().isEmpty())
+        assertTrue(tracker.hasLink(device.address, "client"))
+        assertEquals(1, tracker.getConnectedDeviceCount())
     }
 
     @Test fun `CCCD disable removes subscription and cancels delayed readiness`() {

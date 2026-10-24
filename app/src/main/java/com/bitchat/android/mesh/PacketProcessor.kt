@@ -190,6 +190,13 @@ class PacketProcessor(
             return
         }
 
+        // A valid ANNOUNCE for our own cryptographic identity is never application traffic. Give
+        // the transport one chance to close the exact direct link, then suppress presence/relay.
+        if (MessageType.fromValue(packet.type) == MessageType.ANNOUNCE && peerID == myPeerID) {
+            delegate?.handleValidatedSelfAnnounce(routed)
+            return
+        }
+
         // Read before dispatch: local delivery runs asynchronously and may suppress relay of
         // this very copy (inbound budget) before the relay step below is reached.
         val relaySuppressed = delegate?.isRelaySuppressed(packet, peerID) == true
@@ -424,6 +431,7 @@ class PacketProcessor(
 interface PacketProcessorDelegate {
     // Security validation
     fun validatePacketSecurity(packet: BitchatPacket, peerID: String): Boolean
+    fun handleValidatedSelfAnnounce(routed: RoutedPacket): Boolean = false
     
     // Peer management
     fun updatePeerLastSeen(peerID: String)

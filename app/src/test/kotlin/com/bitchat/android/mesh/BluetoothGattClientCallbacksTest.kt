@@ -210,10 +210,16 @@ class BluetoothGattClientCallbacksTest {
         callback.onDescriptorWrite(gatt, descriptor, BluetoothGatt.GATT_SUCCESS)
         assertRejected()
     }
-    @Test fun `connection error while connecting terminates attempt`() {
+    @Test fun `connection error while connecting terminates attempt and backs off`() {
         val callback = connect()
         callback.onConnectionStateChange(gatt, BluetoothGatt.GATT_FAILURE, BluetoothProfile.STATE_CONNECTING)
-        assertRejected()
+        assertNull(tracker.getDeviceConnection(address))
+        verify(delegate, never()).onDeviceConnected(any())
+        verify(gatt).disconnect()
+        verify(gatt).close()
+        // The failed attempt stays on record: the next scan result cannot retry at once.
+        assertFalse(tracker.isConnectionAttemptAllowed(address))
+        assertFalse(client.connectToAddress(address))
     }
     @Test fun `missing setup callbacks timeout and release pending attempt`() {
         connect()
@@ -287,6 +293,7 @@ class BluetoothGattClientCallbacksTest {
     @Test fun `late callback cannot mutate an independently replaced tracker generation`() {
         val callback = connect()
         discover(callback)
+        assertTrue(tracker.cleanupDeviceConnectionIfCurrent(address, tracker.getCurrentLinkID(address)!!))
         val replacement = BluetoothConnectionTracker.DeviceConnection(device, linkID = "synthetic-new-link")
         tracker.addDeviceConnection(address, replacement)
         callback.onServicesDiscovered(gatt, BluetoothGatt.GATT_SUCCESS)
@@ -294,6 +301,18 @@ class BluetoothGattClientCallbacksTest {
         verify(delegate, never()).onDeviceConnected(any())
         verify(delegate, never()).onDeviceDisconnected(any(), any(), anyOrNull())
         verify(gatt).close()
+    }
+    @Test fun `own link reported to the local server first does not stop the attempt`() {
+        val callback = connect()
+        tracker.addDeviceConnection(address,
+            BluetoothConnectionTracker.DeviceConnection(device, isClient = false, linkID = "synthetic-server-link"))
+        mtu(callback)
+        verify(gatt).requestMtu(517)
+        callback.onMtuChanged(gatt, 517, BluetoothGatt.GATT_SUCCESS)
+        assertEquals(2, tracker.getConnectedDeviceCount())
+        assertTrue(tracker.getAllDeviceConnections().any { it.isClient })
+        assertTrue(tracker.getAllDeviceConnections().any { !it.isClient })
+        verify(gatt, never()).close()
     }
     @Test fun `denied close does not retain attempt or prevent repeated stop`() {
         connect()
@@ -337,6 +356,30 @@ class BluetoothGattClientCallbacksTest {
         assertTrue(client.connectToAddress(address))
     }
 
+    @Test fun `scan stop uses the scanner instance that started the generation when adapter returns null`() {
+        assertTrue(client.start())
+        scope.runCurrent()
+        val callback = scanCallbacks.single()
+        whenever(adapter.bluetoothLeScanner).thenReturn(null)
+
+        client.stop()
+
+        verify(scanner).stopScan(callback)
+    }
+
+    @Test fun `scan stop never targets a replacement scanner instance`() {
+        val replacementScanner = mock<BluetoothLeScanner>()
+        assertTrue(client.start())
+        scope.runCurrent()
+        val callback = scanCallbacks.single()
+        whenever(adapter.bluetoothLeScanner).thenReturn(replacementScanner)
+
+        client.stop()
+
+        verify(scanner).stopScan(callback)
+        verify(replacementScanner, never()).stopScan(any<ScanCallback>())
+    }
+
     @Test fun `old scan results batches and failures cannot act on a restarted scanner`() {
         assertTrue(client.start())
         scope.runCurrent()
@@ -374,7 +417,12 @@ class BluetoothGattClientCallbacksTest {
         verify(device, never()).connectGatt(eq(context), eq(false), any(), eq(BluetoothDevice.TRANSPORT_LE))
     }
 
-    private fun scanDebugResult(advertisedName: String?, rssi: Int, beforeDelivery: () -> Unit = {}): DebugScanResult {
+    private fun scanDebugResult(
+        advertisedName: String?,
+        rssi: Int,
+        advertisedPeerHint: ByteArray? = null,
+        beforeDelivery: () -> Unit = {}
+    ): DebugScanResult {
         val debug = DebugSettingsManager.getInstance()
         debug.clearScanResults()
         whenever(power.getRSSIThreshold()).thenReturn(-70)
@@ -383,6 +431,8 @@ class BluetoothGattClientCallbacksTest {
         val record = mock<ScanRecord> {
             on { serviceUuids }.thenReturn(listOf(ParcelUuid(AppConstants.Mesh.Gatt.SERVICE_UUID)))
             on { deviceName }.thenReturn(advertisedName)
+            on { getServiceData(ParcelUuid(AppConstants.Mesh.Gatt.SERVICE_UUID)) }
+                .thenReturn(advertisedPeerHint)
         }
         val result = mock<ScanResult> {
             on { device }.thenReturn(this@BluetoothGattClientCallbacksTest.device)
@@ -440,6 +490,26 @@ class BluetoothGattClientCallbacksTest {
         verify(device).name
         verify(device).connectGatt(eq(context), eq(false), any(), eq(BluetoothDevice.TRANSPORT_LE))
         verify(delegate, never()).onDeviceConnected(any())
+    }
+
+    @Test fun `advertised peer hint cannot suppress or authenticate a new physical link`() {
+        val claimedPeer = byteArrayOf(0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x7F)
+        val claimedPeerHex = claimedPeer.joinToString("") { "%02x".format(it) }
+        tracker.addDeviceConnection("AA:BB:CC:DD:EE:02",
+            BluetoothConnectionTracker.DeviceConnection(
+                mock(), peerID = claimedPeerHex, linkID = "authenticated-other-link"
+            ))
+
+        val debug = scanDebugResult(null, -30, advertisedPeerHint = claimedPeer)
+        assertEquals(claimedPeerHex, debug.peerID)
+        verify(device).connectGatt(eq(context), eq(false), any(), eq(BluetoothDevice.TRANSPORT_LE))
+
+        val callback = callbacks.last()
+        mtu(callback)
+        callback.onMtuChanged(gatt, 517, BluetoothGatt.GATT_SUCCESS)
+        val linkID = tracker.getAllDeviceConnections().single { it.isClient }.linkID
+        assertNull(tracker.getPeerForLink(linkID))
+        assertFalse(tracker.addressPeerMap.containsKey(address))
     }
 
 }

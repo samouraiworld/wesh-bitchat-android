@@ -4,6 +4,7 @@ import android.app.Application
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothGatt
 import android.bluetooth.BluetoothGattCharacteristic
+import android.bluetooth.BluetoothGattServer
 import com.bitchat.android.model.RoutedPacket
 import com.bitchat.android.protocol.BitchatPacket
 import com.bitchat.android.protocol.MessageType
@@ -41,6 +42,7 @@ class WeshBluetoothHandoffTest {
         whenever(tracker.getSubscribedDevices()).thenReturn(emptyList())
         whenever(tracker.getConnectedDevices()).thenReturn(mapOf(address to link))
         whenever(tracker.getDeviceConnection(address)).thenReturn(link)
+        whenever(tracker.getLink(address, link.linkID)).thenReturn(link)
         whenever(tracker.addressPeerMap).thenReturn(java.util.concurrent.ConcurrentHashMap<String, String>().apply { put(address, peerID) })
         broadcaster = BluetoothPacketBroadcaster(scope, tracker, FragmentManager(), "1111222233334444")
     }
@@ -80,6 +82,48 @@ class WeshBluetoothHandoffTest {
         verify(gatt, never()).writeCharacteristic(any())
     }
 
+    @Test fun `queued head is dropped when its exact link disappears before it starts`() {
+        whenever(gatt.writeCharacteristic(any())).thenReturn(true)
+        val routed = packet(32)
+
+        assertTrue(broadcaster.sendPacketToLink(routed, address, "synthetic-generation", null, null))
+        assertTrue(broadcaster.sendPacketToLink(routed, address, "synthetic-generation", null, null))
+        whenever(tracker.getLink(address, "synthetic-generation")).thenReturn(null)
+
+        broadcaster.onGattClientWriteComplete(
+            address,
+            "synthetic-generation",
+            BluetoothGatt.GATT_SUCCESS
+        )
+
+        verify(gatt, times(1)).writeCharacteristic(any())
+    }
+
+    @Test fun `exact server link never falls back to replacement selected at same address`() {
+        val device: BluetoothDevice = mock()
+        whenever(device.address).thenReturn(address)
+        val expected = BluetoothConnectionTracker.DeviceConnection(
+            device = device,
+            isClient = false,
+            peerID = peerID,
+            linkID = "expected-server-generation"
+        )
+        val replacement = expected.copy(linkID = "replacement-server-generation")
+        whenever(tracker.getSubscribedDevices()).thenReturn(listOf(device))
+        whenever(tracker.getLink(address, expected.linkID)).thenReturn(expected, null)
+        whenever(tracker.getDeviceConnection(address)).thenReturn(replacement)
+        val server: BluetoothGattServer = mock()
+
+        assertFalse(broadcaster.sendPacketToLink(
+            packet(32),
+            address,
+            expected.linkID,
+            server,
+            characteristic
+        ))
+        verify(server, never()).notifyCharacteristicChanged(any(), any(), any())
+    }
+
     @Test fun `a copied broadcast recipient reaches every peer instead of taking a unicast early return`() = runBlocking<Unit> {
         val reserved = tracker.getConnectedDevices().getValue(address)
         val secondAddress = "second-synthetic-link"
@@ -102,6 +146,7 @@ class WeshBluetoothHandoffTest {
         )
         whenever(tracker.getConnectedDevices()).thenReturn(linkedMapOf(address to reserved, secondAddress to second))
         whenever(tracker.getDeviceConnection(secondAddress)).thenReturn(second)
+        whenever(tracker.getLink(secondAddress, second.linkID)).thenReturn(second)
         tracker.addressPeerMap[address] = SpecialRecipients.BROADCAST.toHexString()
         tracker.addressPeerMap[secondAddress] = secondPeerID
         whenever(gatt.writeCharacteristic(any())).thenAnswer {
