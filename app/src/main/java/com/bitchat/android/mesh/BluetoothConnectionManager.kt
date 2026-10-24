@@ -123,9 +123,11 @@ class BluetoothConnectionManager(
     /** Set once by [stopServices]: this instance never starts again, whatever Bluetooth does. */
     @Volatile private var stopped = false
     private val lifecycleEpoch = BluetoothLifecycleEpoch()
-    private val componentLifecycleMutex = Mutex()
+    private val componentLifecycle = BluetoothComponentLifecycleQueue(
+        connectionScope = connectionScope,
+        releaseComponents = ::releaseComponents
+    )
     private var startupJob: Job? = null
-    private var releaseJob: Job? = null
 
     // Bluetooth turning off, or its system service dying, leaves every GATT object bound to the
     // dead stack: release them, and start again once the adapter is back on. Events run in order.
@@ -317,7 +319,6 @@ class BluetoothConnectionManager(
             resumeWhenBluetoothOn = false
             val generation = lifecycleEpoch.begin()
             startupJob?.cancel()
-            val pendingRelease = releaseJob
 
         // set the adapter's name to our 8-character peerID for iOS privacy, TODO: Make this configurable
         // try {
@@ -330,17 +331,15 @@ class BluetoothConnectionManager(
         // }
 
             // Start all component managers
-            startupJob = connectionScope.launch {
-                pendingRelease?.join()
-                componentLifecycleMutex.withLock {
-                    if (!isCurrentLifecycleGeneration(generation)) return@withLock
-                    // OFF/stop queues release behind this mutex, so a platform start that has
-                    // already entered cannot complete after its cleanup.
+            val startJob = componentLifecycle.newStart {
+                    if (!isCurrentLifecycleGeneration(generation)) return@newStart
+                    // Lifecycle commands are serialized, so a release registered by OFF/stop
+                    // always finishes before a later start may mutate platform components.
                     connectionTracker.start()
-                    if (!isCurrentLifecycleGeneration(generation)) return@withLock
+                    if (!isCurrentLifecycleGeneration(generation)) return@newStart
 
                     powerManager.start()
-                    if (!isCurrentLifecycleGeneration(generation)) return@withLock
+                    if (!isCurrentLifecycleGeneration(generation)) return@newStart
 
                     val startServer = isGattServerEnabled()
                     val startClient = isGattClientEnabled()
@@ -349,9 +348,9 @@ class BluetoothConnectionManager(
                         if (!serverManager.start()) {
                             Log.e(TAG, "Failed to start server manager")
                             failLifecycleGeneration(generation)
-                            return@withLock
+                            return@newStart
                         }
-                        if (!isCurrentLifecycleGeneration(generation)) return@withLock
+                        if (!isCurrentLifecycleGeneration(generation)) return@newStart
                     } else {
                         Log.i(TAG, "GATT Server disabled by debug settings; not starting")
                     }
@@ -360,9 +359,9 @@ class BluetoothConnectionManager(
                         if (!clientManager.start()) {
                             Log.e(TAG, "Failed to start client manager")
                             failLifecycleGeneration(generation)
-                            return@withLock
+                            return@newStart
                         }
-                        if (!isCurrentLifecycleGeneration(generation)) return@withLock
+                        if (!isCurrentLifecycleGeneration(generation)) return@newStart
                     } else {
                         Log.i(TAG, "GATT Client disabled by debug settings; not starting")
                     }
@@ -376,8 +375,9 @@ class BluetoothConnectionManager(
                     if (isCurrentLifecycleGeneration(generation)) {
                         Log.i(TAG, "Bluetooth services started successfully")
                     }
-                }
             }
+            startupJob = startJob
+            startJob.start()
             
             return true
             
@@ -394,7 +394,7 @@ class BluetoothConnectionManager(
      */
     fun disableTransport() {
         Log.i(TAG, "Disabling BLE transport")
-        val oldStartup = synchronized(this) {
+        synchronized(this) {
             val active = isActive
             isActive = false
             transportReady = false
@@ -404,9 +404,10 @@ class BluetoothConnectionManager(
             old?.cancel()
             startupJob = null
             if (active) delegate?.onTransportStateChanged(false)
-            old
+            // Register the release before dropping the same lock startServices uses. A concurrent
+            // restart must therefore observe this release as its predecessor.
+            componentLifecycle.newRelease(old).start()
         }
-        enqueueRelease(oldStartup, terminal = false)
     }
 
     private fun releaseComponents() {
@@ -419,7 +420,7 @@ class BluetoothConnectionManager(
      * Stop all Bluetooth services with proper cleanup
      */
     fun stopServices() {
-        val oldStartup = synchronized(this) {
+        synchronized(this) {
             val active = isActive
             stopped = true
             isActive = false
@@ -431,9 +432,11 @@ class BluetoothConnectionManager(
             startupJob = null
             unregisterAdapterReceiver()
             if (active) delegate?.onTransportStateChanged(false)
-            old
+            componentLifecycle.newRelease(old) {
+                connectionScope.cancel()
+                Log.i(TAG, "All Bluetooth services stopped")
+            }.start()
         }
-        enqueueRelease(oldStartup, terminal = true)
     }
 
     private fun onAdapterState(state: Int) {
@@ -444,7 +447,7 @@ class BluetoothConnectionManager(
         when (reaction) {
             AdapterReaction.RELEASE -> {
                 Log.i(TAG, "Bluetooth turning off: releasing GATT server and client")
-                val oldStartup = synchronized(this) {
+                synchronized(this) {
                     if (stopped) return
                     resumeWhenBluetoothOn = true
                     isActive = false
@@ -454,9 +457,8 @@ class BluetoothConnectionManager(
                     old?.cancel()
                     startupJob = null
                     delegate?.onTransportStateChanged(false)
-                    old
+                    componentLifecycle.newRelease(old).start()
                 }
-                enqueueRelease(oldStartup, terminal = false)
             }
             AdapterReaction.RESTART -> {
                 Log.i(TAG, "Bluetooth back on: restarting GATT server and client")
@@ -515,21 +517,6 @@ class BluetoothConnectionManager(
         }
     }
 
-    private fun enqueueRelease(oldStartup: Job?, terminal: Boolean) {
-        synchronized(this) {
-            val previousRelease = releaseJob
-            releaseJob = connectionScope.launch {
-                previousRelease?.join()
-                oldStartup?.cancelAndJoin()
-                componentLifecycleMutex.withLock { releaseComponents() }
-                if (terminal) {
-                    connectionScope.cancel()
-                    Log.i(TAG, "All Bluetooth services stopped")
-                }
-            }
-        }
-    }
-    
     /**
      * Broadcast packet to connected devices with connection limit enforcement
      * Automatically fragments large packets to fit within BLE MTU limits
@@ -730,4 +717,41 @@ internal class BluetoothLifecycleEpoch {
     @Synchronized fun begin(): Long = ++value
     @Synchronized fun invalidate(): Long = ++value
     @Synchronized fun isCurrent(token: Long): Boolean = token == value
+}
+
+/**
+ * Serializes platform component mutations across starts and releases.
+ *
+ * Jobs are returned lazy so the owner can publish its lifecycle state and job reference under the
+ * same lock before execution begins. A release becomes the predecessor of every later start at
+ * construction time, closing the disable -> concurrent start registration gap.
+ */
+internal class BluetoothComponentLifecycleQueue(
+    private val connectionScope: CoroutineScope,
+    private val releaseComponents: suspend () -> Unit
+) {
+    private val queueLock = Any()
+    private val componentMutex = Mutex()
+    private var releaseTail: Job? = null
+
+    fun newStart(startComponents: suspend () -> Unit): Job = synchronized(queueLock) {
+        val predecessor = releaseTail
+        connectionScope.launch(start = CoroutineStart.LAZY) {
+            predecessor?.join()
+            componentMutex.withLock { startComponents() }
+        }
+    }
+
+    fun newRelease(
+        startupToCancel: Job?,
+        afterRelease: () -> Unit = {}
+    ): Job = synchronized(queueLock) {
+        val predecessor = releaseTail
+        connectionScope.launch(start = CoroutineStart.LAZY) {
+            predecessor?.join()
+            startupToCancel?.cancelAndJoin()
+            componentMutex.withLock { releaseComponents() }
+            afterRelease()
+        }.also { releaseTail = it }
+    }
 }

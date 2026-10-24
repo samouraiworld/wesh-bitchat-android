@@ -272,6 +272,36 @@ class BluetoothGattServerPermissionCallbacksTest {
         verify(delegate, times(2)).onServerConnectionRegistered(device)
     }
 
+    @Test fun `closing tie break loser rejects packets before platform disconnect callback`() {
+        start(); publish(); connect()
+        val rejectedLink = tracker.getAllDeviceConnections().single().linkID
+        assertTrue(tracker.cleanupDeviceConnectionIfCurrent(device.address, rejectedLink))
+        manager.disconnectLink(device, rejectedLink)
+        clearInvocations(gatt, delegate)
+
+        callback.onCharacteristicWriteRequest(
+            device, 41, manager.getCharacteristic()!!, false, true, 0, packet()
+        )
+
+        verify(gatt).sendResponse(device, 41, BluetoothGatt.GATT_FAILURE, 0, null)
+        verify(delegate, never()).onPacketReceived(any(), any(), anyOrNull(), any())
+    }
+
+    @Test fun `closing tie break loser rejects CCCD before platform disconnect callback`() {
+        start(); publish(); connect()
+        val rejectedLink = tracker.getAllDeviceConnections().single().linkID
+        assertTrue(tracker.cleanupDeviceConnectionIfCurrent(device.address, rejectedLink))
+        manager.disconnectLink(device, rejectedLink)
+        clearInvocations(gatt, delegate)
+
+        subscribe(id = 42)
+        readyTime()
+
+        verify(gatt).sendResponse(device, 42, BluetoothGatt.GATT_FAILURE, 0, null)
+        assertTrue(tracker.getSubscribedDevices().isEmpty())
+        verify(delegate, never()).onDeviceConnected(any())
+    }
+
     @Test fun `server stop releases exact link resources without logical peer disconnect`() {
         start(); publish(); connect(); subscribe(); readyTime()
         val serverLink = tracker.getAllDeviceConnections().single()

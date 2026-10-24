@@ -5,6 +5,11 @@ import com.bitchat.android.model.FragmentPayload
 import com.bitchat.android.model.RoutedPacket
 import com.bitchat.android.protocol.BitchatPacket
 import com.bitchat.android.protocol.MessageType
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -16,6 +21,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 
 @RunWith(RobolectricTestRunner::class)
+@OptIn(ExperimentalCoroutinesApi::class)
 class BluetoothConnectionManagerTest {
     private lateinit var manager: BluetoothConnectionManager
 
@@ -112,5 +118,32 @@ class BluetoothConnectionManagerTest {
 
         assertFalse(epoch.isCurrent(oldStart))
         assertTrue(epoch.isCurrent(restarted))
+    }
+
+    @Test
+    fun `disable release is a real barrier before a concurrent restart mutates components`() = runTest {
+        val releaseEntered = CompletableDeferred<Unit>()
+        val finishRelease = CompletableDeferred<Unit>()
+        val events = mutableListOf<String>()
+        val lifecycle = BluetoothComponentLifecycleQueue(this) {
+            events += "release-enter"
+            releaseEntered.complete(Unit)
+            finishRelease.await()
+            events += "release-exit"
+        }
+
+        // disableTransport registers and starts this release while holding the manager lock.
+        lifecycle.newRelease(startupToCancel = null).start()
+        val restart = lifecycle.newStart { events += "restart-start" }
+        restart.start()
+        runCurrent()
+
+        assertTrue(releaseEntered.isCompleted)
+        assertEquals(listOf("release-enter"), events)
+
+        finishRelease.complete(Unit)
+        advanceUntilIdle()
+
+        assertEquals(listOf("release-enter", "release-exit", "restart-start"), events)
     }
 }

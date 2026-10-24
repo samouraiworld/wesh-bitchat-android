@@ -355,15 +355,26 @@ class BluetoothGattServerManager(
             ) {
                 if (callbackServer(generation) == null || !serviceReady) return
                 val address = device.address
-                val linkID = serverLinkIDs[address]
+                val linkID = synchronized(serverStateLock) {
+                    serverLinkIDs[address]?.takeIf { current ->
+                        !closingServerLinks.containsKey(address) &&
+                            connectionTracker.hasLink(address, current)
+                    }
+                }
                 val valid = characteristic.uuid == AppConstants.Mesh.Gatt.CHARACTERISTIC_UUID &&
                     !preparedWrite && offset == 0 && linkID != null
                 // Rate-limited per link before any decoding or signature work.
-                val packet = if (valid && linkID != null && inboundLimiter.tryAcquire(address, linkID)) BitchatPacket.fromBinaryData(value) else null
+                val packet = if (valid && inboundLimiter.tryAcquire(address, linkID)) BitchatPacket.fromBinaryData(value) else null
                 if (responseNeeded && !sendResponse(generation, device, requestId,
                         if (packet != null) BluetoothGatt.GATT_SUCCESS else BluetoothGatt.GATT_FAILURE)) return
-                if (packet == null || linkID == null || callbackServer(generation) == null ||
-                    serverLinkIDs[address] != linkID) return
+                if (packet == null || linkID == null || callbackServer(generation) == null) return
+                val stillAccepted = synchronized(serverStateLock) {
+                    isActive && serverGeneration == generation &&
+                        serverLinkIDs[address] == linkID &&
+                        !closingServerLinks.containsKey(address) &&
+                        connectionTracker.hasLink(address, linkID)
+                }
+                if (!stillAccepted) return
                 val peerID = packet.senderID.take(8).toByteArray().joinToString("") { "%02x".format(it) }
                 delegate?.onPacketReceived(packet, peerID, device, linkID)
             }
@@ -374,7 +385,12 @@ class BluetoothGattServerManager(
             ) {
                 if (callbackServer(generation) == null || !serviceReady) return
                 val address = device.address
-                val linkID = serverLinkIDs[address]
+                val linkID = synchronized(serverStateLock) {
+                    serverLinkIDs[address]?.takeIf { current ->
+                        !closingServerLinks.containsKey(address) &&
+                            connectionTracker.hasLink(address, current)
+                    }
+                }
                 val enable = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE.contentEquals(value)
                 val disable = BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE.contentEquals(value)
                 val valid = linkID != null && descriptor.uuid == AppConstants.Mesh.Gatt.DESCRIPTOR_UUID &&
@@ -384,14 +400,24 @@ class BluetoothGattServerManager(
                         if (valid) BluetoothGatt.GATT_SUCCESS else BluetoothGatt.GATT_FAILURE)) return
                 if (!valid) return
                 synchronized(serverStateLock) {
-                    if (!isActive || serverGeneration != generation || serverLinkIDs[address] != linkID) return
+                    if (!isActive || serverGeneration != generation || serverLinkIDs[address] != linkID ||
+                        closingServerLinks.containsKey(address) ||
+                        !connectionTracker.hasLink(address, linkID)) return
                     if (enable) connectionTracker.addSubscribedDevice(device)
                     else connectionTracker.removeSubscribedDevice(device)
                 }
                 if (enable) connectionScope.launch {
                     delay(100)
-                    if (callbackServer(generation) != null && serverLinkIDs[address] == linkID &&
-                        connectionTracker.getSubscribedDevices().contains(device)) delegate?.onDeviceConnected(device)
+                    val stillAccepted = synchronized(serverStateLock) {
+                        isActive && serverGeneration == generation &&
+                            serverLinkIDs[address] == linkID &&
+                            !closingServerLinks.containsKey(address) &&
+                            connectionTracker.hasLink(address, linkID)
+                    }
+                    if (stillAccepted && callbackServer(generation) != null &&
+                        connectionTracker.getSubscribedDevices().contains(device)) {
+                        delegate?.onDeviceConnected(device)
+                    }
                 }
             }
 
