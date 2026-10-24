@@ -125,6 +125,7 @@ class WeshBluetoothHandoffTest {
             scope, tracker, FragmentManager(), "1111222233334444", gattCallbackTimeoutMs = 50L
         )
         whenever(gatt.writeCharacteristic(any())).thenReturn(true)
+        doThrow(SecurityException("private disconnect detail")).whenever(gatt).disconnect()
 
         val outcome = async(Dispatchers.Default) {
             broadcaster.broadcastPacketAndAwaitOutcome(packet(32), null, null) { true }
@@ -170,6 +171,10 @@ class WeshBluetoothHandoffTest {
         try {
             assertTrue(handlerStarted.await(1, java.util.concurrent.TimeUnit.SECONDS))
             assertFalse("outcome completed before manager invalidation returned", outcome.isCompleted)
+            // This exceeds the two former gattCallbackTimeoutMs + 1s wrappers. Neither the queue
+            // await nor the public API may publish while exact-link invalidation is still blocked.
+            delay(1_100)
+            assertFalse("outer timeout completed before manager invalidation", outcome.isCompleted)
         } finally {
             releaseHandler.countDown()
         }
@@ -179,9 +184,9 @@ class WeshBluetoothHandoffTest {
         assertEquals("synthetic-generation", handledLinkID)
         assertEquals(true, handledAsClient)
         assertSame(device, handledDevice)
-        verify(tracker, never()).cleanupDeviceConnectionIfCurrent(any(), any())
-        verify(gatt, never()).disconnect()
-        verify(gatt, never()).close()
+        verify(tracker).cleanupDeviceConnectionIfCurrent(address, "synthetic-generation")
+        verify(gatt).disconnect()
+        verify(gatt).close()
     }
 
     @Test fun `timeout invalidation precedes outcome across repeated sends`() = runBlocking<Unit> {
