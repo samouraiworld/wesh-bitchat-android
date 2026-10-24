@@ -53,13 +53,15 @@ class BluetoothGattServerManager(
     private val bluetoothManager: BluetoothManager = 
         context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
     private val bluetoothAdapter: BluetoothAdapter? = bluetoothManager.adapter
-    private val bleAdvertiser: BluetoothLeAdvertiser? = bluetoothAdapter?.bluetoothLeAdvertiser
+    // Android returns no advertiser while Bluetooth is off: read it at each use, not at construction.
+    private val bleAdvertiser: BluetoothLeAdvertiser? get() = bluetoothAdapter?.bluetoothLeAdvertiser
     
     // GATT server for peripheral mode
     private var gattServer: BluetoothGattServer? = null
     private val serverLinkIDs = ConcurrentHashMap<String, String>()
     private var characteristic: BluetoothGattCharacteristic? = null
     private var advertiseCallback: AdvertiseCallback? = null
+    private val advertiseLock = Any()
     private var advertiseRetryCount = 0
     
     // State management
@@ -258,7 +260,7 @@ class BluetoothGattServerManager(
                             if (!isActive || serverGeneration != generation) return
                             val linkID = UUID.randomUUID().toString()
                             serverLinkIDs[address] = linkID
-                            connectionTracker.addDeviceConnection(address,
+                            connectionTracker.addServerConnection(address,
                                 BluetoothConnectionTracker.DeviceConnection(device = device,
                                     rssi = connectionTracker.getBestRSSI(address) ?: Int.MIN_VALUE,
                                     isClient = false, linkID = linkID))
@@ -414,7 +416,8 @@ class BluetoothGattServerManager(
             Log.d(TAG, "Not starting advertising: GATT Server disabled via debug settings")
             return
         }
-        if (bleAdvertiser == null) {
+        val advertiser = bleAdvertiser
+        if (advertiser == null) {
             Log.w(TAG, "Not starting advertising: BLE advertiser not available on this device")
             return
         }
@@ -443,7 +446,8 @@ class BluetoothGattServerManager(
             }
 
             override fun onStartFailure(errorCode: Int) {
-                if (!isCurrentGeneration(generation)) return
+                // A set a later start replaced must not restart the one now running.
+                if (!isCurrentGeneration(generation) || advertiseCallback !== this) return
                 Log.e(TAG, "Advertising failed: $errorCode")
                 // Previously this only logged, so if advertising failed this device became
                 // undiscoverable until a manual BLE toggle. Retry transient failures with backoff.
@@ -464,17 +468,22 @@ class BluetoothGattServerManager(
             }
         }
         
-        synchronized(serverStateLock) {
-            if (!isActive || serverGeneration != generation) return
-            advertiseCallback = callback
-        }
-        try {
-            bleAdvertiser.startAdvertising(settings, data, scanResponse, callback)
-            if (!isCurrentGeneration(generation)) stopAdvertising(callback)
-        } catch (se: SecurityException) {
-            Log.e(TAG, "SecurityException starting advertising (missing permission?): ${se.message}")
-        } catch (e: Exception) {
-            Log.e(TAG, "Exception starting advertising: ${e.message}")
+        // Two overlapping restarts would each start a set and keep only the last: one at a time,
+        // stop whichever set is still recorded, so one advertiser, and one address, is ever running.
+        synchronized(advertiseLock) {
+            val previous = synchronized(serverStateLock) {
+                if (!isActive || serverGeneration != generation) return
+                advertiseCallback.also { advertiseCallback = callback }
+            }
+            if (previous != null) stopAdvertising(previous)
+            try {
+                advertiser.startAdvertising(settings, data, scanResponse, callback)
+                if (!isCurrentGeneration(generation)) stopAdvertising(callback)
+            } catch (se: SecurityException) {
+                Log.e(TAG, "SecurityException starting advertising (missing permission?): ${se.message}")
+            } catch (e: Exception) {
+                Log.e(TAG, "Exception starting advertising: ${e.message}")
+            }
         }
     }
     
@@ -483,9 +492,9 @@ class BluetoothGattServerManager(
      */
     @Suppress("DEPRECATION")
     private fun stopAdvertising(callback: AdvertiseCallback? = advertiseCallback) {
-        if (bleAdvertiser == null) return
+        val advertiser = bleAdvertiser ?: return
         try {
-            callback?.let { cb -> bleAdvertiser.stopAdvertising(cb) }
+            callback?.let { cb -> advertiser.stopAdvertising(cb) }
         } catch (_: SecurityException) {
             Log.w(TAG, "Bluetooth permission revoked while stopping advertising")
         } catch (e: Exception) {

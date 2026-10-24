@@ -46,7 +46,8 @@ class BluetoothGattClientManager(
     private val bluetoothManager: BluetoothManager = 
         context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
     private val bluetoothAdapter: BluetoothAdapter? = bluetoothManager.adapter
-    private val bleScanner: BluetoothLeScanner? = bluetoothAdapter?.bluetoothLeScanner
+    // Android returns no scanner while Bluetooth is off: read it at each use, not at construction.
+    private val bleScanner: BluetoothLeScanner? get() = bluetoothAdapter?.bluetoothLeScanner
 
     private fun isBleTransportEnabled(): Boolean {
         return try {
@@ -185,7 +186,8 @@ class BluetoothGattClientManager(
     private fun startScanning() {
         // Respect debug setting
         val enabled = isClientRoleEnabled()
-        if (!permissionManager.hasBluetoothPermissions() || bleScanner == null || !isActive || !scanningDesired || !enabled) return
+        val scanner = bleScanner
+        if (!permissionManager.hasBluetoothPermissions() || scanner == null || !isActive || !scanningDesired || !enabled) return
         
         // Rate limit scan starts to prevent "scanning too frequently" errors
         val currentTime = currentTimeMillis()
@@ -268,7 +270,7 @@ class BluetoothGattClientManager(
             lastScanStartTime = currentTime
             isCurrentlyScanning = true
             
-            bleScanner.startScan(scanFilters, powerManager.getScanSettings(), scanCallback)
+            scanner.startScan(scanFilters, powerManager.getScanSettings(), scanCallback)
             Log.i(TAG, "BLE scan started")
         } catch (e: Exception) {
             Log.e(TAG, "Exception starting scan: ${e.message}")
@@ -526,10 +528,14 @@ class BluetoothGattClientManager(
         private var releasedGatt: BluetoothGatt? = null
 
         private fun isCurrent(candidate: BluetoothGatt): Boolean {
-            val trackedLink = connectionTracker.getCurrentLinkID(address)
+            val tracked = connectionTracker.getDeviceConnection(address)
             if (clientAttempts[address] !== this || phase == ClientPhase.CLOSED ||
                 (gatt != null && gatt !== candidate)) return false
-            if (trackedLink != null && trackedLink != linkID) {
+            // Android reports this attempt's own link to the local GATT server too, a few
+            // milliseconds before it connects: until the attempt registers its link at MTU,
+            // only another client link supersedes it.
+            val registered = phase >= ClientPhase.DISCOVERY
+            if (tracked != null && tracked.linkID != linkID && (tracked.isClient || registered)) {
                 finish()
                 return false
             }
@@ -574,14 +580,15 @@ class BluetoothGattClientManager(
             }
         }
 
-        fun finish() {
+        /** [backOff] keeps the failed attempt on record, so the tracker spaces the next retry. */
+        fun finish(backOff: Boolean = false) {
             if (phase == ClientPhase.CLOSED) return
             phase = ClientPhase.CLOSED
             timeout?.cancel()
             timeout = null
             if (clientAttempts[address] === this) {
                 clientAttempts.remove(address)
-                connectionTracker.removePendingConnection(address)
+                if (!backOff) connectionTracker.removePendingConnection(address)
                 val disconnectedPeerID = connectionTracker.addressPeerMap[address]
                 if (connectionTracker.cleanupDeviceConnectionIfCurrent(address, linkID)) {
                     delegate?.onDeviceDisconnected(device, linkID, disconnectedPeerID)
@@ -594,7 +601,9 @@ class BluetoothGattClientManager(
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) = synchronized(clientLock) {
             if (!isCurrent(gatt)) return@synchronized
             if (status != BluetoothGatt.GATT_SUCCESS || newState == BluetoothProfile.STATE_DISCONNECTED) {
-                finish()
+                // A connection that fails before it is ready (status 133 and the like) keeps its
+                // attempt on record, so the next scan result cannot retry at once.
+                finish(backOff = phase != ClientPhase.READY)
             } else if (newState == BluetoothProfile.STATE_CONNECTED && phase == ClientPhase.CONNECTING) {
                 phase = ClientPhase.MTU
                 connectionScope.launch {

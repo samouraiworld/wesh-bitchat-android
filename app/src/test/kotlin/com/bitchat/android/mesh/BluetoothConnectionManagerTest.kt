@@ -73,4 +73,15 @@ class BluetoothConnectionManagerTest {
             fragments.shutdown()
         }
     }
+
+    @Test
+    fun `Bluetooth off releases a running manager and on restarts only what it released`() {
+        assertEquals(AdapterReaction.RELEASE, adapterReaction(BluetoothAdapter.STATE_TURNING_OFF, active = true, resumePending = false))
+        assertEquals(AdapterReaction.RELEASE, adapterReaction(BluetoothAdapter.STATE_OFF, active = true, resumePending = false))
+        assertEquals(AdapterReaction.NONE, adapterReaction(BluetoothAdapter.STATE_OFF, active = false, resumePending = true))
+        assertEquals(AdapterReaction.RESTART, adapterReaction(BluetoothAdapter.STATE_ON, active = false, resumePending = true))
+        assertEquals(AdapterReaction.NONE, adapterReaction(BluetoothAdapter.STATE_ON, active = false, resumePending = false))
+        assertEquals(AdapterReaction.NONE, adapterReaction(BluetoothAdapter.STATE_ON, active = true, resumePending = true))
+        assertEquals(AdapterReaction.NONE, adapterReaction(BluetoothAdapter.STATE_TURNING_ON, active = true, resumePending = false))
+    }
 }

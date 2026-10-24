@@ -43,7 +43,9 @@ class BluetoothConnectionTracker(
         val connectedAt: Long = System.currentTimeMillis(),
         val peerID: String? = null,
         /** Unique to this GATT connection, even when Android reuses the device address. */
-        val linkID: String = UUID.randomUUID().toString()
+        val linkID: String = UUID.randomUUID().toString(),
+        /** The local server's link to the same address, when this client link holds the slot. */
+        val serverLinkID: String? = null
     )
     
     override fun start() {
@@ -83,7 +85,11 @@ class BluetoothConnectionTracker(
     fun addDeviceConnection(deviceAddress: String, deviceConn: DeviceConnection) {
         Log.d(TAG, "Tracker: Adding device connection for $deviceAddress (isClient: ${deviceConn.isClient}")
         synchronized(connectionStateLock) {
-            connectedDevices[deviceAddress] = deviceConn
+            val current = connectedDevices[deviceAddress]
+            // A client link taking the slot keeps the server link it replaces: packets still arrive there.
+            connectedDevices[deviceAddress] = if (deviceConn.isClient && current != null && !current.isClient) {
+                deviceConn.copy(serverLinkID = current.linkID)
+            } else deviceConn
             // A route observation belongs to this GATT generation, not its reusable address.
             addressPeerMap.remove(deviceAddress)
         }
@@ -92,6 +98,22 @@ class BluetoothConnectionTracker(
         firstAnnounceSeen[deviceAddress] = false
     }
     
+    /**
+     * Track a link accepted by the local GATT server, unless this device's own client link to the
+     * same address already holds the slot: Android reports that link to the server too, and it
+     * then rides along as [DeviceConnection.serverLinkID]. Returns true when [deviceConn] is tracked.
+     */
+    fun addServerConnection(deviceAddress: String, deviceConn: DeviceConnection): Boolean =
+        synchronized(connectionStateLock) {
+            val current = connectedDevices[deviceAddress]
+            if (current?.isClient == true) {
+                connectedDevices[deviceAddress] = current.copy(serverLinkID = deviceConn.linkID)
+                return@synchronized false
+            }
+            addDeviceConnection(deviceAddress, deviceConn)
+            true
+        }
+
     /**
      * Update a device connection
      */
@@ -131,7 +153,8 @@ class BluetoothConnectionTracker(
      */
     fun observePeerIfCurrent(deviceAddress: String, linkID: String, peerID: String): Boolean =
         synchronized(connectionStateLock) {
-            if (connectedDevices[deviceAddress]?.linkID != linkID) return@synchronized false
+            val current = connectedDevices[deviceAddress] ?: return@synchronized false
+            if (current.linkID != linkID && current.serverLinkID != linkID) return@synchronized false
             addressPeerMap[deviceAddress] = peerID
             true
         }
@@ -291,7 +314,16 @@ class BluetoothConnectionTracker(
     ): Boolean = synchronized(connectionStateLock) {
         val current = connectedDevices[deviceAddress] ?: return@synchronized false
         if (current.linkID != expectedLinkID) {
+            if (current.serverLinkID == expectedLinkID) connectedDevices[deviceAddress] = current.copy(serverLinkID = null)
             return@synchronized false
+        }
+        val serverLinkID = current.serverLinkID
+        if (serverLinkID != null) {
+            // The client link ended but the server link to the same address is still up: it takes the slot.
+            connectedDevices[deviceAddress] = DeviceConnection(device = current.device, rssi = current.rssi,
+                isClient = false, peerID = current.peerID, linkID = serverLinkID)
+            Log.d(TAG, "Client link for $deviceAddress ended; its server link stays tracked")
+            return@synchronized true
         }
         if (connectedDevices.remove(deviceAddress, current)) {
             subscribedDevices.removeAll { it.address == deviceAddress }

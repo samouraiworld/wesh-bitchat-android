@@ -1,11 +1,16 @@
 package com.bitchat.android.mesh
 
 import android.bluetooth.*
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.util.Log
+import androidx.core.content.ContextCompat
 import com.bitchat.android.model.RoutedPacket
 import com.bitchat.android.protocol.BitchatPacket
 import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.combine
 
@@ -104,8 +109,16 @@ class BluetoothConnectionManager(
     )
     
     // Service state
-    private var isActive = false
-    
+    @Volatile private var isActive = false
+    /** Set once by [stopServices]: this instance never starts again, whatever Bluetooth does. */
+    @Volatile private var stopped = false
+
+    // Bluetooth turning off, or its system service dying, leaves every GATT object bound to the
+    // dead stack: release them, and start again once the adapter is back on. Events run in order.
+    @Volatile private var resumeWhenBluetoothOn = false
+    private val adapterStates = Channel<Int>(Channel.UNLIMITED)
+    private var adapterReceiver: BroadcastReceiver? = null
+
     // Delegate for callbacks
     var delegate: BluetoothConnectionManagerDelegate? = null
     
@@ -137,6 +150,11 @@ class BluetoothConnectionManager(
     }
 
     init {
+        connectionScope.launch {
+            for (state in adapterStates) {
+                try { onAdapterState(state) } catch (e: Exception) { Log.w(TAG, "Bluetooth state $state not applied: ${e.message}") }
+            }
+        }
         connectionScope.launch {
             var previousMode: PowerManager.PowerMode? = null
             powerManager.profile.collect { profile ->
@@ -257,6 +275,7 @@ class BluetoothConnectionManager(
         
         try {
             isActive = true
+            registerAdapterReceiver()
 
         // set the adapter's name to our 8-character peerID for iOS privacy, TODO: Make this configurable
         // try {
@@ -318,32 +337,71 @@ class BluetoothConnectionManager(
     fun disableTransport() {
         Log.i(TAG, "Disabling BLE transport")
         isActive = false
-        connectionScope.launch {
-            clientManager.stop()
-            serverManager.stop()
-            connectionTracker.stop()
-        }
+        resumeWhenBluetoothOn = false
+        connectionScope.launch { releaseComponents() }
+    }
+
+    private fun releaseComponents() {
+        clientManager.stop()
+        serverManager.stop()
+        connectionTracker.stop()
     }
     
     /**
      * Stop all Bluetooth services with proper cleanup
      */
     fun stopServices() {
-        isActive = false
+        synchronized(this) {
+            stopped = true
+            isActive = false
+            resumeWhenBluetoothOn = false
+            unregisterAdapterReceiver()
+        }
 
         connectionScope.launch {
-            // Stop component managers
-            clientManager.stop()
-            serverManager.stop()
-            
-            // Stop connection tracker
-            connectionTracker.stop()
-            
+            releaseComponents()
+
             // Cancel the coroutine scope
             connectionScope.cancel()
             
             Log.i(TAG, "All Bluetooth services stopped")
         }
+    }
+
+    @Synchronized private fun onAdapterState(state: Int) {
+        if (stopped) return
+        when (adapterReaction(state, isActive, resumeWhenBluetoothOn)) {
+            AdapterReaction.RELEASE -> {
+                Log.i(TAG, "Bluetooth turning off: releasing GATT server and client")
+                resumeWhenBluetoothOn = true
+                isActive = false
+                releaseComponents()
+            }
+            AdapterReaction.RESTART -> {
+                Log.i(TAG, "Bluetooth back on: restarting GATT server and client")
+                resumeWhenBluetoothOn = false
+                startServices()
+            }
+            AdapterReaction.NONE -> Unit
+        }
+    }
+
+    @Synchronized private fun registerAdapterReceiver() {
+        if (stopped || adapterReceiver != null) return
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                adapterStates.trySend(intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR))
+            }
+        }
+        ContextCompat.registerReceiver(context.applicationContext, receiver,
+            IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED), ContextCompat.RECEIVER_NOT_EXPORTED)
+        adapterReceiver = receiver
+    }
+
+    @Synchronized private fun unregisterAdapterReceiver() {
+        val receiver = adapterReceiver ?: return
+        adapterReceiver = null
+        try { context.applicationContext.unregisterReceiver(receiver) } catch (_: IllegalArgumentException) { }
     }
 
     /**
@@ -528,4 +586,14 @@ interface BluetoothConnectionManagerDelegate {
     fun onRSSIUpdated(deviceAddress: String, rssi: Int)
     fun onGattClientWriteComplete(deviceAddress: String, linkID: String, status: Int) = Unit
     fun onGattServerNotificationComplete(deviceAddress: String, linkID: String?, status: Int) = Unit
+}
+
+internal enum class AdapterReaction { RELEASE, RESTART, NONE }
+
+/** What a Bluetooth adapter [state] asks of a manager that is [active], or waiting to resume. */
+internal fun adapterReaction(state: Int, active: Boolean, resumePending: Boolean): AdapterReaction = when (state) {
+    BluetoothAdapter.STATE_TURNING_OFF, BluetoothAdapter.STATE_OFF ->
+        if (active) AdapterReaction.RELEASE else AdapterReaction.NONE
+    BluetoothAdapter.STATE_ON -> if (resumePending && !active) AdapterReaction.RESTART else AdapterReaction.NONE
+    else -> AdapterReaction.NONE
 }
