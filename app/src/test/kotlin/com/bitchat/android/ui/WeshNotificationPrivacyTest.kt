@@ -11,6 +11,8 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.pm.ShortcutManagerCompat
 import com.bitchat.android.R
+import com.bitchat.android.identity.SecureIdentityStateManager
+import com.bitchat.android.services.WeshContactStore
 import com.bitchat.android.ui.pave.PaveStringResources
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -77,6 +79,25 @@ class WeshNotificationPrivacyTest {
         backgroundManager().showPrivateMessageNotification("aaaabbbbccccdddd", "\u202Eevil\u200Bname", secret)
         // An invisible character between letters makes the whole name unnamed, as in Pavé rows.
         assertEquals("Sans surnom", postedNotifications().single().extras.getCharSequence(Notification.EXTRA_TITLE).toString())
+    }
+
+    @Test
+    fun `opted-in sender name is a QR contact's local alias when one is set`() {
+        val prefs = app.getSharedPreferences("synthetic-contacts-alias-notification", Context.MODE_PRIVATE)
+        prefs.edit().clear().commit()
+        val store = WeshContactStore(SecureIdentityStateManager(prefs, true),
+            app.getSharedPreferences("synthetic-blocks-alias-notification", Context.MODE_PRIVATE))
+        assertTrue(store.record(ByteArray(32) { 5 }, nickname))
+        val id = store.contacts.value.single().conversationID
+        assertTrue(store.setNote(id, "Lab fox", ""))
+        WeshContactStore.installForTesting(store)
+        try {
+            WeshPreferences(app).notificationShowsSender = true
+            backgroundManager().showPrivateMessageNotification(id, "Broadcast name", secret)
+            assertEquals("Lab fox", postedNotifications().single().extras.getCharSequence(Notification.EXTRA_TITLE).toString())
+        } finally {
+            WeshContactStore.resetForTesting()
+        }
     }
 
     @Test

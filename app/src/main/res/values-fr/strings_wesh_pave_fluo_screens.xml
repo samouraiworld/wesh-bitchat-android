@@ -40,7 +40,13 @@
     <string name="wesh_pave_fluo_contact_actions_title">Ce contact</string>
     <string name="wesh_pave_fluo_contact_block">Bloquer ce contact</string>
     <string name="wesh_pave_fluo_contact_remove">Retirer le contact</string>
-    <string name="wesh_pave_fluo_contact_remove_body">Un nouvel échange de QR sera nécessaire pour écrire en privé. L’historique et le brouillon restent.</string>
+    <string name="wesh_pave_fluo_contact_remove_body">Un nouvel échange de QR sera nécessaire pour écrire en privé. L’historique et le brouillon restent. Le nom et le mémo de ce téléphone sont effacés.</string>
+    <string name="wesh_pave_fluo_contact_qr_name">Nom du QR code : %1$s</string>
+    <string name="wesh_pave_fluo_contact_alias">Nom sur ce téléphone</string>
+    <string name="wesh_pave_fluo_contact_memo">Mémo</string>
+    <string name="wesh_pave_fluo_contact_note_body">Le nom et le mémo restent sur ce téléphone. Ils ne sont jamais envoyés.</string>
+    <string name="wesh_pave_fluo_contact_note_saved">Enregistré sur ce téléphone.</string>
+    <string name="wesh_pave_fluo_contact_note_failed">Non enregistré. Votre texte est conservé.</string>
     <string name="wesh_pave_fluo_block_body">Le blocage reste sur ce téléphone. Il ne supprime pas les copies chez les autres.</string>
     <string name="wesh_pave_fluo_block_request_body">Le blocage reste sur ce téléphone. Ses prochaines demandes seront ignorées.</string>
     <string name="wesh_pave_fluo_block_unknown">Identité inconnue : blocage indisponible.</string>
@@ -104,4 +110,6 @@
     <string name="wesh_pave_fluo_meeting_loading">Chargement de votre note…</string>
     <string name="wesh_pave_fluo_meeting_unavailable">Votre note est indisponible. Réessayez avant de la modifier.</string>
     <string name="wesh_pave_fluo_meeting_retry">Réessayer</string>
+    <string name="wesh_pave_fluo_contact_alias_refused">Ce nom ne peut pas s’afficher sans risque. Utilisez un seul alphabet, et aucun mot de l’appli.</string>
+    <string name="wesh_pave_private_contact_settings">Réglages du contact</string>
 </resources>

@@ -27,6 +27,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Campaign
 import androidx.compose.material.icons.rounded.Lock
+import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material.icons.rounded.Verified
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -162,27 +163,31 @@ fun PrivateChatScreen(
             Modifier
                 .fillMaxWidth()
                 .statusBarsPadding()
-                .padding(start = WeshSpace.s1, end = WeshSpace.s4, top = WeshSpace.s2, bottom = WeshSpace.s3),
+                .padding(start = WeshSpace.s1, end = WeshSpace.s1, top = WeshSpace.s2, bottom = WeshSpace.s3),
             verticalArrangement = Arrangement.spacedBy(WeshSpace.s1),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 BackButton(onBack, tint = c.ink)
-                Text(
-                    name,
-                    style = WeshType.title,
-                    color = c.ink,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier
-                        .weight(1f, fill = false)
-                        .heightIn(min = WeshTouch.min)
-                        .paveClickable(RoundedCornerShape(WeshRadius.control), stringResource(R.string.wesh_pave_private_open_contact), onClick = onOpenContact)
-                        .semantics { heading() }
-                        // The touch target is taller than the name: center the text in it, in line with Back.
-                        .wrapContentHeight(Alignment.CenterVertically),
-                )
-                Spacer(Modifier.width(WeshSpace.s2))
-                if (verified) VerifiedChip() else UnverifiedChip()
+                // Name and chip take the free width, so the contact button sits at the right edge.
+                Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        name,
+                        style = WeshType.title,
+                        color = c.ink,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier
+                            .weight(1f, fill = false)
+                            .heightIn(min = WeshTouch.min)
+                            .paveClickable(RoundedCornerShape(WeshRadius.control), stringResource(R.string.wesh_pave_private_open_contact), onClick = onOpenContact)
+                            .semantics { heading() }
+                            // The touch target is taller than the name: center the text in it, in line with Back.
+                            .wrapContentHeight(Alignment.CenterVertically),
+                    )
+                    Spacer(Modifier.width(WeshSpace.s2))
+                    if (verified) VerifiedChip() else UnverifiedChip()
+                }
+                PaveIconButton(Icons.Rounded.Tune, stringResource(R.string.wesh_pave_private_contact_settings), onOpenContact)
             }
             Row(
                 verticalAlignment = Alignment.CenterVertically,

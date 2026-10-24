@@ -43,6 +43,7 @@ import com.bitchat.android.nostr.NostrRelayManager
 import com.bitchat.android.service.MeshServicePreferences
 import com.bitchat.android.services.ContactIdentityResolver
 import com.bitchat.android.services.VerificationService
+import com.bitchat.android.services.WeshContactStore
 import com.bitchat.android.services.WeshMessageRequests
 import com.bitchat.android.ui.MeetingNoteState
 import com.bitchat.android.ui.ChatViewModel
@@ -235,7 +236,8 @@ private fun PaveNavHost(viewModel: ChatViewModel, appearance: WeshAppearance, on
     var reportOffer by remember { mutableStateOf<PaveReportTarget?>(null) }
     var confirmAction by remember { mutableStateOf<Pair<String, String>?>(null) }
     var requestToBlock by remember { mutableStateOf<WeshMessageRequests.Request?>(null) }
-    var contactActionsOpen by remember { mutableStateOf(false) }
+    // The chat whose contact card is open; saved, so typed text survives a rotation.
+    var contactCardFor by rememberSaveable { mutableStateOf<String?>(null) }
     // Bumped by local actions (block, unblock) whose effect is not observable as a flow.
     var revision by remember { mutableIntStateOf(0) }
 
@@ -272,6 +274,7 @@ private fun PaveNavHost(viewModel: ChatViewModel, appearance: WeshAppearance, on
 
     fun go(next: PaveRoute) {
         feedback = null
+        contactCardFor = null
         if (route == PaveRoute.Private && next != PaveRoute.Private) viewModel.endPrivateChat()
         if (route == PaveRoute.Exchange) {
             viewModel.weshContactSheet.value = false
@@ -322,6 +325,7 @@ private fun PaveNavHost(viewModel: ChatViewModel, appearance: WeshAppearance, on
     BackHandler(route != PaveRoute.Home || connexionOpen) {
         if (connexionOpen) connexionOpen = false else go(route.parent ?: PaveRoute.Home)
     }
+    BackHandler(contactCardFor != null) { contactCardFor = null }
 
     // Erase states come first: nothing else may show while data is being wiped or must be recovered.
     if (panicInProgress) {
@@ -407,7 +411,7 @@ private fun PaveNavHost(viewModel: ChatViewModel, appearance: WeshAppearance, on
                             val summary = conversations.firstOrNull { it.conversationID == contact.conversationID }
                             PaveContactItem(
                                 id = contact.conversationID,
-                                nickname = contact.nickname,
+                                nickname = contact.displayName,
                                 fingerprint = PaveFingerprint.short(contact.key),
                                 verified = true,
                                 lastMessage = if (viewModel.weshIsBlocked(contact.conversationID)) stringResource(R.string.wesh_pave_fluo_contact_blocked)
@@ -457,8 +461,13 @@ private fun PaveNavHost(viewModel: ChatViewModel, appearance: WeshAppearance, on
             PaveRoute.Private -> {
                 val shown = privatePeer ?: opening
                 val contact = contacts.firstOrNull { it.conversationID == shown }
-                val title = contact?.nickname ?: conversations.firstOrNull { it.conversationID == shown }?.displayName.orEmpty()
-                PrivateChatScreen(
+                val title = contact?.displayName ?: conversations.firstOrNull { it.conversationID == shown }?.displayName.orEmpty()
+                if (privatePeer != null && contactCardFor == privatePeer) ContactSettingsRoute(
+                    viewModel, privatePeer, contact,
+                    onBlock = { contactCardFor = null; confirmAction = "block" to privatePeer },
+                    onRemove = { contactCardFor = null; confirmAction = "remove" to privatePeer },
+                    onBack = { contactCardFor = null },
+                ) else PrivateChatScreen(
                     nickname = title,
                     fingerprint = contact?.let { PaveFingerprint.short(it.key) },
                     verified = contact != null,
@@ -483,7 +492,7 @@ private fun PaveNavHost(viewModel: ChatViewModel, appearance: WeshAppearance, on
                     onSend = ::send,
                     onRetry = { id -> privatePeer?.let { viewModel.retryWeshPrivate(it, id) } },
                     onBack = { go(PaveRoute.Home) },
-                    onOpenContact = { contactActionsOpen = true },
+                    onOpenContact = { contactCardFor = privatePeer },
                     loading = privatePeer == null && opening != null,
                 )
             }
@@ -494,7 +503,7 @@ private fun PaveNavHost(viewModel: ChatViewModel, appearance: WeshAppearance, on
                         nickname = r.nickname,
                         fingerprint = paveShortFingerprintFromHex(r.fingerprint),
                         pendingMessages = null,
-                        verifiedNamesakeFingerprint = contacts.firstOrNull { weshNamesakes(it.nickname, r.nickname) }?.let { PaveFingerprint.short(it.key) },
+                        verifiedNamesakeFingerprint = contacts.firstOrNull { weshNamesakes(it.nickname, r.nickname) || it.alias?.let { a -> weshNamesakes(a, r.nickname) } == true }?.let { PaveFingerprint.short(it.key) },
                     )
                 },
                 onBack = { go(PaveRoute.Home) },
@@ -609,21 +618,6 @@ private fun PaveNavHost(viewModel: ChatViewModel, appearance: WeshAppearance, on
                 reportOffer = offer
             },
             onDismiss = { messageAction = null },
-        )
-    }
-
-    if (contactActionsOpen && privatePeer != null) {
-        AlertDialog(
-            onDismissRequest = { contactActionsOpen = false },
-            title = { Text(stringResource(R.string.wesh_pave_fluo_contact_actions_title)) },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(WeshSpace.s2)) {
-                    DangerButton(stringResource(R.string.wesh_pave_fluo_contact_block), { contactActionsOpen = false; confirmAction = "block" to privatePeer }, Modifier.fillMaxWidth())
-                    SecondaryButton(stringResource(R.string.wesh_pave_fluo_contact_remove), { contactActionsOpen = false; confirmAction = "remove" to privatePeer }, Modifier.fillMaxWidth())
-                }
-            },
-            confirmButton = {},
-            dismissButton = { TextButton(onClick = { contactActionsOpen = false }) { Text(stringResource(R.string.wesh_pave_cancel)) } },
         )
     }
 
@@ -827,6 +821,50 @@ private fun ProfileRoute(viewModel: ChatViewModel, nickname: String, onBack: () 
         },
         feedback = feedback,
         feedbackIsError = error,
+        onBack = onBack,
+    )
+}
+
+/** Ce contact: edits the local name and memo, which [ChatViewModel.setWeshContactNote] bounds and stores. */
+@Composable
+private fun ContactSettingsRoute(
+    viewModel: ChatViewModel,
+    conversationID: String,
+    contact: WeshContactStore.Contact?,
+    onBlock: () -> Unit,
+    onRemove: () -> Unit,
+    onBack: () -> Unit,
+) {
+    var alias by rememberSaveable(conversationID) { mutableStateOf(contact?.alias.orEmpty()) }
+    var memo by rememberSaveable(conversationID) { mutableStateOf(contact?.memo.orEmpty()) }
+    var feedback by remember { mutableStateOf<String?>(null) }
+    var error by remember { mutableStateOf(false) }
+    val saved = stringResource(R.string.wesh_pave_fluo_contact_note_saved)
+    val failed = stringResource(R.string.wesh_pave_fluo_contact_note_failed)
+    val refused = stringResource(R.string.wesh_pave_fluo_contact_alias_refused)
+    // Every surface shows the name through the remote rule: refuse one it would only show as unnamed.
+    val cleanAlias = WeshContactStore.cleanAlias(alias)
+    val unshowable = cleanAlias != null && remoteDisplayName(cleanAlias) in
+        setOf(stringResource(R.string.wesh_pave_unnamed), stringResource(R.string.wesh_pave_unnamed_reserved))
+    ContactSettingsScreen(
+        qrName = contact?.nickname,
+        alias = alias,
+        onAliasChange = { alias = NicknameGenerator.clean(it); feedback = null },
+        memo = memo,
+        onMemoChange = { memo = WeshContactStore.codePointPrefix(it, WeshContactStore.MAX_MEMO_LENGTH); feedback = null },
+        onSave = {
+            val stored = !unshowable && viewModel.setWeshContactNote(conversationID, alias, memo)
+            if (stored) {
+                alias = cleanAlias.orEmpty()
+                memo = WeshContactStore.cleanMemo(memo).orEmpty()
+            }
+            feedback = if (stored) saved else if (unshowable) refused else failed
+            error = !stored
+        },
+        feedback = feedback,
+        feedbackIsError = error,
+        onBlock = onBlock,
+        onRemove = onRemove,
         onBack = onBack,
     )
 }

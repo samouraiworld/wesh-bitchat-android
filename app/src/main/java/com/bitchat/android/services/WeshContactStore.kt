@@ -3,6 +3,7 @@ package com.bitchat.android.services
 import android.content.Context
 import android.content.SharedPreferences
 import com.bitchat.android.identity.SecureIdentityStateManager
+import com.bitchat.android.util.AppConstants
 import com.bitchat.android.util.dataFromHexString
 import com.bitchat.android.util.hexEncodedString
 import com.bitchat.android.util.safeDisplayName
@@ -21,14 +22,19 @@ class WeshContactStore internal constructor(
      * [npubProven]: the QR also carried a valid proof by the npub key (NPUB-PROOF rules).
      * [npubWarning]: an npub conflict or downgrade the user should review. It survives every
      * path except a clean QR re-scan of this contact, and blocks Internet delivery meanwhile.
+     * [alias] and [memo] are typed on this phone and never leave it; null when not set.
      */
     data class Contact(
         val noiseHex: String,
         val nickname: String,
         val npub: String? = null,
         val npubProven: Boolean = false,
-        val npubWarning: Boolean = false
+        val npubWarning: Boolean = false,
+        val alias: String? = null,
+        val memo: String? = null
     ) {
+        /** What this phone shows for the contact: the local alias, else the name from the QR code. */
+        val displayName: String get() = alias ?: nickname
         /** False: the UI asks to rescan the QR before Internet delivery is possible. */
         val internetReachable: Boolean get() = npub != null && !npubWarning
         /** The npub Internet delivery may use: none for Bluetooth-only or flagged contacts. */
@@ -60,7 +66,8 @@ class WeshContactStore internal constructor(
             val proven = npub != null && row.optBoolean("npubProven", false)
             val warning = row.optBoolean("npubWarning", false)
             if (!hex.matches(Regex("[0-9a-f]{64}")) || name.toByteArray().size > 255) null
-            else Contact(hex, displayName(name), npub, proven, warning)
+            else Contact(hex, displayName(name), npub, proven, warning, alias = if (row.isNull("alias")) null else cleanAlias(row.optString("alias")),
+                memo = if (row.isNull("memo")) null else cleanMemo(row.optString("memo")))
         }.distinctBy { it.noiseHex }.takeLast(256).also { _loadFailed.value = false }
     } catch (_: Exception) {
         _loadFailed.value = true
@@ -113,8 +120,19 @@ class WeshContactStore internal constructor(
             npub = null
             warning = true
         }
-        val self = Contact(hex, displayName(nickname), npub, npub != null && enrollment?.proven == true, warning)
+        val self = Contact(hex, displayName(nickname), npub, npub != null && enrollment?.proven == true, warning, existing?.alias, existing?.memo)
         persist((others + self).takeLast(256))
+        return true
+    }
+
+    /**
+     * Sets the local [alias] and [memo] of an enrolled contact; blank clears either. Returns false,
+     * writing nothing, when the contacts could not be read or the contact is not enrolled.
+     */
+    @Synchronized fun setNote(conversationID: String, alias: String, memo: String): Boolean {
+        if (_loadFailed.value) return false
+        val contact = contact(conversationID) ?: return false
+        persist(_contacts.value.map { if (it.noiseHex == contact.noiseHex) it.copy(alias = cleanAlias(alias), memo = cleanMemo(memo)) else it })
         return true
     }
     /** Bumped by every removal or wipe, so a verification checked before it never enrolls after it. */
@@ -160,11 +178,25 @@ class WeshContactStore internal constructor(
         val array = JSONArray()
         contacts.forEach { array.put(JSONObject().put("noise", it.noiseHex).put("nickname", it.nickname).putOpt("npub", it.npub)
             .putOpt("npubProven", if (it.npubProven) true else null)
-            .putOpt("npubWarning", if (it.npubWarning) true else null)) }
+            .putOpt("npubWarning", if (it.npubWarning) true else null)
+            .putOpt("alias", it.alias).putOpt("memo", it.memo)) }
         identity.storeSecureValue(storageKey, array.toString())
         publish(contacts)
     }
     companion object {
+        const val MAX_MEMO_LENGTH = 500
+
+        /** Same sanitizer as a QR name, bounded like a nickname; nothing visible left is no alias. */
+        internal fun cleanAlias(raw: String): String? =
+            codePointPrefix(safeDisplayName(raw, ""), AppConstants.UI.MAX_NICKNAME_LENGTH).trim().ifEmpty { null }
+
+        /** Line breaks kept, other control characters stripped, bounded; blank is no memo. */
+        internal fun cleanMemo(raw: String): String? =
+            codePointPrefix(raw.filter { it == '\n' || !it.isISOControl() }, MAX_MEMO_LENGTH).trim().ifBlank { null }
+
+        internal fun codePointPrefix(text: String, max: Int): String =
+            if (text.codePointCount(0, text.length) <= max) text else text.substring(0, text.offsetByCodePoints(0, max))
+
         @Volatile private var instance: WeshContactStore? = null
         fun get(context: Context): WeshContactStore = instance ?: synchronized(this) {
             instance ?: WeshContactStore(SecureIdentityStateManager(context.applicationContext),

@@ -189,6 +189,39 @@ fun MeetingNoteScreen(
     }
 }
 
+/**
+ * Ce contact: the local name and memo of a QR contact ([qrName] null hides them for any other
+ * conversation), with the name from the QR code always shown, then Block and Remove.
+ */
+@Composable
+fun ContactSettingsScreen(
+    qrName: String?,
+    alias: String,
+    onAliasChange: (String) -> Unit,
+    memo: String,
+    onMemoChange: (String) -> Unit,
+    onSave: () -> Unit,
+    feedback: String?,
+    feedbackIsError: Boolean,
+    onBlock: () -> Unit,
+    onRemove: () -> Unit,
+    onBack: () -> Unit,
+) {
+    val c = WeshPave.colors
+    SettingsDetailFrame(stringResource(R.string.wesh_pave_fluo_contact_actions_title), onBack) {
+        if (qrName != null) {
+            Text(stringResource(R.string.wesh_pave_fluo_contact_qr_name, remoteDisplayName(qrName)), style = WeshType.body, color = c.ink)
+            PaveTextArea(alias, onAliasChange, stringResource(R.string.wesh_pave_fluo_contact_alias), singleLine = true)
+            PaveTextArea(memo, onMemoChange, stringResource(R.string.wesh_pave_fluo_contact_memo), singleLine = false)
+            Text(stringResource(R.string.wesh_pave_fluo_contact_note_body), style = WeshType.caption, color = c.inkMuted)
+            Feedback(feedback, feedbackIsError)
+            PrimaryButton(stringResource(R.string.wesh_pave_fluo_save), onSave)
+        }
+        DangerButton(stringResource(R.string.wesh_pave_fluo_contact_block), onBlock, Modifier.fillMaxWidth())
+        SecondaryButton(stringResource(R.string.wesh_pave_fluo_contact_remove), onRemove, Modifier.fillMaxWidth())
+    }
+}
+
 /** Someone blocked on this phone: a contact by fingerprint, or a sender hidden for this session. */
 @Immutable
 data class PaveBlockedItem(val id: String, val nickname: String, val fingerprint: String?, val sessionOnly: Boolean)
