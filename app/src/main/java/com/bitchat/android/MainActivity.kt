@@ -560,7 +560,20 @@ class MainActivity : OrientationAwareActivity() {
         bluetoothOffCheck = lifecycleScope.launch {
             delay(BLUETOOTH_OFF_GRACE_MS)
             var waited = 0L
-            while (bluetoothTurningOn() && waited < BLUETOOTH_TURNING_ON_MAX_MS) { delay(500); waited += 500 }
+            while (bluetoothTurningOn() && waited < BLUETOOTH_TURNING_ON_MAX_MS) {
+                delay(500)
+                waited += 500
+                if (!shouldApplyBluetoothGraceResult(
+                        mainViewModel.onboardingState.value,
+                        permissionManager.areRequiredPermissionsGranted(),
+                    )) return@launch
+            }
+            // A later resume/callback may already have moved onboarding to a more accurate gate
+            // while this grace timer was sleeping. Never let the stale timer overwrite it.
+            if (!shouldApplyBluetoothGraceResult(
+                    mainViewModel.onboardingState.value,
+                    permissionManager.areRequiredPermissionsGranted(),
+                )) return@launch
             val status = bluetoothStatusManager.checkBluetoothStatus()
             mainViewModel.updateBluetoothStatus(status)
             if (status != BluetoothStatus.ENABLED) {
@@ -927,6 +940,12 @@ internal fun welcomeStart(welcomed: Boolean, requiredGranted: Boolean, notificat
     notificationsPending -> com.bitchat.android.ui.pave.OnboardingStart.Notifications
     else -> com.bitchat.android.ui.pave.OnboardingStart.Welcome
 }
+
+/** A delayed Bluetooth result only owns navigation while its original COMPLETE gate still does. */
+internal fun shouldApplyBluetoothGraceResult(
+    onboardingState: OnboardingState,
+    requiredPermissionsGranted: Boolean,
+): Boolean = onboardingState == OnboardingState.COMPLETE && requiredPermissionsGranted
 
 /** How long Bluetooth may stay off before the app asks to turn it on. */
 private const val BLUETOOTH_OFF_GRACE_MS = 5_000L

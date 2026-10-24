@@ -3,6 +3,7 @@ package com.bitchat.android.onboarding
 import android.app.Application
 import com.bitchat.android.MainActivity
 import com.bitchat.android.MainViewModel
+import com.bitchat.android.shouldApplyBluetoothGraceResult
 import org.junit.Assert.assertEquals
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -96,6 +97,25 @@ class OnboardingActivityCallbackTest {
 
         assertEquals(OnboardingState.COMPLETE, fixture.model.onboardingState.value)
         verify(fixture.locationManager, never()).checkLocationStatus()
+    }
+
+    @Test
+    fun `stale Bluetooth grace cannot overwrite a newer permission gate`() {
+        val fixture = fixture(requiredGranted = true)
+
+        fixture.bluetoothDisabled()
+        fixture.model.updateOnboardingState(OnboardingState.PERMISSION_EXPLANATION)
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper())
+            .idleFor(java.time.Duration.ofSeconds(6))
+
+        assertEquals(OnboardingState.PERMISSION_EXPLANATION, fixture.model.onboardingState.value)
+    }
+
+    @Test
+    fun `Bluetooth grace result requires both complete state and current permissions`() {
+        assertEquals(true, shouldApplyBluetoothGraceResult(OnboardingState.COMPLETE, true))
+        assertEquals(false, shouldApplyBluetoothGraceResult(OnboardingState.COMPLETE, false))
+        assertEquals(false, shouldApplyBluetoothGraceResult(OnboardingState.PERMISSION_EXPLANATION, true))
     }
 
     @Test
