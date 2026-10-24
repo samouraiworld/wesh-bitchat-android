@@ -566,6 +566,19 @@ class MainActivity : OrientationAwareActivity() {
             if (status != BluetoothStatus.ENABLED) {
                 mainViewModel.updateOnboardingState(OnboardingState.BLUETOOTH_CHECK)
                 mainViewModel.updateBluetoothLoading(false)
+                return@launch
+            }
+
+            // onResume returned as soon as Bluetooth entered the grace period. When the radio
+            // recovers on Android 11 and below, resume the remaining gate instead of silently
+            // skipping the system Location switch that BLE scanning still requires there.
+            if (requiresSystemLocationForMesh()) {
+                val location = locationStatusManager.checkLocationStatus()
+                mainViewModel.updateLocationStatus(location)
+                if (location != LocationStatus.ENABLED) {
+                    mainViewModel.updateOnboardingState(OnboardingState.LOCATION_CHECK)
+                    mainViewModel.updateLocationLoading(false)
+                }
             }
         }
     }

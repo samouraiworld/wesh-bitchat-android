@@ -69,6 +69,36 @@ class OnboardingActivityCallbackTest {
     }
 
     @Test
+    @Config(sdk = [30])
+    fun `Bluetooth grace rechecks legacy Location after the radio returns`() {
+        val fixture = fixture(
+            location = LocationStatus.DISABLED,
+            bluetoothStatuses = listOf(BluetoothStatus.DISABLED, BluetoothStatus.ENABLED),
+        )
+
+        fixture.bluetoothDisabled()
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper())
+            .idleFor(java.time.Duration.ofSeconds(6))
+
+        assertEquals(OnboardingState.LOCATION_CHECK, fixture.model.onboardingState.value)
+        verify(fixture.locationManager).checkLocationStatus()
+    }
+
+    @Test
+    fun `Bluetooth grace does not consult the obsolete Location gate on modern Android`() {
+        val fixture = fixture(
+            bluetoothStatuses = listOf(BluetoothStatus.DISABLED, BluetoothStatus.ENABLED),
+        )
+
+        fixture.bluetoothDisabled()
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper())
+            .idleFor(java.time.Duration.ofSeconds(6))
+
+        assertEquals(OnboardingState.COMPLETE, fixture.model.onboardingState.value)
+        verify(fixture.locationManager, never()).checkLocationStatus()
+    }
+
+    @Test
     fun `unsupported Bluetooth retains its blocked fallback instead of a generic error`() {
         val fixture = fixture(bluetooth = BluetoothStatus.NOT_SUPPORTED)
 
@@ -101,6 +131,7 @@ class OnboardingActivityCallbackTest {
     private fun fixture(
         location: LocationStatus = LocationStatus.DISABLED,
         bluetooth: BluetoothStatus = BluetoothStatus.DISABLED,
+        bluetoothStatuses: List<BluetoothStatus> = listOf(bluetooth),
         requiredGranted: Boolean = true
     ): Fixture {
         // Attach only: onCreate would construct the unrelated mesh/UI graph. Existing callback
@@ -110,7 +141,10 @@ class OnboardingActivityCallbackTest {
         val locationManager = mock<LocationStatusManager>()
         whenever(locationManager.checkLocationStatus()).thenReturn(location)
         val bluetoothManager = mock<BluetoothStatusManager>()
-        whenever(bluetoothManager.checkBluetoothStatus()).thenReturn(bluetooth)
+        whenever(bluetoothManager.checkBluetoothStatus()).thenReturn(
+            bluetoothStatuses.first(),
+            *bluetoothStatuses.drop(1).toTypedArray(),
+        )
         val permissionManager = mock<PermissionManager>()
         whenever(permissionManager.areRequiredPermissionsGranted()).thenReturn(requiredGranted)
         whenever(permissionManager.isFirstTimeLaunch()).thenReturn(false)

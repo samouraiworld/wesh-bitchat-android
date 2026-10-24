@@ -1,5 +1,6 @@
 package com.bitchat.android.ui.pave
 
+import android.util.Log
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -51,6 +52,7 @@ import com.bitchat.android.ui.WeshPreferences
 import com.bitchat.android.ui.weshNamesakes
 import com.bitchat.android.util.dataFromHexString
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -73,6 +75,31 @@ internal enum class PaveRoute(val parent: PaveRoute?) {
     Home(null), Public(Home), Private(Home), Requests(Home), Exchange(Home), Settings(Home),
     Profile(Settings), Discretion(Settings), Meeting(Settings), Blocked(Settings), Appearance(Settings),
     About(Settings), Licenses(About), Erase(Settings),
+}
+
+internal enum class PrivateOpenFollowUp { None, ReturnHome, EndSession, ReturnHomeAndEndSession }
+
+internal fun canStartPrivateOpen(opening: String?): Boolean = opening == null
+
+internal fun shouldAutoRoutePrivate(selected: String?, route: PaveRoute, opening: String?): Boolean =
+    selected != null && route != PaveRoute.Exchange && opening == null
+
+/**
+ * Resolves the asynchronous private-open race after history loading finishes. Failure always
+ * closes any partially opened session; leaving the loading screen closes a late successful open.
+ */
+internal fun privateOpenFollowUp(
+    canonical: String,
+    selected: String?,
+    route: PaveRoute,
+    failed: Boolean,
+): PrivateOpenFollowUp = when {
+    failed && route == PaveRoute.Private -> PrivateOpenFollowUp.ReturnHomeAndEndSession
+    failed -> PrivateOpenFollowUp.EndSession
+    selected == canonical && route != PaveRoute.Private -> PrivateOpenFollowUp.EndSession
+    selected == null && route == PaveRoute.Private -> PrivateOpenFollowUp.ReturnHome
+    selected != null && selected != canonical -> PrivateOpenFollowUp.ReturnHomeAndEndSession
+    else -> PrivateOpenFollowUp.None
 }
 
 internal fun meetingNoteEditCallback(
@@ -237,7 +264,9 @@ private fun PaveNavHost(viewModel: ChatViewModel, appearance: WeshAppearance, on
     var opening by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(requestedContactSheet) { if (requestedContactSheet) route = PaveRoute.Exchange }
     LaunchedEffect(selectedPrivate) {
-        if (selectedPrivate != null && route != PaveRoute.Exchange) route = PaveRoute.Private
+        // An explicit open owns navigation until its completion policy runs. In particular, a
+        // late success after Back must be closed, not allowed to reopen the screen for one frame.
+        if (shouldAutoRoutePrivate(selectedPrivate, route, opening)) route = PaveRoute.Private
         if (selectedPrivate == null && route == PaveRoute.Private && opening == null) route = PaveRoute.Home
     }
 
@@ -253,21 +282,40 @@ private fun PaveNavHost(viewModel: ChatViewModel, appearance: WeshAppearance, on
     // Opens the chat screen at once while startPrivateChat loads the history, one open at a time.
     // A chat the person left before it loaded is ended; one that could not open goes back Home.
     fun openPrivate(conversationID: String) {
-        if (opening != null) return
+        if (!canStartPrivateOpen(opening)) return
         val canonical = com.bitchat.android.services.ContactDirectory.canonicalConversationId(conversationID)
         val seenToken = com.bitchat.android.services.SeenMessageStore.captureReceiptToken()
         opening = canonical
         go(PaveRoute.Private)
         scope.launch {
             try {
-                viewModel.startPrivateChat(conversationID, seenToken)
+                var failed = false
+                try {
+                    viewModel.startPrivateChat(conversationID, seenToken)
+                } catch (cancelled: CancellationException) {
+                    // A disposed screen must not leave a session selected after its UI disappeared.
+                    viewModel.endPrivateChat()
+                    if (route == PaveRoute.Private) route = PaveRoute.Home
+                    throw cancelled
+                } catch (error: Exception) {
+                    failed = true
+                    // Do not put storage paths, contact data or provider wording in device logs.
+                    Log.w("WeshPaveApp", "Private conversation could not be opened (${error.javaClass.simpleName})")
+                }
+                val selected = viewModel.selectedPrivateChatPeer.value
+                when (privateOpenFollowUp(canonical, selected, route, failed)) {
+                    PrivateOpenFollowUp.None -> Unit
+                    PrivateOpenFollowUp.ReturnHome -> route = PaveRoute.Home
+                    PrivateOpenFollowUp.EndSession -> viewModel.endPrivateChat()
+                    PrivateOpenFollowUp.ReturnHomeAndEndSession -> {
+                        viewModel.endPrivateChat()
+                        route = PaveRoute.Home
+                    }
+                }
             } finally {
+                // Keep this non-null until the follow-up above has closed a late session or moved
+                // Home. LaunchedEffect must not turn a late selection back into navigation.
                 opening = null
-            }
-            val selected = viewModel.selectedPrivateChatPeer.value
-            when {
-                selected == canonical && route != PaveRoute.Private -> viewModel.endPrivateChat()
-                selected == null && route == PaveRoute.Private -> route = PaveRoute.Home
             }
         }
     }

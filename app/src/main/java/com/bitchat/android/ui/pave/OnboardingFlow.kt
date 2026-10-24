@@ -73,7 +73,10 @@ import com.bitchat.android.ui.WeshLinks
 /** Where the welcome starts: first launch, back for a missing Bluetooth permission, or notifications only. */
 enum class OnboardingStart { Welcome, Bluetooth, Notifications }
 
-private enum class OnboardingStep { Welcome, Bluetooth, Notifications }
+internal fun onboardingCanGoBack(step: OnboardingStep, start: OnboardingStart): Boolean =
+    step == OnboardingStep.Bluetooth && start == OnboardingStart.Welcome
+
+internal enum class OnboardingStep { Welcome, Bluetooth, Notifications }
 
 /** How the person answered the Bluetooth prompt. A simple refusal keeps "Continuer"; only a permanent one sends to Settings. */
 internal enum class BluetoothRefusal { None, Once, Permanent }
@@ -185,7 +188,7 @@ fun OnboardingFlow(
     }
 
     // From Bluetooth, back returns to the nickname, when the flow started there.
-    val canGoBack = step == OnboardingStep.Bluetooth && start == OnboardingStart.Welcome
+    val canGoBack = onboardingCanGoBack(step, start)
     BackHandler(canGoBack) { step = OnboardingStep.Welcome }
 
     Box(modifier.fillMaxSize().background(WeshPave.colors.bg).systemBarsPadding().imePadding()) {
