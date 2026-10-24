@@ -15,11 +15,13 @@ import java.util.UUID
 class BluetoothConnectionTracker(
     private val connectionScope: CoroutineScope,
     private val powerManager: PowerManager,
-    private val localPeerID: String = ""
+    private val localPeerID: String = "",
+    private val currentTimeMillis: () -> Long = System::currentTimeMillis
 ) : MeshConnectionTracker(connectionScope, TAG) {
     
     companion object {
         private const val TAG = "BluetoothConnectionTracker"
+        internal const val TIE_BREAK_RECONNECT_COOLDOWN_MS = 10_000L
     }
     
     // A phone may temporarily have both a client and server GATT link to the same peer. Links are
@@ -35,6 +37,13 @@ class BluetoothConnectionTracker(
     // RSSI tracking from scan results (for devices we discover but may connect as servers)
     private val scanRSSI = ConcurrentHashMap<String, Int>()
     private val connectionStateLock = Any()
+    private data class ClientDialSuppression(
+        val peerID: String,
+        var winnerLinkIDs: Set<String>,
+        var winnerLostAtMs: Long? = null
+    )
+    /** Only addresses of authenticated outgoing links rejected by cooperative election. */
+    private val clientDialSuppressions = mutableMapOf<String, ClientDialSuppression>()
     
     /**
      * Consolidated device connection information
@@ -181,7 +190,12 @@ class BluetoothConnectionTracker(
      * other observations. The link generation check prevents a late packet from an old GATT
      * connection from being applied to a replacement connection that reused the same address.
      */
-    fun observePeerIfCurrent(deviceAddress: String, linkID: String, peerID: String): LinkObservation =
+    fun observePeerIfCurrent(
+        deviceAddress: String,
+        linkID: String,
+        peerID: String,
+        supportsDeterministicElection: Boolean = false
+    ): LinkObservation =
         synchronized(connectionStateLock) {
             if (addressLinkIDs[deviceAddress]?.contains(linkID) != true) {
                 return@synchronized LinkObservation(false)
@@ -214,7 +228,9 @@ class BluetoothConnectionTracker(
             // Peer IDs choose the direction, which is symmetric across the two phones. Multiple
             // generations of the chosen direction remain independently tracked: their local
             // timestamps and link IDs are not shared and therefore cannot safely break a tie.
-            val losers = if (hasBothRoles && localPeerID.isNotBlank()) {
+            val losers = if (
+                supportsDeterministicElection && hasBothRoles && localPeerID.isNotBlank()
+            ) {
                 candidates.filter { it.isClient != desiredClient }
             } else {
                 emptyList()
@@ -224,6 +240,28 @@ class BluetoothConnectionTracker(
             }
             linksToClose.forEach { removeLinkLocked(it.deviceAddress, it.connection.linkID) }
             val keepers = candidates.filter { candidate -> losers.none { it.linkID == candidate.linkID } }
+            if (supportsDeterministicElection) {
+                val authenticatedWinners = keepers
+                    .filter { it.isClient == desiredClient }
+                    .map { it.linkID }
+                    .toSet()
+                if (authenticatedWinners.isNotEmpty()) {
+                    clientDialSuppressions.values
+                        .filter { it.peerID == normalizedPeer }
+                        .forEach { suppression ->
+                            suppression.winnerLinkIDs = authenticatedWinners
+                            suppression.winnerLostAtMs = null
+                        }
+                    linksToClose.asSequence()
+                        .filter { it.connection.isClient }
+                        .forEach { loser ->
+                            clientDialSuppressions[loser.deviceAddress] = ClientDialSuppression(
+                                peerID = normalizedPeer,
+                                winnerLinkIDs = authenticatedWinners
+                            )
+                        }
+                }
+            }
             keepers.forEach { keeper ->
                 val address = linkAddressByID[keeper.linkID] ?: return@forEach
                 selectedLinkByAddress[address] = keeper.linkID
@@ -231,6 +269,32 @@ class BluetoothConnectionTracker(
             }
             LinkObservation(losers.none { it.linkID == linkID }, linksToClose)
         }
+
+    /**
+     * Prevent the scanner from immediately recreating an outgoing link rejected by a signed,
+     * cooperative role election. A live exact winner suppresses indefinitely; after it vanishes,
+     * a short bounded cooldown lets legacy/platform disconnect callbacks settle before a genuine
+     * reconnect is allowed.
+     */
+    fun shouldSuppressClientDial(deviceAddress: String): Boolean = synchronized(connectionStateLock) {
+        val suppression = clientDialSuppressions[deviceAddress] ?: return@synchronized false
+        val winnerIsLive = suppression.winnerLinkIDs.any { winnerLinkID ->
+            linksByID[winnerLinkID]?.peerID?.lowercase() == suppression.peerID
+        }
+        if (winnerIsLive) {
+            suppression.winnerLostAtMs = null
+            return@synchronized true
+        }
+
+        val now = currentTimeMillis()
+        val lostAt = suppression.winnerLostAtMs ?: now.also {
+            suppression.winnerLostAtMs = it
+        }
+        if (now - lostAt < TIE_BREAK_RECONNECT_COOLDOWN_MS) return@synchronized true
+
+        clientDialSuppressions.remove(deviceAddress)
+        false
+    }
     
     /**
      * Get all connected devices
@@ -393,6 +457,7 @@ class BluetoothConnectionTracker(
             addressLinkIDs.remove(deviceAddress).orEmpty().forEach { linkID ->
                 linksByID.remove(linkID)
                 linkAddressByID.remove(linkID)
+                noteWinnerLinkRemovedLocked(linkID)
             }
             selectedLinkByAddress.remove(deviceAddress)
             subscribedDevices.removeAll { it.address == deviceAddress }
@@ -415,6 +480,7 @@ class BluetoothConnectionTracker(
         if (addressLinkIDs[deviceAddress]?.remove(linkID) != true) return false
         linksByID.remove(linkID)
         linkAddressByID.remove(linkID)
+        noteWinnerLinkRemovedLocked(linkID)
         val remaining = addressLinkIDs[deviceAddress]
         if (remaining.isNullOrEmpty()) {
             addressLinkIDs.remove(deviceAddress)
@@ -429,6 +495,19 @@ class BluetoothConnectionTracker(
         }
         refreshAddressPeerLocked(deviceAddress)
         return true
+    }
+
+    private fun noteWinnerLinkRemovedLocked(linkID: String) {
+        clientDialSuppressions.values
+            .filter { suppression ->
+                linkID in suppression.winnerLinkIDs && suppression.winnerLostAtMs == null
+            }
+            .forEach { suppression ->
+                val anotherWinnerIsLive = suppression.winnerLinkIDs.any { winnerLinkID ->
+                    linksByID[winnerLinkID]?.peerID?.lowercase() == suppression.peerID
+                }
+                if (!anotherWinnerIsLive) suppression.winnerLostAtMs = currentTimeMillis()
+            }
     }
 
     private fun refreshAddressPeerLocked(deviceAddress: String) {
@@ -479,6 +558,7 @@ class BluetoothConnectionTracker(
         pendingConnections.clear()
         scanRSSI.clear()
         firstAnnounceSeen.clear()
+        clientDialSuppressions.clear()
     }
 
     /**

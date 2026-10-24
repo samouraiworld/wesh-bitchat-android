@@ -5,6 +5,7 @@ import com.bitchat.android.favorites.FavoriteControlMessage
 import com.bitchat.android.model.BitchatMessage
 import com.bitchat.android.model.BitchatMessageType
 import com.bitchat.android.model.AuthenticatedPeerState
+import com.bitchat.android.model.PeerCapabilities
 import com.bitchat.android.model.RoutedPacket
 import com.bitchat.android.protocol.BitchatPacket
 import com.bitchat.android.protocol.MessageType
@@ -14,7 +15,11 @@ import kotlinx.coroutines.*
 import java.util.*
 
 sealed class AnnounceHandlingResult {
-    data class Accepted(val isFirst: Boolean) : AnnounceHandlingResult()
+    data class Accepted(
+        val isFirst: Boolean,
+        /** Capabilities decoded from the same signature-verified ANNOUNCE. */
+        val capabilities: PeerCapabilities? = null
+    ) : AnnounceHandlingResult()
     object Rejected : AnnounceHandlingResult()
 }
 
@@ -364,7 +369,7 @@ class MessageHandler(
                 .updateFromAnnouncement(peerID, nickname, neighborsOrNull, packet.timestamp)
         } catch (_: Exception) { }
 
-        return AnnounceHandlingResult.Accepted(isFirstAnnounce)
+        return AnnounceHandlingResult.Accepted(isFirstAnnounce, announcement.capabilities)
     }
     
     /**

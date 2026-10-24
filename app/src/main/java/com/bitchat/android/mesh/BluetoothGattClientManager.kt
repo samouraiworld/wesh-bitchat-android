@@ -457,6 +457,12 @@ class BluetoothGattClientManager(
             } catch (_: Exception) { }
             return
         }
+
+        // A signed, cooperative tie-break may have rejected this exact outgoing address while an
+        // authenticated winner remains live. Do not let scan/pending cleanup recreate the loser.
+        if (connectionTracker.shouldSuppressClientDial(deviceAddress)) {
+            return
+        }
         
         // Check if already connected OR already attempting to connect
         if (connectionTracker.isDeviceConnected(deviceAddress)) {
@@ -489,7 +495,8 @@ class BluetoothGattClientManager(
         synchronized(clientLock) {
             if (!isClientRoleEnabled() || !permissionManager.hasBluetoothPermissions()) return@synchronized false
             val address = device.address
-            if (clientAttempts.containsKey(address) || connectionTracker.isDeviceConnected(address) ||
+            if (connectionTracker.shouldSuppressClientDial(address) ||
+                clientAttempts.containsKey(address) || connectionTracker.isDeviceConnected(address) ||
                 !connectionTracker.addPendingConnection(address)) return@synchronized false
             val attempt = ClientAttempt(device, address, rssi)
             clientAttempts[address] = attempt

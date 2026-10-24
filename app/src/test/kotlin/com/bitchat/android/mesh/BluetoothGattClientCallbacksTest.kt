@@ -43,7 +43,7 @@ class BluetoothGattClientCallbacksTest {
     private val manager = mock<BluetoothManager> { on { adapter }.thenReturn(this@BluetoothGattClientCallbacksTest.adapter) }
     private val context = mock<Context> { on { getSystemService(Context.BLUETOOTH_SERVICE) }.thenReturn(manager) }
     private val permissions = mock<BluetoothPermissionManager> { on { hasBluetoothPermissions() }.thenReturn(true) }
-    private val tracker = BluetoothConnectionTracker(scope, mock())
+    private val tracker = BluetoothConnectionTracker(scope, mock(), LOCAL_PEER_ID) { scanTime }
     private val delegate = mock<BluetoothConnectionManagerDelegate>()
     private val device = mock<BluetoothDevice> { on { address }.thenReturn(this@BluetoothGattClientCallbacksTest.address) }
     private val gatt = mock<BluetoothGatt>()
@@ -510,6 +510,52 @@ class BluetoothGattClientCallbacksTest {
         val linkID = tracker.getAllDeviceConnections().single { it.isClient }.linkID
         assertNull(tracker.getPeerForLink(linkID))
         assertFalse(tracker.addressPeerMap.containsKey(address))
+    }
+
+    @Test fun `repeated scan scheduling cannot recreate authenticated cooperative tie break loser`() {
+        val winnerAddress = "AA:BB:CC:DD:EE:02"
+        val winnerDevice = mock<BluetoothDevice> { on { getAddress() }.thenReturn(winnerAddress) }
+        tracker.addDeviceConnection(address,
+            BluetoothConnectionTracker.DeviceConnection(
+                device, isClient = true, linkID = "rejected-client"
+            ))
+        tracker.addServerConnection(winnerAddress,
+            BluetoothConnectionTracker.DeviceConnection(
+                winnerDevice, isClient = false, linkID = "authenticated-server"
+            ))
+        tracker.observePeerIfCurrent(
+            address,
+            "rejected-client",
+            REMOTE_PEER_ID,
+            supportsDeterministicElection = true
+        )
+        val election = tracker.observePeerIfCurrent(
+            winnerAddress,
+            "authenticated-server",
+            REMOTE_PEER_ID,
+            supportsDeterministicElection = true
+        )
+        assertEquals(listOf("rejected-client"), election.linksToClose.map { it.connection.linkID })
+        clearInvocations(device)
+
+        repeat(30) { scanDebugResult(null, -30) }
+
+        verify(device, never()).connectGatt(eq(context), eq(false), any(), eq(BluetoothDevice.TRANSPORT_LE))
+        assertTrue(tracker.hasLink(winnerAddress, "authenticated-server"))
+
+        assertTrue(tracker.cleanupDeviceConnectionIfCurrent(winnerAddress, "authenticated-server"))
+        scanTime += BluetoothConnectionTracker.TIE_BREAK_RECONNECT_COOLDOWN_MS - 1
+        scanDebugResult(null, -30)
+        verify(device, never()).connectGatt(eq(context), eq(false), any(), eq(BluetoothDevice.TRANSPORT_LE))
+
+        scanTime += 1
+        scanDebugResult(null, -30)
+        verify(device).connectGatt(eq(context), eq(false), any(), eq(BluetoothDevice.TRANSPORT_LE))
+    }
+
+    private companion object {
+        const val LOCAL_PEER_ID = "ffeeddccbbaa9988"
+        const val REMOTE_PEER_ID = "0011223344556677"
     }
 
 }
