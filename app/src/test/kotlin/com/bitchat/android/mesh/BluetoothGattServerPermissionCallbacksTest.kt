@@ -2,6 +2,7 @@ package com.bitchat.android.mesh
 
 import android.bluetooth.*
 import android.bluetooth.le.AdvertiseSettings
+import android.bluetooth.le.AdvertiseCallback
 import android.bluetooth.le.BluetoothLeAdvertiser
 import android.content.Context
 import com.bitchat.android.protocol.BitchatPacket
@@ -95,6 +96,19 @@ class BluetoothGattServerPermissionCallbacksTest {
         verify(advertiser).startAdvertising(any(), any(), any(), any())
     }
 
+    @Test fun `overlapping advertising restarts leave one advertiser running`() {
+        start()
+        publish()
+        manager.restartAdvertising()
+        manager.restartAdvertising()
+        scope.advanceTimeBy(200)
+        scope.runCurrent()
+        val started = argumentCaptor<AdvertiseCallback>()
+        verify(advertiser, times(3)).startAdvertising(any(), any(), any(), started.capture())
+        val stopped = argumentCaptor<AdvertiseCallback>()
+        verify(advertiser, atLeast(0)).stopAdvertising(stopped.capture())
+        assertEquals(1, (started.allValues - stopped.allValues.toSet()).size)
+    }
     @Test fun `null open leaves server unavailable and permits a new attempt`() {
         openResult = null
         start()

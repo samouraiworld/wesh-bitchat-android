@@ -3,6 +3,7 @@ package com.bitchat.android.mesh
 import android.util.Log
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.util.concurrent.ConcurrentHashMap
@@ -42,7 +43,8 @@ abstract class MeshConnectionTracker(
     // Tracks in-progress or failed attempts
     protected val pendingConnections = ConcurrentHashMap<String, ConnectionAttempt>()
 
-    private var isActive = false
+    @Volatile private var isActive = false
+    @Volatile private var cleanupJob: Job? = null
 
     /**
      * Start the tracker and its cleanup loop
@@ -57,6 +59,8 @@ abstract class MeshConnectionTracker(
      */
     open fun stop() {
         isActive = false
+        cleanupJob?.cancel()
+        cleanupJob = null
         pendingConnections.clear()
     }
 
@@ -119,7 +123,9 @@ abstract class MeshConnectionTracker(
     abstract fun getConnectionCount(): Int
 
     private fun startPeriodicCleanup() {
-        scope.launch {
+        // A restart (Bluetooth off and on) replaces the loop rather than adding one.
+        cleanupJob?.cancel()
+        cleanupJob = scope.launch {
             while (isActive) {
                 try {
                     delay(CLEANUP_INTERVAL)

@@ -210,10 +210,16 @@ class BluetoothGattClientCallbacksTest {
         callback.onDescriptorWrite(gatt, descriptor, BluetoothGatt.GATT_SUCCESS)
         assertRejected()
     }
-    @Test fun `connection error while connecting terminates attempt`() {
+    @Test fun `connection error while connecting terminates attempt and backs off`() {
         val callback = connect()
         callback.onConnectionStateChange(gatt, BluetoothGatt.GATT_FAILURE, BluetoothProfile.STATE_CONNECTING)
-        assertRejected()
+        assertNull(tracker.getDeviceConnection(address))
+        verify(delegate, never()).onDeviceConnected(any())
+        verify(gatt).disconnect()
+        verify(gatt).close()
+        // The failed attempt stays on record: the next scan result cannot retry at once.
+        assertFalse(tracker.isConnectionAttemptAllowed(address))
+        assertFalse(client.connectToAddress(address))
     }
     @Test fun `missing setup callbacks timeout and release pending attempt`() {
         connect()
@@ -294,6 +300,16 @@ class BluetoothGattClientCallbacksTest {
         verify(delegate, never()).onDeviceConnected(any())
         verify(delegate, never()).onDeviceDisconnected(any(), any(), anyOrNull())
         verify(gatt).close()
+    }
+    @Test fun `own link reported to the local server first does not stop the attempt`() {
+        val callback = connect()
+        tracker.addDeviceConnection(address,
+            BluetoothConnectionTracker.DeviceConnection(device, isClient = false, linkID = "synthetic-server-link"))
+        mtu(callback)
+        verify(gatt).requestMtu(517)
+        callback.onMtuChanged(gatt, 517, BluetoothGatt.GATT_SUCCESS)
+        assertTrue(tracker.getDeviceConnection(address)?.isClient == true)
+        verify(gatt, never()).close()
     }
     @Test fun `denied close does not retain attempt or prevent repeated stop`() {
         connect()

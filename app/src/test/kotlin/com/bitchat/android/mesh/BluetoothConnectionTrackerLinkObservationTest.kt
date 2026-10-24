@@ -52,6 +52,41 @@ class BluetoothConnectionTrackerLinkObservationTest {
     }
 
     @Test
+    fun `a peer heard over the server side of a link held by the client is observed`() {
+        val address = "AA:BB:CC:DD:EE:FF"
+        val device = mock<BluetoothDevice>()
+        whenever(device.address).thenReturn(address)
+
+        // Remote dialled first, then this device's own client registered over the same address.
+        assertTrue(tracker.addServerConnection(address,
+            BluetoothConnectionTracker.DeviceConnection(device = device, isClient = false, linkID = "server-1")))
+        tracker.addDeviceConnection(address,
+            BluetoothConnectionTracker.DeviceConnection(device = device, isClient = true, linkID = "client-1"))
+        assertTrue(tracker.observePeerIfCurrent(address, "server-1", "0011223344556677"))
+
+        // The other order: the client holds the slot when the server reports the link.
+        assertFalse(tracker.addServerConnection(address,
+            BluetoothConnectionTracker.DeviceConnection(device = device, isClient = false, linkID = "server-2")))
+        assertEquals("client-1", tracker.getCurrentLinkID(address))
+        assertTrue(tracker.observePeerIfCurrent(address, "server-2", "0011223344556677"))
+
+        // The client side closing hands the slot to the server link, still up on the same address.
+        val other = "AA:BB:CC:DD:EE:00"
+        tracker.addServerConnection(other,
+            BluetoothConnectionTracker.DeviceConnection(device = device, isClient = false, linkID = "server-3"))
+        tracker.addDeviceConnection(other,
+            BluetoothConnectionTracker.DeviceConnection(device = device, isClient = true, linkID = "client-3"))
+        assertTrue(tracker.cleanupDeviceConnectionIfCurrent(other, "client-3"))
+        assertEquals("server-3", tracker.getCurrentLinkID(other))
+        assertTrue(tracker.observePeerIfCurrent(other, "server-3", "0011223344556677"))
+
+        // The server side closing leaves the client link tracked.
+        assertFalse(tracker.cleanupDeviceConnectionIfCurrent(address, "server-2"))
+        assertFalse(tracker.observePeerIfCurrent(address, "server-2", "0011223344556677"))
+        assertEquals("client-1", tracker.getCurrentLinkID(address))
+    }
+
+    @Test
     fun `one peer can remain directly observed over multiple current links`() {
         val firstAddress = "AA:BB:CC:DD:EE:01"
         val secondAddress = "AA:BB:CC:DD:EE:02"
