@@ -1,5 +1,5 @@
 590b1afadfa3cdaf0d618e62f3e64e14deed40457dfaf18d1e8a1e9bdee18590  tools/arti-build/Cargo.lock
-50c30925ae28cdf0d93ccd9b4f1f0153c3f8fc9582c54a61dab1464a76238395  tools/arti-build/Cargo.toml
+ff9da9ab9e103466d85a8d0be0e0db759c9ed35ea1b5781008857c71f8772294  tools/arti-build/Cargo.toml
 e5c3d06591c4363e0ff628ded5230fc51ba43d4cf0a7729fc9b5966a977c036e  tools/arti-build/Dockerfile
 9956d031810346b73e4bc6c1d66cde6f23695228debdc9fce6ebbe78ea2beaaa  tools/arti-build/TOOLCHAIN.env
 6c84cc9a19e84216ddbd58b5efcf439de838d72b5ebff93ce37788bf571859cb  tools/arti-build/rust-toolchain.toml
@@ -7,4 +7,4 @@ c8b36665626997f80e9379184ef2ec813630dcba2b296353798c97f7886ecad4  tools/arti-bui
 79dc7545914954914d93b0b3fca9fda06b53f1a91b41e880476a2b83c36ceb8b  tools/arti-build/native_symbols.py
 f3ce1102202368833ea10e3803134dc06d1e4d5f8d57c8da1267f445b812415c  tools/arti-build/provenance.sh
 056fb70c20cb705413a6f1dcf8b8f84d4d99dcc2c39f8c7c29f81ab54ff3115e  tools/arti-build/rebuild-in-container.sh
-fb02277ba6c038dfd4a218fc561660b4003df0ea56668ef9918285b21aad57da  tools/arti-build/src/lib.rs
+57d9ba5c6f9a8046c35fcb5a78d4f6f3470f0dfd1e25e36c9dd01cd3a154dafc  tools/arti-build/src/lib.rs
