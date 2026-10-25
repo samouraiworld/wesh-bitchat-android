@@ -7,11 +7,21 @@ runtime data, production key or release build configuration is changed.
 The `FGS canonical 107 emulator evidence` workflow validates the scripts on PRs.
 Its expensive job runs only when a reviewer deliberately adds
 `fgs-emulator-reviewed` to this repository's PR after reviewing its exact head.
-Do not remove/re-add the label or rerun automatically: the authorized scope is one
-bounded attempt. The job has a 25-minute limit and the UI flow a 165-second
+Do not remove/re-add the label or rerun automatically. A further attempt requires
+review of the specific failed gate and its exact corrected head. The job has a
+25-minute limit and the UI flow a 165-second
 scenario budget. On success both real OS recordings finish their 180-second
 limit, preserving a short final post-roll; on failure they stop immediately.
 Any missing real state aborts; there is no fake-peer fallback.
+
+The first reviewed attempt, [40214942196](https://github.com/samouraiworld/wesh-bitchat-android/actions/runs/40214942196),
+failed during Java setup: `21.0.11+10` was not a matching Temurin setup selector.
+Canonical verification, signing, SDK/AVD setup, BLE and recording did not run;
+no evidence artifact was produced. This failure remains historical. The corrected
+tool-only selector `21.0.11+10.0.LTS` matches `android-build.yml`, demonstrated by
+successful existing run [40202327656](https://github.com/samouraiworld/wesh-bitchat-android/actions/runs/40202327656).
+It does not change or rebuild the canonical APK. A second attempt may start only
+after its exact correction is reviewed and the Lead deliberately labels it again.
 
 The fixed canonical artifact is `12601010558` from release run `40197176611`,
 source `5008c95ae99933c180ee2ac6f767dd0e9c203a21`, tag

@@ -42,7 +42,7 @@ jobs:
       - uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5
         with:
           distribution: temurin
-          java-version: '21.0.11+10'
+          java-version: '21.0.11+10.0.LTS'
       - name: Verify the canonical artifact and sign only for disposable emulators
         env:
           GH_TOKEN: ${{ github.token }}
