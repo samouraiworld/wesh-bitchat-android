@@ -105,6 +105,14 @@ class BluetoothGattClientCallbacksTest {
         verify(gatt).close()
     }
 
+    @Test fun `start reports unavailable scanner until the stack resource returns`() {
+        whenever(adapter.bluetoothLeScanner).thenReturn(null)
+        assertEquals(BluetoothRoleStartResult.RESOURCE_UNAVAILABLE, client.startResult())
+
+        whenever(adapter.bluetoothLeScanner).thenReturn(scanner)
+        assertEquals(BluetoothRoleStartResult.STARTED, client.startResult())
+    }
+
     @Test fun `denied permission rejects address connection before device lookup`() {
         whenever(permissions.hasBluetoothPermissions()).thenReturn(false)
         assertFalse(client.connectToAddress(address))

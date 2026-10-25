@@ -11,6 +11,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
 import org.junit.After
 import org.junit.Assert.*
@@ -19,6 +20,10 @@ import org.junit.runner.RunWith
 import org.mockito.kotlin.*
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.concurrent.thread
 
 /** All addresses, packets and devices are synthetic; no emulator or radio is accessed. */
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -54,8 +59,21 @@ class BluetoothGattServerPermissionCallbacksTest {
     }
     private val delegate = mock<BluetoothConnectionManagerDelegate>()
     private val tracker = BluetoothConnectionTracker(scope, power)
+    private val roleFailures = mutableListOf<Pair<String, BluetoothRoleFailureAction>>()
+    private val failureOwners = mutableListOf<Long>()
+    private val readyOwners = mutableListOf<Long>()
+    private var beforeAdvertiseStart: (() -> Unit)? = null
+    private var beforeLinkCancel: (() -> Unit)? = null
     private val manager = BluetoothGattServerManager(context, scope, tracker, permissions, power,
-        delegate)
+        delegate,
+        roleFailure = { owner, reason, action ->
+            failureOwners += owner
+            roleFailures += reason to action
+        },
+        roleReady = readyOwners::add,
+        beforePlatformAdvertiseStart = { beforeAdvertiseStart?.invoke() },
+        beforePlatformLinkCancel = { beforeLinkCancel?.invoke() }
+    )
     private val device = mock<BluetoothDevice> {
         on { address }.thenReturn("AA:BB:CC:DD:EE:01")
     }
@@ -89,11 +107,110 @@ class BluetoothGattServerPermissionCallbacksTest {
         senderID = byteArrayOf(0, 1, 2, 3, 4, 5, 6, 7), recipientID = null,
         timestamp = 1uL, payload = byteArrayOf(1), ttl = 7u).toBinaryData()!!
 
+    @Test fun `start reports unavailable advertiser until the stack resource returns`() {
+        whenever(adapter.bluetoothLeAdvertiser).thenReturn(null)
+        assertEquals(BluetoothRoleStartResult.RESOURCE_UNAVAILABLE, manager.startResult())
+        assertTrue(roleFailures.isEmpty())
+
+        whenever(adapter.bluetoothLeAdvertiser).thenReturn(advertiser)
+        assertEquals(BluetoothRoleStartResult.STARTED, manager.startResult())
+        scope.runCurrent()
+        assertSame(gatt, manager.getGattServer())
+    }
+
+    @Test fun `permission revoked after start but before setup stops transport for exact owner`() {
+        assertEquals(BluetoothRoleStartResult.STARTED, manager.startResult(ownerGeneration = 61))
+        whenever(permissions.hasBluetoothPermissions()).thenReturn(false)
+
+        scope.runCurrent()
+
+        assertEquals(
+            listOf("setup-permission" to BluetoothRoleFailureAction.STOP_TRANSPORT),
+            roleFailures
+        )
+        assertEquals(listOf(61L), failureOwners)
+        assertNull(manager.getGattServer())
+    }
+
+    @Test fun `unsupported peripheral mode is client-only rather than transient stack failure`() {
+        whenever(adapter.isMultipleAdvertisementSupported).thenReturn(false)
+        whenever(adapter.bluetoothLeAdvertiser).thenReturn(null)
+
+        assertEquals(BluetoothRoleStartResult.ROLE_UNSUPPORTED, manager.startResult())
+        scope.advanceTimeBy(60_000)
+        scope.runCurrent()
+
+        assertTrue(roleFailures.isEmpty())
+        verify(bluetoothManager, never()).openGattServer(any(), any())
+    }
+
     @Test fun `advertising waits for successful service callback`() {
         start()
         verify(advertiser, never()).startAdvertising(any(), any(), any(), any())
         publish()
         verify(advertiser).startAdvertising(any(), any(), any(), any())
+    }
+
+    @Test fun `server readiness and failure callbacks retain their manager lifecycle owner`() {
+        assertEquals(BluetoothRoleStartResult.STARTED, manager.startResult(ownerGeneration = 42))
+        scope.runCurrent()
+        publish()
+        val advertiseCallback = argumentCaptor<AdvertiseCallback>()
+        verify(advertiser).startAdvertising(any(), any(), any(), advertiseCallback.capture())
+        advertiseCallback.firstValue.onStartSuccess(AdvertiseSettings.Builder().build())
+        scope.runCurrent()
+        assertEquals(listOf(42L), readyOwners)
+
+        manager.stop()
+        assertEquals(BluetoothRoleStartResult.STARTED, manager.startResult(ownerGeneration = 43))
+        scope.runCurrent()
+        callback.onServiceAdded(BluetoothGatt.GATT_FAILURE, service)
+        scope.runCurrent()
+        assertEquals(listOf(43L), failureOwners)
+    }
+
+    @Test fun `synchronous advertise success notifies manager only after platform start returns`() {
+        var insidePlatformStart = false
+        doAnswer {
+            val callback = it.getArgument<AdvertiseCallback>(3)
+            insidePlatformStart = true
+            callback.onStartSuccess(AdvertiseSettings.Builder().build())
+            assertTrue(readyOwners.isEmpty())
+            insidePlatformStart = false
+            null
+        }.whenever(advertiser).startAdvertising(any(), any(), any(), any())
+
+        assertEquals(BluetoothRoleStartResult.STARTED, manager.startResult(ownerGeneration = 51))
+        scope.runCurrent()
+        publish()
+        assertFalse(insidePlatformStart)
+        scope.runCurrent()
+
+        assertEquals(listOf(51L), readyOwners)
+    }
+
+    @Test fun `synchronous permanent advertise failure notifies manager after lock release`() {
+        var insidePlatformStart = false
+        doAnswer {
+            val callback = it.getArgument<AdvertiseCallback>(3)
+            insidePlatformStart = true
+            callback.onStartFailure(AdvertiseCallback.ADVERTISE_FAILED_FEATURE_UNSUPPORTED)
+            assertTrue(roleFailures.isEmpty())
+            insidePlatformStart = false
+            null
+        }.whenever(advertiser).startAdvertising(any(), any(), any(), any())
+
+        assertEquals(BluetoothRoleStartResult.STARTED, manager.startResult(ownerGeneration = 52))
+        scope.runCurrent()
+        publish()
+        assertFalse(insidePlatformStart)
+        scope.runCurrent()
+
+        assertEquals(
+            listOf("advertise-unsupported" to BluetoothRoleFailureAction.DISABLE_ROLE),
+            roleFailures
+        )
+        assertEquals(listOf(52L), failureOwners)
     }
 
     @Test fun `overlapping advertising restarts leave one advertiser running`() {
@@ -104,10 +221,30 @@ class BluetoothGattServerPermissionCallbacksTest {
         scope.advanceTimeBy(200)
         scope.runCurrent()
         val started = argumentCaptor<AdvertiseCallback>()
-        verify(advertiser, times(3)).startAdvertising(any(), any(), any(), started.capture())
+        verify(advertiser, times(2)).startAdvertising(any(), any(), any(), started.capture())
         val stopped = argumentCaptor<AdvertiseCallback>()
         verify(advertiser, atLeast(0)).stopAdvertising(stopped.capture())
         assertEquals(1, (started.allValues - stopped.allValues.toSet()).size)
+    }
+
+    @Test fun `late permanent failure from replaced advertiser cannot stop current set`() {
+        start(); publish()
+        val callbacks = argumentCaptor<AdvertiseCallback>()
+        verify(advertiser).startAdvertising(any(), any(), any(), callbacks.capture())
+        val replaced = callbacks.firstValue
+
+        manager.restartAdvertising()
+        scope.advanceTimeBy(200)
+        scope.runCurrent()
+        verify(advertiser, times(2)).startAdvertising(any(), any(), any(), callbacks.capture())
+        val current = callbacks.allValues.last()
+
+        replaced.onStartFailure(AdvertiseCallback.ADVERTISE_FAILED_FEATURE_UNSUPPORTED)
+        scope.runCurrent()
+
+        assertTrue(roleFailures.isEmpty())
+        assertSame(gatt, manager.getGattServer())
+        verify(advertiser, never()).stopAdvertising(current)
     }
 
     @Test fun `advertising stop uses the advertiser instance that started it when adapter returns null`() {
@@ -136,11 +273,45 @@ class BluetoothGattServerPermissionCallbacksTest {
         verify(replacementAdvertiser, never()).stopAdvertising(any<AdvertiseCallback>())
     }
 
+    @Test fun `server stop waits for an in-flight platform advertise start then stops exact callback`() {
+        val platformStartEntered = CountDownLatch(1)
+        val allowPlatformStart = CountDownLatch(1)
+        val stopFinished = CountDownLatch(1)
+        val stopReturned = AtomicBoolean(false)
+        beforeAdvertiseStart = {
+            platformStartEntered.countDown()
+            assertTrue(allowPlatformStart.await(5, TimeUnit.SECONDS))
+        }
+        start()
+
+        val publishThread = thread(name = "publish-advertising") { publish() }
+        assertTrue(platformStartEntered.await(5, TimeUnit.SECONDS))
+        val stopThread = thread(name = "stop-advertising") {
+            manager.stop()
+            stopReturned.set(true)
+            stopFinished.countDown()
+        }
+        assertFalse(stopFinished.await(100, TimeUnit.MILLISECONDS))
+
+        allowPlatformStart.countDown()
+        publishThread.join(5_000)
+        stopThread.join(5_000)
+        assertFalse(publishThread.isAlive)
+        assertFalse(stopThread.isAlive)
+        assertTrue(stopReturned.get())
+
+        val callbacks = argumentCaptor<AdvertiseCallback>()
+        verify(advertiser).startAdvertising(any(), any(), any(), callbacks.capture())
+        verify(advertiser).stopAdvertising(callbacks.firstValue)
+        assertNull(manager.getGattServer())
+    }
+
     @Test fun `null open leaves server unavailable and permits a new attempt`() {
         openResult = null
         start()
         assertNull(manager.getGattServer())
         assertNull(manager.getCharacteristic())
+        assertEquals(listOf("open-gatt-server" to BluetoothRoleFailureAction.RETRY_STACK), roleFailures)
         openResult = gatt
         start()
         assertSame(gatt, manager.getGattServer())
@@ -150,6 +321,7 @@ class BluetoothGattServerPermissionCallbacksTest {
         openFails = true
         start()
         assertNull(manager.getGattServer())
+        assertEquals(listOf("open-gatt-server" to BluetoothRoleFailureAction.STOP_TRANSPORT), roleFailures)
         openFails = false
         start()
         assertSame(gatt, manager.getGattServer())
@@ -161,6 +333,7 @@ class BluetoothGattServerPermissionCallbacksTest {
         assertNull(manager.getGattServer())
         verify(gatt).close()
         verify(advertiser, never()).startAdvertising(any(), any(), any(), any())
+        assertEquals(listOf("add-service" to BluetoothRoleFailureAction.RETRY_STACK), roleFailures)
     }
 
     @Test fun `revoked service publication closes its server without advertising`() {
@@ -169,14 +342,196 @@ class BluetoothGattServerPermissionCallbacksTest {
         assertNull(manager.getGattServer())
         verify(gatt).close()
         verify(advertiser, never()).startAdvertising(any(), any(), any(), any())
+        assertEquals(listOf("add-service" to BluetoothRoleFailureAction.STOP_TRANSPORT), roleFailures)
     }
 
     @Test fun `unsuccessful service callback closes the generation`() {
         start()
         callback.onServiceAdded(BluetoothGatt.GATT_FAILURE, service)
+        scope.runCurrent()
         assertNull(manager.getGattServer())
         verify(gatt).close()
         verify(advertiser, never()).startAdvertising(any(), any(), any(), any())
+        assertEquals(
+            listOf("service-callback-${BluetoothGatt.GATT_FAILURE}" to BluetoothRoleFailureAction.RETRY_STACK),
+            roleFailures
+        )
+    }
+
+    @Test fun `missing service callback fails only its generation and late callback is inert`() {
+        start()
+
+        scope.advanceTimeBy(5_000)
+        scope.runCurrent()
+        callback.onServiceAdded(BluetoothGatt.GATT_SUCCESS, service)
+
+        assertEquals(listOf("service-callback-timeout" to BluetoothRoleFailureAction.RETRY_STACK), roleFailures)
+        assertNull(manager.getGattServer())
+        verify(gatt).close()
+        verify(advertiser, never()).startAdvertising(any(), any(), any(), any())
+    }
+
+    @Test fun `service success just before deadline wins the generation claim`() {
+        start()
+        scope.advanceTimeBy(4_999)
+
+        publish()
+        scope.advanceTimeBy(2)
+        scope.runCurrent()
+
+        assertTrue(roleFailures.isEmpty())
+        assertSame(gatt, manager.getGattServer())
+        verify(advertiser).startAdvertising(any(), any(), any(), any())
+    }
+
+    @Test fun `missing advertise callback emits one stack recovery and late success is inert`() {
+        start(); publish()
+        val callbacks = argumentCaptor<AdvertiseCallback>()
+        verify(advertiser).startAdvertising(any(), any(), any(), callbacks.capture())
+        val stale = callbacks.firstValue
+
+        scope.advanceTimeBy(5_000)
+        scope.runCurrent()
+        stale.onStartSuccess(AdvertiseSettings.Builder().build())
+        scope.advanceUntilIdle()
+
+        assertEquals(
+            listOf("advertise-callback-timeout" to BluetoothRoleFailureAction.RETRY_STACK),
+            roleFailures
+        )
+        assertTrue(readyOwners.isEmpty())
+        assertNull(manager.getGattServer())
+        verify(advertiser, times(1)).startAdvertising(any(), any(), any(), any())
+    }
+
+    @Test fun `advertise success just before deadline wins the exact attempt claim`() {
+        start(); publish()
+        val callbacks = argumentCaptor<AdvertiseCallback>()
+        verify(advertiser).startAdvertising(any(), any(), any(), callbacks.capture())
+        val callback = callbacks.firstValue
+        scope.advanceTimeBy(4_999)
+
+        callback.onStartSuccess(AdvertiseSettings.Builder().build())
+        scope.runCurrent()
+        scope.advanceTimeBy(2)
+        scope.runCurrent()
+
+        assertTrue(roleFailures.isEmpty())
+        assertSame(gatt, manager.getGattServer())
+        verify(advertiser, never()).stopAdvertising(callback)
+    }
+
+    @Test fun `advertiser disappearing after service publication requests stack recovery`() {
+        start()
+        whenever(adapter.bluetoothLeAdvertiser).thenReturn(null)
+
+        publish()
+        scope.runCurrent()
+
+        assertEquals(listOf("advertiser-unavailable" to BluetoothRoleFailureAction.RETRY_STACK), roleFailures)
+        assertNull(manager.getGattServer())
+        verify(gatt).close()
+    }
+
+    @Test fun `permission revoked while checking advertise capability stops transport`() {
+        start()
+        whenever(adapter.isMultipleAdvertisementSupported)
+            .thenThrow(SecurityException("synthetic revocation"))
+
+        publish()
+        scope.runCurrent()
+
+        assertEquals(
+            listOf("advertise-capability-permission" to BluetoothRoleFailureAction.STOP_TRANSPORT),
+            roleFailures
+        )
+        assertNull(manager.getGattServer())
+    }
+
+    @Test fun `permission revoked while acquiring advertiser stops transport`() {
+        start()
+        whenever(adapter.bluetoothLeAdvertiser)
+            .thenThrow(SecurityException("synthetic revocation"))
+
+        publish()
+        scope.runCurrent()
+
+        assertEquals(
+            listOf("advertise-getter-permission" to BluetoothRoleFailureAction.STOP_TRANSPORT),
+            roleFailures
+        )
+        assertNull(manager.getGattServer())
+    }
+
+    @Test fun `unsupported advertising disables only the server role without retrying`() {
+        start(); publish()
+        val callback = argumentCaptor<AdvertiseCallback>()
+        verify(advertiser).startAdvertising(any(), any(), any(), callback.capture())
+
+        callback.firstValue.onStartFailure(AdvertiseCallback.ADVERTISE_FAILED_FEATURE_UNSUPPORTED)
+        scope.advanceTimeBy(60_000)
+        scope.runCurrent()
+
+        assertEquals(
+            listOf("advertise-unsupported" to BluetoothRoleFailureAction.DISABLE_ROLE),
+            roleFailures
+        )
+        assertNull(manager.getGattServer())
+        verify(advertiser, times(1)).startAdvertising(any(), any(), any(), any())
+    }
+
+    @Test fun `oversized advertising data disables only the server role without retrying`() {
+        start(); publish()
+        val callback = argumentCaptor<AdvertiseCallback>()
+        verify(advertiser).startAdvertising(any(), any(), any(), callback.capture())
+
+        callback.firstValue.onStartFailure(AdvertiseCallback.ADVERTISE_FAILED_DATA_TOO_LARGE)
+        scope.advanceTimeBy(60_000)
+        scope.runCurrent()
+
+        assertEquals(
+            listOf("advertise-data-too-large" to BluetoothRoleFailureAction.DISABLE_ROLE),
+            roleFailures
+        )
+        verify(advertiser, times(1)).startAdvertising(any(), any(), any(), any())
+    }
+
+    @Test fun `synchronous advertising exception emits one stack recovery`() {
+        doThrow(IllegalStateException("synthetic stack death")).whenever(advertiser)
+            .startAdvertising(any(), any(), any(), any())
+        start(); publish()
+        scope.advanceUntilIdle()
+
+        verify(advertiser, times(1)).startAdvertising(any(), any(), any(), any())
+        assertEquals(
+            listOf("advertise-start-exception" to BluetoothRoleFailureAction.RETRY_STACK),
+            roleFailures
+        )
+    }
+
+    @Test fun `transient advertising failure emits one manager-owned recovery`() {
+        start(); publish()
+        val callbacks = argumentCaptor<AdvertiseCallback>()
+        verify(advertiser).startAdvertising(any(), any(), any(), callbacks.capture())
+        callbacks.firstValue.onStartFailure(AdvertiseCallback.ADVERTISE_FAILED_INTERNAL_ERROR)
+        scope.advanceUntilIdle()
+
+        assertEquals(
+            listOf("advertise-internal-error" to BluetoothRoleFailureAction.RETRY_STACK),
+            roleFailures
+        )
+        assertNull(manager.getGattServer())
+        verify(gatt).close()
+    }
+
+    @Test fun `terminal stop cancels service and advertising deadlines`() {
+        start(); publish()
+        manager.stop()
+
+        scope.advanceTimeBy(60_000)
+        scope.runCurrent()
+
+        assertTrue(roleFailures.isEmpty())
     }
 
     @Test fun `revoked callback permission clears its links without response or readiness`() {
@@ -189,6 +544,10 @@ class BluetoothGattServerPermissionCallbacksTest {
         verify(gatt, never()).sendResponse(any(), any(), any(), any(), anyOrNull())
         verify(delegate, never()).onDeviceConnected(any())
         assertNull(manager.getGattServer())
+        assertEquals(
+            listOf("callback-permission" to BluetoothRoleFailureAction.STOP_TRANSPORT),
+            roleFailures
+        )
     }
 
     @Test fun `denied CCCD response does not subscribe or announce ready`() {
@@ -199,6 +558,10 @@ class BluetoothGattServerPermissionCallbacksTest {
         assertTrue(tracker.getSubscribedDevices().isEmpty())
         verify(delegate, never()).onDeviceConnected(any())
         assertNull(manager.getGattServer())
+        assertEquals(
+            listOf("response-permission" to BluetoothRoleFailureAction.STOP_TRANSPORT),
+            roleFailures
+        )
     }
 
     @Test fun `false CCCD response is retryable but never a ready connection`() {
@@ -268,6 +631,138 @@ class BluetoothGattServerPermissionCallbacksTest {
         callback.onConnectionStateChange(device, BluetoothGatt.GATT_SUCCESS,
             BluetoothProfile.STATE_DISCONNECTED)
         connect()
+        assertEquals(1, tracker.getConnectedDeviceCount())
+        verify(delegate, times(2)).onServerConnectionRegistered(device)
+    }
+
+    @Test fun `exact link cancel never targets a replacement server generation`() {
+        start(); publish(); connect()
+        val rejectedLink = tracker.getAllDeviceConnections().single().linkID
+        val linkClaimed = CountDownLatch(1)
+        val allowCancel = CountDownLatch(1)
+        beforeLinkCancel = {
+            linkClaimed.countDown()
+            assertTrue(allowCancel.await(5, TimeUnit.SECONDS))
+        }
+
+        val cancelThread = thread(name = "cancel-exact-server-link") {
+            manager.disconnectLink(device, rejectedLink)
+        }
+        assertTrue(linkClaimed.await(5, TimeUnit.SECONDS))
+
+        manager.stop()
+        val replacement = mock<BluetoothGattServer>()
+        whenever(replacement.addService(any())).thenAnswer {
+            service = it.getArgument(0)
+            true
+        }
+        openResult = replacement
+        assertEquals(BluetoothRoleStartResult.STARTED, manager.startResult(ownerGeneration = 72))
+        scope.runCurrent()
+        assertSame(replacement, manager.getGattServer())
+
+        allowCancel.countDown()
+        cancelThread.join(5_000)
+        assertFalse(cancelThread.isAlive)
+
+        verify(gatt, atLeastOnce()).cancelConnection(device)
+        verify(replacement, never()).cancelConnection(device)
+    }
+
+    @Test fun `timed out exact link invalidates server generation before handler returns`() {
+        assertEquals(BluetoothRoleStartResult.STARTED, manager.startResult(ownerGeneration = 75))
+        scope.runCurrent()
+        val staleServerCallback = callback
+        connect()
+        val timedOutLink = tracker.getAllDeviceConnections().single().linkID
+
+        assertTrue(manager.invalidateTimedOutLink(device, timedOutLink))
+
+        // The manager callback is deliberately asynchronous, but exact-link state and platform
+        // resources must already be gone when the timeout handler returns.
+        assertNull(manager.getGattServer())
+        assertEquals(0, tracker.getConnectedDeviceCount())
+        verify(gatt).cancelConnection(device)
+        verify(gatt).close()
+        assertTrue(roleFailures.isEmpty())
+
+        scope.runCurrent()
+        assertEquals(
+            listOf("server-link-operation-timeout" to BluetoothRoleFailureAction.RETRY_STACK),
+            roleFailures
+        )
+        assertEquals(listOf(75L), failureOwners)
+
+        val replacement = mock<BluetoothGattServer>()
+        whenever(replacement.addService(any())).thenAnswer {
+            service = it.getArgument(0)
+            true
+        }
+        openResult = replacement
+        assertEquals(BluetoothRoleStartResult.STARTED, manager.startResult(ownerGeneration = 76))
+        scope.runCurrent()
+        val replacementServerCallback = callback
+        replacementServerCallback.onConnectionStateChange(
+            device,
+            BluetoothGatt.GATT_SUCCESS,
+            BluetoothProfile.STATE_CONNECTED
+        )
+        assertEquals(1, tracker.getConnectedDeviceCount())
+
+        staleServerCallback.onConnectionStateChange(
+            device,
+            BluetoothGatt.GATT_SUCCESS,
+            BluetoothProfile.STATE_DISCONNECTED
+        )
+        assertEquals(1, tracker.getConnectedDeviceCount())
+        verify(replacement, never()).cancelConnection(device)
+    }
+
+    @Test fun `missing exact link disconnect callback recycles generation and readmits address`() {
+        assertEquals(BluetoothRoleStartResult.STARTED, manager.startResult(ownerGeneration = 73))
+        scope.runCurrent()
+        publish()
+        val advertising = argumentCaptor<AdvertiseCallback>()
+        verify(advertiser).startAdvertising(any(), any(), any(), advertising.capture())
+        advertising.firstValue.onStartSuccess(AdvertiseSettings.Builder().build())
+        scope.runCurrent()
+        val staleServerCallback = callback
+        connect()
+        val timedOutLink = tracker.getAllDeviceConnections().single().linkID
+
+        manager.disconnectLink(device, timedOutLink)
+        scope.advanceTimeBy(5_000)
+        scope.runCurrent()
+
+        assertNull(manager.getGattServer())
+        assertEquals(
+            listOf("link-disconnect-callback-timeout" to BluetoothRoleFailureAction.RETRY_STACK),
+            roleFailures
+        )
+        assertEquals(listOf(73L), failureOwners)
+        assertEquals(0, tracker.getConnectedDeviceCount())
+
+        val replacement = mock<BluetoothGattServer>()
+        whenever(replacement.addService(any())).thenAnswer {
+            service = it.getArgument(0)
+            true
+        }
+        openResult = replacement
+        assertEquals(BluetoothRoleStartResult.STARTED, manager.startResult(ownerGeneration = 74))
+        scope.runCurrent()
+        val replacementCallback = callback
+        replacementCallback.onConnectionStateChange(
+            device,
+            BluetoothGatt.GATT_SUCCESS,
+            BluetoothProfile.STATE_CONNECTED
+        )
+        assertEquals(1, tracker.getConnectedDeviceCount())
+
+        staleServerCallback.onConnectionStateChange(
+            device,
+            BluetoothGatt.GATT_SUCCESS,
+            BluetoothProfile.STATE_DISCONNECTED
+        )
         assertEquals(1, tracker.getConnectedDeviceCount())
         verify(delegate, times(2)).onServerConnectionRegistered(device)
     }
