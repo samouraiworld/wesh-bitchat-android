@@ -23,8 +23,6 @@ cleanup() {
 }
 trap cleanup EXIT
 
-command -v ffmpeg >/dev/null || fail ffmpeg_missing
-command -v ffprobe >/dev/null || fail ffprobe_missing
 command -v sdkmanager >/dev/null || fail sdkmanager_missing
 [[ -e /dev/kvm ]] || fail kvm_missing
 sudo chmod a+rw /dev/kvm || fail kvm_permission_setup

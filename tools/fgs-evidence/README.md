@@ -47,17 +47,13 @@ image were not installed. This describes that diagnostic runner, not a
 reconstruction of either failed attempt. No APK, SDK installation, AVD or BLE was
 run by the diagnostic.
 
-The evidence job now installs the official Ubuntu `ffmpeg` package through APT
-before canonical preparation and existing preflight guards. Index update and
-installation have separate 90/150-second limits within the unchanged 25-minute
-job limit. Both `ffmpeg` and `ffprobe` must then be present. Named phase failures
-are visible; raw package logs stay on the disposable runner and are removed, not
-uploaded. No external installation script is used. The [Ubuntu package file
-list](https://packages.ubuntu.com/noble/all/ffmpeg/filelist) documents both tools.
-This tool-only correction does not change canonical APK bytes, SDK/image pins,
-KVM handling, real-discovery requirements or recording assertions. A third video
-attempt requires review of this exact correction and a deliberate Lead label;
-it has not been automatically started.
+The third attempt, [40217333354](https://github.com/samouraiworld/wesh-bitchat-android/actions/runs/40217333354),
+failed at `ubuntu_ffmpeg_install`, before canonical preparation and AVD setup;
+no evidence artifact or BLE result was produced. The APT installation step has
+now been removed. CI requires no `ffmpeg`, `ffprobe`, media package installation
+or media parser. SDK/image pins, KVM handling and all real scenario assertions
+are unchanged. A fourth attempt requires review of the exact corrected head and
+a deliberate Lead label, with the same 25-minute job limit.
 
 Nickname entry dismisses the keyboard only when the owned emulator's actual
 input-method state reports `mInputShown=true`. False sends no Back; a missing or
@@ -93,13 +89,36 @@ background and visibility after resume, not the exact time of background receipt
 The real notification's **Quit Wesh** action must stop
 the service and remove its notification.
 
-Only a passing side-by-side clip, provenance receipt, allowlisted event receipt
-and checksums become a seven-day Actions artifact. Failure exports receipts only;
-raw emulator/SDK logs, UI XML, keys, APKs and AVD userdata are never uploaded.
-The footer identifies the two emulators, simulated BLE netsim and test signature.
-Every screen above it is an actual OS screen recording. No YouTube/public video
-publication or Play form submission occurs. A human must inspect the actual clip
-before deciding whether to provide it to Play.
+Only after the genuine scenario and both OS recorder processes succeed may CI
+export `recording-a.mp4` and `recording-b.mp4`, provenance, an allowlisted event
+receipt and checksums as a seven-day Actions artifact. This explicit permission
+covers only these two fresh, synthetic owned-AVD OS recordings. Its result is
+`SCENARIO_PASS_RECORDINGS_AWAIT_LOCAL_VALIDATION`, never qualified-video PASS.
+Failure exports receipts only; emulator/SDK logs, UI XML, keys, APKs and AVD
+userdata are never uploaded. The raw recordings are not physical-device evidence
+or Google-approved footage. Missing files stop export; playback, truncation,
+duration and final visual inspection remain mandatory local gates.
+
+After independently verifying the Actions ZIP digest, exact file inventory and
+source, use the existing trusted **local** media tools with `localassemble.py`:
+
+```sh
+python3 tools/fgs-evidence/localassemble.py --evidence <verified-evidence-directory> \
+  --source-head <reviewed-controller-sha> --ffmpeg <trusted-ffmpeg-binary> \
+  --ffprobe <trusted-ffprobe-binary> --font <local-font-file> --output <new-local-output.mp4>
+```
+
+The assembler refuses CI execution, extra files/symlinks/duplicate JSON keys,
+wrong controller source, incomplete manifests or changed inputs. Both local
+`ffprobe` durations must strictly cover the last Quit event from the conservative
+clock started before either recorder command. `ffmpeg` fully decodes and combines
+the actual screens, strips metadata, and adds the explicit footer identifying
+two emulators, simulated BLE netsim, canonical107 payload and test signing.
+The assembled duration is checked again before giving the output its final name.
+The local receipt remains `DURATION_AND_ASSEMBLY_PASS_AWAIT_VISUAL_REVIEW`;
+the Lead must inspect actual footage before any Play use. Tool/font paths are
+explicit inputs and are not recorded in receipts. Nothing is uploaded or
+submitted by this local script. No YouTube/public publication occurs.
 
 The unproven compatibility boundary is the exact image's multiple-advertising and
 GATT support for this APK; generic BLE support alone does not prove Wesh works.

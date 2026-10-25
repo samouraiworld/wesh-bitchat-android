@@ -18,7 +18,7 @@ def installed_revision(path):
 
 
 def missing_preconditions(commands, kvm_exists, disk_gib, memory_gib, cpus):
-    missing = [name+"_missing" for name in ("ffmpeg", "ffprobe", "sdkmanager") if not commands[name]]
+    missing = ["sdkmanager_missing"] if not commands["sdkmanager"] else []
     if not kvm_exists:
         missing.append("kvm_missing")
     if disk_gib < 11:
@@ -41,7 +41,7 @@ def main(output):
     sdk_dirs = [sdk/relative for relative in ("emulator", "platform-tools", "cmdline-tools/latest/bin")] if sdk else []
     search_path = os.pathsep.join([*(str(p) for p in sdk_dirs), os.environ.get("PATH", "")])
     commands = {name: shutil.which(name, path=search_path) is not None
-                for name in ("ffmpeg", "ffprobe", "sdkmanager", "avdmanager", "emulator", "adb", "keytool", "sudo")}
+                for name in ("sdkmanager", "avdmanager", "emulator", "adb", "keytool", "sudo")}
     memory_kib = next(int(line.split()[1]) for line in Path("/proc/meminfo").read_text().splitlines()
                       if line.startswith("MemAvailable:"))
     memory_gib = memory_kib / 1024**2
@@ -60,7 +60,6 @@ def main(output):
         "kvmWritableByRunner": os.access(kvm, os.W_OK),
         "cpuCount": cpus, "availableMemoryGiB": round(memory_gib, 2),
         "freeDiskGiB": round(free_gib, 2),
-        "captionFontPresent": Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf").is_file(),
         "installedEmulatorRevision": installed_revision(sdk/"emulator/package.xml") if sdk else None,
         "installedApi35ImageRevision": installed_revision(sdk/"system-images/android-35/google_apis/x86_64/package.xml") if sdk else None,
         "missingExistingPreconditions": missing_preconditions(commands, kvm.exists(), free_gib, memory_gib, cpus),

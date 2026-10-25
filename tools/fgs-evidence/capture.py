@@ -18,6 +18,7 @@ COMPONENT = f"{PACKAGE}/com.bitchat.android.MainActivity"
 MESSAGE_A = "FGS-public-A-107"
 MESSAGE_B = "FGS-public-B-107"
 MESSAGE_BACKGROUND = "FGS-background-107"
+SCENARIO_RESULT = "SCENARIO_PASS_RECORDINGS_AWAIT_LOCAL_VALIDATION"
 
 
 class ImeVisibilityUnknown(RuntimeError):
@@ -177,7 +178,8 @@ def main(root):
         raise RuntimeError("Disposable GitHub runner only")
     receipt = {"result": "NOT_COMPLETED", "events": [], "environment": "Two API35 x86_64 AVDs; netsim simulated BLE",
                "emulator": "37.2.12", "systemImageRevision": 9, "evidenceSource": os.environ["EVIDENCE_HEAD"],
-               "notPhysicalEvidence": True, "notPlaySigned": True, "videoExported": False}
+               "notPhysicalEvidence": True, "notPlaySigned": True,
+               "recordingsExported": False, "finalVideoQualified": False}
     recorders = []
     start = time.monotonic()
     def event(name):
@@ -185,7 +187,8 @@ def main(root):
     try:
         with ThreadPoolExecutor(2) as pool:
             list(pool.map(lambda serial: boot_and_install(serial, root / "wesh107-test-signed.apk"), SERIALS))
-        # Raw recordings and UI XML stay on disposable runner; only a passing derived clip is uploaded.
+        # Only a real scenario pass may export these two synthetic OS recordings for local validation.
+        # Raw UI XML and runtime/SDK logs always stay on the disposable runner.
         # The scenario clock starts BEFORE either recorder command, never after readiness waits.
         # Requiring both durations to cover this conservative origin cannot hide early truncation.
         start = time.monotonic()
@@ -253,14 +256,14 @@ def main(root):
         event("quit_action_stopped_service_and_removed_notification")
         if time.monotonic() >= deadline:
             raise RuntimeError("Scenario exceeded recording budget")
-        receipt["result"] = "PASS_SIMULATED_BLE_ONLY"
+        receipt["result"] = SCENARIO_RESULT
     except ImeVisibilityUnknown:
         receipt["failureGate"] = "ime_visibility_unknown"
         raise
     finally:
         # On success, preserve real post-roll until the OS recorder's fixed 180-second limit.
         # This covers startup latency without weakening the conservative duration assertion.
-        if receipt["result"] != "PASS_SIMULATED_BLE_ONLY":
+        if receipt["result"] != SCENARIO_RESULT:
             for serial in SERIALS:
                 try:
                     pids = adb(serial, "shell", "pidof", "screenrecord").strip().split()
@@ -271,43 +274,27 @@ def main(root):
         for recorder in recorders:
             try:
                 remaining = max(0.1, start + 190 - time.monotonic())
-                recorder.wait(timeout=remaining if receipt["result"] == "PASS_SIMULATED_BLE_ONLY" else 8)
+                status = recorder.wait(timeout=remaining if receipt["result"] == SCENARIO_RESULT else 8)
+                if status != 0:
+                    receipt["result"] = "RECORDING_FAILED"
             except subprocess.TimeoutExpired:
                 recorder.terminate()
                 receipt["result"] = "RECORDING_FAILED"
         (root / "evidence/attempt.json").write_text(json.dumps(receipt, indent=2)+"\n")
-    # No video is exported when any assertion above failed.
-    if receipt["result"] != "PASS_SIMULATED_BLE_ONLY":
+    # No recording is exported when any scenario or OS-recorder assertion above failed.
+    if receipt["result"] != SCENARIO_RESULT:
         raise RuntimeError("Recorders did not complete within their fixed limit")
-    for serial, name in zip(SERIALS, ("a.mp4", "b.mp4")):
+    recordings = ("recording-a.mp4", "recording-b.mp4")
+    for serial, name in zip(SERIALS, recordings):
         adb(serial, "pull", "/sdcard/wesh-fgs.mp4", str(root / name), timeout=30)
-    durations = []
-    for name in ("a.mp4", "b.mp4"):
-        probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1", str(root/name)],
-            capture_output=True, text=True, timeout=10)
-        if probe.returncode:
-            raise RuntimeError("OS recording is not playable")
-        durations.append(float(probe.stdout.strip()))
-    if min(durations) < receipt["events"][-1]["elapsedSeconds"]:
-        raise RuntimeError("Recording does not cover the final Quit action")
-    clip = root / "assembled.mp4"
-    overlay = ("[0:v]setpts=PTS-STARTPTS,scale=720:1280[a];"
-               "[1:v]setpts=PTS-STARTPTS,scale=720:1280[b];"
-               "[a][b]hstack=shortest=1,pad=1440:1360:0:0:black,"
-               "drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:"
-               "text='Wesh 107 - two emulators - simulated BLE netsim':fontcolor=white:fontsize=24:x=12:y=1290,"
-               "drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:"
-               "text='Canonical APK payload - disposable test signature':fontcolor=white:fontsize=24:x=12:y=1328")
-    result = subprocess.run(["ffmpeg", "-y", "-i", str(root/"a.mp4"), "-i", str(root/"b.mp4"),
-        "-filter_complex", overlay, "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
-        "-an", "-map_metadata", "-1", str(clip)], capture_output=True, timeout=90)
-    if result.returncode:
-        clip.unlink(missing_ok=True)
-        raise RuntimeError("Video assembly failed")
-    clip.rename(root / "evidence/fgs-simulated-ble.mp4")
-    receipt["videoExported"] = True
-    receipt["recordingDurationsSeconds"] = durations
+    for name in recordings:
+        path = root / name
+        if not path.is_file() or path.stat().st_size == 0:
+            raise RuntimeError("A required owned-emulator recording is missing")
+    for name in recordings:
+        (root / name).rename(root / "evidence" / name)
+    receipt["recordingsExported"] = True
+    # Duration, decoding, composition and visual inspection are explicitly still local gates.
     (root / "evidence/attempt.json").write_text(json.dumps(receipt, indent=2)+"\n")
     (root / "evidence/SHA256SUMS").write_text("".join(
         f"{digest(path)}  {path.name}\n" for path in sorted((root/"evidence").iterdir()) if path.is_file()))

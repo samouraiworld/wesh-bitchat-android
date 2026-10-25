@@ -1,5 +1,6 @@
 """Offline synthetic checks; these never launch adb, an emulator or a network request."""
 import hashlib
+import json
 from pathlib import Path
 import stat
 import subprocess
@@ -11,6 +12,7 @@ import zipfile
 
 import capture
 import diagnose
+import localassemble
 import prepare
 
 
@@ -111,17 +113,17 @@ class EvidenceChecks(unittest.TestCase):
         self.assertEqual(capture.public_send_state([bubble, field], "synthetic"), "submitted")
 
     def test_diagnostic_identifies_missing_commands_without_paths(self):
-        commands = {"ffmpeg": False, "ffprobe": False, "sdkmanager": True}
+        commands = {"sdkmanager": False}
         self.assertEqual(diagnose.missing_preconditions(commands, True, 12, 12, 4),
-                         ["ffmpeg_missing", "ffprobe_missing"])
+                         ["sdkmanager_missing"])
 
     def test_diagnostic_reports_kvm_and_resources_separately(self):
-        commands = {"ffmpeg": True, "ffprobe": True, "sdkmanager": True}
+        commands = {"sdkmanager": True}
         self.assertEqual(diagnose.missing_preconditions(commands, False, 10, 8, 2),
                          ["kvm_missing", "disk_below_11_gib", "available_memory_below_10_gib", "cpu_count_below_4"])
 
     def test_diagnostic_does_not_treat_supported_resources_as_missing(self):
-        commands = {"ffmpeg": True, "ffprobe": True, "sdkmanager": True}
+        commands = {"sdkmanager": True}
         self.assertEqual(diagnose.missing_preconditions(commands, True, 12, 12, 4), [])
 
     def test_diagnostic_missing_package_has_no_path_output(self):
@@ -166,6 +168,80 @@ class EvidenceChecks(unittest.TestCase):
             with self.assertRaises(ValueError):
                 capture.hide_keyboard_if_shown("emulator-5558")
             command.assert_not_called()
+
+    def test_ci_scenario_result_does_not_claim_video_validation(self):
+        self.assertEqual(capture.SCENARIO_RESULT, "SCENARIO_PASS_RECORDINGS_AWAIT_LOCAL_VALIDATION")
+
+    def test_local_coverage_preserves_strict_quit_boundary(self):
+        localassemble.require_coverage([165.0, 166.0], 165.0)
+        with self.assertRaises(localassemble.ValidationFailure):
+            localassemble.require_coverage([164.99, 166.0], 165.0)
+
+    def test_local_coverage_rejects_missing_and_nonfinite_durations(self):
+        for durations in ([180.0], [float("nan"), 180.0], [float("inf"), 180.0]):
+            with self.assertRaises(localassemble.ValidationFailure):
+                localassemble.require_coverage(durations, 120.0)
+
+    def test_local_probe_rejects_invalid_media_duration(self):
+        with patch("localassemble.run_tool", return_value='{"format":{"duration":"NaN"}}'):
+            with self.assertRaises(localassemble.ValidationFailure):
+                localassemble.probe_duration("synthetic-tool", Path("synthetic.mp4"))
+
+    def test_local_json_rejects_duplicate_keys(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/"synthetic.json"
+            path.write_text('{"result":1,"result":2}')
+            with self.assertRaises(localassemble.ValidationFailure):
+                localassemble.unique_json(path)
+
+    def local_bundle(self, directory, source_head="1"*40):
+        """Unit metadata only; these bytes are not media or transport evidence."""
+        root = Path(directory)
+        provenance = {"source": prepare.SOURCE, "unsignedApkSHA256": prepare.FILES[prepare.APK],
+                      "attestationsVerified": 11, "apkPayloadUnchanged": True}
+        attempt = {"evidenceSource": source_head, "result": capture.SCENARIO_RESULT,
+                   "recordingsExported": True, "finalVideoQualified": False,
+                   "notPhysicalEvidence": True, "notPlaySigned": True,
+                   "events": [{"step": step, "elapsedSeconds": number+1}
+                              for number, step in enumerate(localassemble.EVENTS)]}
+        (root/"provenance.json").write_text(json.dumps(provenance))
+        (root/"attempt.json").write_text(json.dumps(attempt))
+        for name in localassemble.RECORDINGS:
+            (root/name).write_bytes(b"synthetic unit bytes, not an OS recording")
+        (root/"SHA256SUMS").write_text("".join(
+            f"{prepare.digest(root/name)}  {name}\n" for name in sorted(localassemble.HASHED_INPUTS)))
+        return root
+
+    def test_local_metadata_gate_requires_exact_controller_and_complete_manifest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.local_bundle(directory)
+            last, checksums = localassemble.validate_inputs(root, "1"*40)
+            self.assertEqual(last, 7)
+            self.assertEqual(set(checksums), localassemble.HASHED_INPUTS)
+            with self.assertRaises(localassemble.ValidationFailure):
+                localassemble.validate_inputs(root, "2"*40)
+
+    def test_local_metadata_gate_rejects_modified_recording(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.local_bundle(directory)
+            (root/"recording-a.mp4").write_bytes(b"changed unit bytes")
+            with self.assertRaises(localassemble.ValidationFailure):
+                localassemble.validate_inputs(root, "1"*40)
+
+    def test_local_metadata_gate_rejects_extra_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.local_bundle(directory)
+            (root/"extra").write_bytes(b"synthetic")
+            with self.assertRaises(localassemble.ValidationFailure):
+                localassemble.validate_inputs(root, "1"*40)
+
+    def test_local_metadata_gate_rejects_symlink(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.local_bundle(directory)
+            (root/"recording-b.mp4").unlink()
+            (root/"recording-b.mp4").symlink_to(root/"recording-a.mp4")
+            with self.assertRaises(localassemble.ValidationFailure):
+                localassemble.validate_inputs(root, "1"*40)
 
 
 if __name__ == "__main__":

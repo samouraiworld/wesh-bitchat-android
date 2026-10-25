@@ -68,21 +68,6 @@ jobs:
         with:
           distribution: temurin
           java-version: '21.0.11+10.0.LTS'
-      - name: Install official Ubuntu media tools
-        run: |
-          set -euo pipefail
-          timeout 90 sudo apt-get update -qq >"$RUNNER_TEMP/fgs-media-tools-install.log" 2>&1 || {
-            echo 'FGS prerequisite failed: ubuntu_media_package_index' >&2
-            exit 1
-          }
-          timeout 150 sudo apt-get install -y --no-install-recommends ffmpeg \
-            >>"$RUNNER_TEMP/fgs-media-tools-install.log" 2>&1 || {
-            echo 'FGS prerequisite failed: ubuntu_ffmpeg_install' >&2
-            exit 1
-          }
-          command -v ffmpeg >/dev/null || { echo 'FGS prerequisite failed: ffmpeg_missing' >&2; exit 1; }
-          command -v ffprobe >/dev/null || { echo 'FGS prerequisite failed: ffprobe_missing' >&2; exit 1; }
-          echo 'FGS official Ubuntu media tools present: ffmpeg=true, ffprobe=true'
       - name: Verify the canonical artifact and sign only for disposable emulators
         env:
           GH_TOKEN: ${{ github.token }}
@@ -91,7 +76,7 @@ jobs:
         env:
           EVIDENCE_HEAD: ${{ github.event.pull_request.head.sha }}
         run: bash tools/fgs-evidence/run.sh "$RUNNER_TEMP/fgs-evidence"
-      - name: Upload only synthetic evidence and allowlisted receipts
+      - name: Upload synthetic OS recordings awaiting local validation and allowlisted receipts
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -101,6 +86,4 @@ jobs:
           retention-days: 7
       - name: Remove disposable keys, AVDs, recordings and temporary data
         if: always()
-        run: |
-          rm -rf -- "$RUNNER_TEMP/fgs-evidence"
-          rm -f -- "$RUNNER_TEMP/fgs-media-tools-install.log"
+        run: rm -rf -- "$RUNNER_TEMP/fgs-evidence"
