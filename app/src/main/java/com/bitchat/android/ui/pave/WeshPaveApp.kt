@@ -852,6 +852,7 @@ private fun ContactSettingsRoute(
         setOf(stringResource(R.string.wesh_pave_unnamed), stringResource(R.string.wesh_pave_unnamed_reserved))
     ContactSettingsScreen(
         qrName = contact?.nickname,
+        contactFingerprint = contact?.let { PaveFingerprint.short(it.key) },
         alias = alias,
         onAliasChange = { alias = NicknameGenerator.clean(it); feedback = null },
         memo = memo,
