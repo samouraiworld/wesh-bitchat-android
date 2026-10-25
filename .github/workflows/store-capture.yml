@@ -44,6 +44,11 @@ jobs:
 
       - name: Prepare isolated CI emulator
         run: |
+          sdk_root="${ANDROID_SDK_ROOT:-${ANDROID_HOME:?Android SDK root is required}}"
+          sdk_tools="$sdk_root/cmdline-tools/latest/bin"
+          test -x "$sdk_tools/sdkmanager"
+          export PATH="$sdk_tools:$sdk_root/platform-tools:$sdk_root/emulator:$PATH"
+          printf '%s\n' "$sdk_tools" "$sdk_root/platform-tools" "$sdk_root/emulator" >> "$GITHUB_PATH"
           export ANDROID_USER_HOME="$RUNNER_TEMP/wesh-android-user"
           export ANDROID_AVD_HOME="$RUNNER_TEMP/wesh-store-avd"
           mkdir -p "$ANDROID_USER_HOME" "$ANDROID_AVD_HOME"
