@@ -10,7 +10,7 @@
     <string name="wesh_pave_exchange_they_pending">Your code</string>
     <string name="wesh_pave_exchange_i_scanned">Their code was scanned</string>
     <string name="wesh_pave_exchange_i_pending">Their code</string>
-    <string name="wesh_pave_exchange_footer">With both checks, the private chat opens by itself.</string>
+    <string name="wesh_pave_exchange_footer">After both codes are scanned, tap “Open the chat” to continue.</string>
     <string name="wesh_pave_step_done">Done</string>
     <string name="wesh_pave_step_pending">Waiting</string>
     <string name="wesh_pave_camera_denied">Allow the camera in Settings</string>

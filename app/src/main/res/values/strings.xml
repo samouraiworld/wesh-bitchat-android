@@ -198,6 +198,8 @@
   <string name="verify_qr_unavailable">QR unavailable</string>
   <string name="verify_camera_permission">Camera permission is needed to scan QR codes</string>
   <string name="verify_request_camera">Enable camera</string>
+  <string name="wesh_camera_unavailable">No camera on this device</string>
+  <string name="wesh_camera_unavailable_body">You can show your QR code, but this device cannot scan your contact’s code. A private contact is only verified after both codes have been scanned. You can still use the local room.</string>
   <string name="verify_paste_label">Paste verification URL</string>
   <string name="verify_validate">Validate</string>
   <string name="verify_scanned">Verification requested</string>

@@ -10,7 +10,7 @@
     <string name="wesh_pave_exchange_they_pending">Votre code</string>
     <string name="wesh_pave_exchange_i_scanned">Son code est scanné</string>
     <string name="wesh_pave_exchange_i_pending">Son code</string>
-    <string name="wesh_pave_exchange_footer">À deux coches, la discussion privée s’ouvre toute seule.</string>
+    <string name="wesh_pave_exchange_footer">Après le scan des deux codes, touchez « Ouvrir la discussion » pour continuer.</string>
     <string name="wesh_pave_step_done">Fait</string>
     <string name="wesh_pave_step_pending">En attente</string>
     <string name="wesh_pave_camera_denied">Autorisez la caméra dans Réglages</string>

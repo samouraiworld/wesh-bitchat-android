@@ -317,8 +317,30 @@ internal fun ScanTabContent(
     accent: Color,
     onScan: (String) -> Unit
 ) {
-    val permissionState = rememberPermissionState(android.Manifest.permission.CAMERA)
     val context = LocalContext.current
+    val hasCamera = remember(context) { hasQrCamera(context.packageManager) }
+    if (!hasCamera) {
+        Column(
+            modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterVertically),
+        ) {
+            Icon(Icons.Outlined.QrCodeScanner, contentDescription = null, tint = accent, modifier = Modifier.size(64.dp))
+            Text(
+                stringResource(R.string.wesh_camera_unavailable),
+                style = MaterialTheme.typography.headlineSmall,
+                color = MaterialTheme.colorScheme.onSurface,
+                textAlign = TextAlign.Center,
+            )
+            Text(
+                stringResource(R.string.wesh_camera_unavailable_body),
+                color = MaterialTheme.colorScheme.onSurface,
+                textAlign = TextAlign.Center,
+            )
+        }
+        return
+    }
+    val permissionState = rememberPermissionState(android.Manifest.permission.CAMERA)
     
     Column(
         modifier = Modifier
@@ -446,15 +468,19 @@ private fun ScannerView(
                     .also { it.setAnalyzer(cameraExecutor, analyzer) }
 
                 runCatching {
+                    val selector = qrCameraSelector(
+                        provider.hasCamera(CameraSelector.DEFAULT_BACK_CAMERA),
+                        provider.hasCamera(CameraSelector.DEFAULT_FRONT_CAMERA),
+                    ) ?: error("No camera available")
                     provider.unbindAll()
                     provider.bindToLifecycle(
                         lifecycleOwner,
-                        CameraSelector.DEFAULT_BACK_CAMERA,
+                        selector,
                         preview,
                         analysis
                     )
                 }.onFailure {
-                    Log.w("VerificationSheet", "Failed to bind camera: ${it.message}")
+                    Log.w("VerificationSheet", "Camera unavailable")
                 }
             },
             executor
