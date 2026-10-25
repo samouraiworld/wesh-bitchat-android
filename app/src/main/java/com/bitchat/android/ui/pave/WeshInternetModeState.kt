@@ -14,6 +14,14 @@ sealed interface PaveInternetStatus {
 
 enum class PaveInternetError { TorBlocked, NoNetwork, RelaysUnreachable }
 
+/** Local recovery guidance selected from the typed state, never from an exception or relay response. */
+@androidx.annotation.StringRes
+internal fun PaveInternetError.recoveryHelp(): Int = when (this) {
+    PaveInternetError.NoNetwork -> com.bitchat.android.R.string.wesh_pave_internet_help_network
+    PaveInternetError.TorBlocked -> com.bitchat.android.R.string.wesh_pave_internet_help_tor
+    PaveInternetError.RelaysUnreachable -> com.bitchat.android.R.string.wesh_pave_internet_help_relays
+}
+
 /**
  * The UI's view of Internet mode. The Connexion sheet depends only on this,
  * so the real opt-in Tor-only implementation can be bound behind it.

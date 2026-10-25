@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="wesh_pave_internet_help_network">Check that Wi-Fi or mobile data can access the Internet, then tap Retry.</string>
+    <string name="wesh_pave_internet_help_tor">Check your Internet connection, then tap Retry. If Tor still cannot connect, try another network.</string>
+    <string name="wesh_pave_internet_help_relays">The message relays did not answer. Wait a moment, then tap Retry.</string>
+    <string name="wesh_pave_internet_help_preserved">This connection error does not erase your messages or contacts. Pending messages are not confirmed as delivered. You can turn Internet mode off and continue over Bluetooth with nearby contacts.</string>
+</resources>

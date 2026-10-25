@@ -172,7 +172,17 @@ fun ConnexionSheetContent(
                 },
                 modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
             )
-            if (enabled && status is PaveInternetStatus.Error) {
+            if (internet.available && enabled && status is PaveInternetStatus.Error) {
+                Text(
+                    stringResource((status as PaveInternetStatus.Error).reason.recoveryHelp()),
+                    style = WeshType.body,
+                    color = c.ink,
+                )
+                Text(
+                    stringResource(R.string.wesh_pave_internet_help_preserved),
+                    style = WeshType.caption,
+                    color = c.inkMuted,
+                )
                 SecondaryButton(stringResource(R.string.wesh_pave_retry), { internet.retry() })
             }
             if (refused) {

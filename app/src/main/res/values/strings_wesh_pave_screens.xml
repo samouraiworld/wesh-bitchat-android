@@ -51,7 +51,7 @@
         <item quantity="one">Connected via Tor · %d relay</item>
         <item quantity="other">Connected via Tor · %d relays</item>
     </plurals>
-    <string name="wesh_pave_internet_error_tor">Tor is blocked on this network.</string>
+    <string name="wesh_pave_internet_error_tor">Tor could not connect.</string>
     <string name="wesh_pave_internet_error_network">No network for now.</string>
     <string name="wesh_pave_internet_error_relays">The relays do not answer.</string>
     <string name="wesh_pave_internet_unavailable">Not available in this version.</string>
