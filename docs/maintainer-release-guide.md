@@ -116,7 +116,11 @@ a command line, in a shell profile, or in a release-notes file.
 ## 1. Prepare and approve the release commit
 
 1. Update `versionCode` and `versionName` in `app/build.gradle.kts`.
-   The phone `versionName` must match the release tag without the leading `v`.
+   A public release tag must match the phone `versionName` without the leading
+   `v`. An internal Wesh Play candidate may instead append
+   `-beta.<iteration>-android.<versionCode>` to that same version name; the
+   suffix identifies the immutable candidate and is not shown as the installed
+   app version.
 2. Merge all intended release changes into `main`.
 3. Confirm required CI checks are green.
 4. Complete the
@@ -149,11 +153,19 @@ Confirm the source version:
 
 ```bash
 grep -nE 'versionCode|versionName' app/build.gradle.kts
-test "$(sed -n 's/.*versionName = "\([^"]*\)".*/\1/p' app/build.gradle.kts)" = "${TAG#v}"
-test "$(sed -n 's/.*versionCode = \([0-9][0-9]*\).*/\1/p' app/build.gradle.kts)" = "$VERSION_CODE"
+APP_VERSION_NAME="$(sed -n 's/.*versionName = "\([^"]*\)".*/\1/p' app/build.gradle.kts)"
+APP_VERSION_CODE="$(sed -n 's/.*versionCode = \([0-9][0-9]*\).*/\1/p' app/build.gradle.kts)"
+test "$APP_VERSION_CODE" = "$VERSION_CODE"
+[[ "$APP_VERSION_NAME" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+APP_VERSION_PATTERN="${APP_VERSION_NAME//./\\.}"
+if [ "$TAG" != "v$APP_VERSION_NAME" ] &&
+   ! [[ "$TAG" =~ ^v${APP_VERSION_PATTERN}-beta\.[0-9]+-android\.${APP_VERSION_CODE}$ ]]; then
+  echo "release tag does not identify this app version" >&2
+  exit 1
+fi
 ```
 
-Stop if either `test` command fails.
+Stop if either version check fails.
 
 ## 2. Create and push the release tag
 
