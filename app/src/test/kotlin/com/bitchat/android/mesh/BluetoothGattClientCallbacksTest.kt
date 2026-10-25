@@ -97,6 +97,7 @@ class BluetoothGattClientCallbacksTest {
         locationEnabled: () -> Boolean = { true },
         beforeScanPublication: (() -> Unit)? = null,
         afterScanCallbackPreflight: (() -> Unit)? = null,
+        afterScanScheduleOwnerCheck: ((Boolean) -> Unit)? = null,
         onRoleFailure: (Long, String, BluetoothRoleFailureAction) -> Unit = { owner, reason, action ->
             roleFailures += Triple(owner, reason, action)
         }
@@ -111,6 +112,7 @@ class BluetoothGattClientCallbacksTest {
         legacyLocationEnabledProvider = locationEnabled,
         beforeScanPublication = beforeScanPublication,
         afterScanCallbackPreflight = afterScanCallbackPreflight,
+        afterScanScheduleOwnerCheck = afterScanScheduleOwnerCheck,
         roleFailure = onRoleFailure,
         elapsedRealtimeMillis = { scanTime }
     )
@@ -878,19 +880,47 @@ class BluetoothGattClientCallbacksTest {
             ble = PowerManager.BleSchedule(scanOnMs = 1_000L, scanOffMs = 180_000L, continuousScan = false)
         )
         val continuousProfile = PowerProfileResolver.resolve(100, true, false, false)
-        val modern = clientForSdk(Build.VERSION_CODES.S)
+        whenever(power.profile).thenReturn(MutableStateFlow(dutyProfile))
+        val replacementAttempted = CountDownLatch(1)
+        val replacementCompleted = CountDownLatch(1)
+        var replacementThread: Thread? = null
+        lateinit var modern: BluetoothGattClientManager
+        modern = clientForSdk(
+            Build.VERSION_CODES.S,
+            afterScanScheduleOwnerCheck = { shouldScan ->
+                if (!shouldScan && replacementThread == null) {
+                    replacementThread = thread(name = "synthetic-profile-replacement") {
+                        replacementAttempted.countDown()
+                        modern.applyPowerProfile(continuousProfile)
+                        replacementCompleted.countDown()
+                    }
+                    assertTrue(replacementAttempted.await(5, TimeUnit.SECONDS))
+                    assertFalse(
+                        "replacement must wait for the atomic owner mutation",
+                        replacementCompleted.await(100, TimeUnit.MILLISECONDS)
+                    )
+                }
+            }
+        )
         try {
             assertTrue(modern.start())
-            modern.applyPowerProfile(dutyProfile)
-            modern.applyPowerProfile(continuousProfile)
             scope.runCurrent()
             assertEquals(1, scanCallbacks.size)
+            val first = scanCallbacks.single()
 
-            scanTime += 2_000
-            scope.advanceTimeBy(2_000)
+            scanTime += 5_000
+            scope.advanceTimeBy(1_000)
             scope.runCurrent()
+            replacementThread?.join(5_000)
+            assertTrue(replacementCompleted.await(5, TimeUnit.SECONDS))
+            scope.runCurrent()
+            assertEquals(2, scanCallbacks.size)
+            val replacement = scanCallbacks.last()
+            verify(scanner).stopScan(first)
 
-            verify(scanner, never()).stopScan(scanCallbacks.single())
+            scope.advanceTimeBy(180_000)
+            scope.runCurrent()
+            verify(scanner, never()).stopScan(replacement)
         } finally {
             modern.stop()
         }
