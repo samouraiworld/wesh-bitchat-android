@@ -39,6 +39,26 @@ Its green completion means only that the diagnostic ran; capability failures sta
 explicit in the JSON. It cannot start the expensive evidence job. A subsequent
 video attempt requires its own reviewed correction and deliberate label event.
 
+The read-only [diagnostic 40216447434](https://github.com/samouraiworld/wesh-bitchat-android/actions/runs/40216447434)
+on source `e60cbbb234401163f0cd98581f77427ac700dff2` found `ffmpeg` and `ffprobe`
+absent on that runner. SDK Manager, KVM, CPU/RAM/disk and the caption font were
+present; KVM still needed the existing permission step, and the emulator/API35
+image were not installed. This describes that diagnostic runner, not a
+reconstruction of either failed attempt. No APK, SDK installation, AVD or BLE was
+run by the diagnostic.
+
+The evidence job now installs the official Ubuntu `ffmpeg` package through APT
+before canonical preparation and existing preflight guards. Index update and
+installation have separate 90/150-second limits within the unchanged 25-minute
+job limit. Both `ffmpeg` and `ffprobe` must then be present. Named phase failures
+are visible; raw package logs stay on the disposable runner and are removed, not
+uploaded. No external installation script is used. The [Ubuntu package file
+list](https://packages.ubuntu.com/noble/all/ffmpeg/filelist) documents both tools.
+This tool-only correction does not change canonical APK bytes, SDK/image pins,
+KVM handling, real-discovery requirements or recording assertions. A third video
+attempt requires review of this exact correction and a deliberate Lead label;
+it has not been automatically started.
+
 The fixed canonical artifact is `12601010558` from release run `40197176611`,
 source `5008c95ae99933c180ee2ac6f767dd0e9c203a21`, tag
 `v1.0.0-beta.3-android.107` (annotated, **not Git-signed**). Its ZIP and all eleven
