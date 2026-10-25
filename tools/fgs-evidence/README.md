@@ -23,6 +23,22 @@ successful existing run [40202327656](https://github.com/samouraiworld/wesh-bitc
 It does not change or rebuild the canonical APK. A second attempt may start only
 after its exact correction is reviewed and the Lead deliberately labels it again.
 
+The second attempt, [40215355034](https://github.com/samouraiworld/wesh-bitchat-android/actions/runs/40215355034),
+passed Java setup, canonical verification, eleven attestations, disposable signing
+and unchanged-payload validation. Its AVD preparation step failed without a
+sub-gate diagnostic. The only artifact was `provenance.json`; no boot, BLE exchange
+or video is demonstrated. Do not infer a Bluetooth failure from this result.
+
+A separate `fgs-emulator-diagnose` label enables a **read-only diagnostic job**
+after exact-head review. It reports only targeted command-presence booleans,
+KVM access, CPU/RAM/disk numbers, installed SDK revisions and named missing
+preconditions. It does not install/download SDKs or APKs, sign, launch AVDs,
+contact peers, record video or change KVM permissions. No developer machine is
+inspected, and no path, host identifier, environment dump or raw log is exported.
+Its green completion means only that the diagnostic ran; capability failures stay
+explicit in the JSON. It cannot start the expensive evidence job. A subsequent
+video attempt requires its own reviewed correction and deliberate label event.
+
 The fixed canonical artifact is `12601010558` from release run `40197176611`,
 source `5008c95ae99933c180ee2ac6f767dd0e9c203a21`, tag
 `v1.0.0-beta.3-android.107` (annotated, **not Git-signed**). Its ZIP and all eleven

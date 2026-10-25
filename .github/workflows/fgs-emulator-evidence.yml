@@ -22,6 +22,31 @@ jobs:
       - run: python3 -m unittest discover -s tools/fgs-evidence -p 'test_*.py'
       - run: bash -n tools/fgs-evidence/run.sh
 
+  diagnostic:
+    if: >-
+      github.event.action == 'labeled' &&
+      github.event.label.name == 'fgs-emulator-diagnose' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Read only allowlisted disposable runner prerequisites
+        env:
+          EVIDENCE_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: python3 tools/fgs-evidence/diagnose.py "$RUNNER_TEMP/fgs-diagnostic.json"
+      - name: Upload only the capability diagnostic
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: fgs-runner-capability-diagnostic
+          path: ${{ runner.temp }}/fgs-diagnostic.json
+          if-no-files-found: error
+          retention-days: 7
+
   evidence:
     if: >-
       github.event.action == 'labeled' &&

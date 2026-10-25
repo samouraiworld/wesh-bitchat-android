@@ -9,6 +9,7 @@ import xml.etree.ElementTree as E
 import zipfile
 
 import capture
+import diagnose
 import prepare
 
 
@@ -107,6 +108,23 @@ class EvidenceChecks(unittest.TestCase):
         bubble = E.Element("node", {"text": "synthetic", "enabled": "true"})
         field = E.Element("node", {"class": "android.widget.EditText", "text": ""})
         self.assertEqual(capture.public_send_state([bubble, field], "synthetic"), "submitted")
+
+    def test_diagnostic_identifies_missing_commands_without_paths(self):
+        commands = {"ffmpeg": False, "ffprobe": False, "sdkmanager": True}
+        self.assertEqual(diagnose.missing_preconditions(commands, True, 12, 12, 4),
+                         ["ffmpeg_missing", "ffprobe_missing"])
+
+    def test_diagnostic_reports_kvm_and_resources_separately(self):
+        commands = {"ffmpeg": True, "ffprobe": True, "sdkmanager": True}
+        self.assertEqual(diagnose.missing_preconditions(commands, False, 10, 8, 2),
+                         ["kvm_missing", "disk_below_11_gib", "available_memory_below_10_gib", "cpu_count_below_4"])
+
+    def test_diagnostic_does_not_treat_supported_resources_as_missing(self):
+        commands = {"ffmpeg": True, "ffprobe": True, "sdkmanager": True}
+        self.assertEqual(diagnose.missing_preconditions(commands, True, 12, 12, 4), [])
+
+    def test_diagnostic_missing_package_has_no_path_output(self):
+        self.assertIsNone(diagnose.installed_revision(Path("synthetic-missing-package.xml")))
 
 
 if __name__ == "__main__":
