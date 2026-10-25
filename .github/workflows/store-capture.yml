@@ -1,0 +1,94 @@
+name: Synthetic product-view store capture
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/store-capture.yml'
+      - 'app/src/storeScreenshot/**'
+      - 'app/src/test/kotlin/com/bitchat/android/store/**'
+      - 'tools/store-assets/**'
+      - 'store-assets/README.md'
+
+permissions:
+  contents: read
+
+jobs:
+  capture:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      ANDROID_STORE_CAPTURE_SERIAL: emulator-5554
+    steps:
+      - name: Checkout exact capture source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Set up pinned JDK
+        uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95
+        with:
+          distribution: temurin
+          java-version: 21.0.11+10.0.LTS
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92
+
+      - name: Install image tooling and test evidence gates
+        run: |
+          python3 -m pip install -r tools/store-assets/requirements.txt
+          python3 -m unittest discover -s tools/store-assets -p 'test_store_capture_manifest.py' -v
+          bash -n tools/store-assets/capture_android_store_screenshots.sh
+
+      - name: Prepare isolated CI emulator
+        run: |
+          export ANDROID_USER_HOME="$RUNNER_TEMP/wesh-android-user"
+          export ANDROID_AVD_HOME="$RUNNER_TEMP/wesh-store-avd"
+          mkdir -p "$ANDROID_USER_HOME" "$ANDROID_AVD_HOME"
+          echo "ANDROID_USER_HOME=$ANDROID_USER_HOME" >> "$GITHUB_ENV"
+          echo "ANDROID_AVD_HOME=$ANDROID_AVD_HOME" >> "$GITHUB_ENV"
+          set +o pipefail
+          yes | sdkmanager --licenses >/dev/null
+          set -o pipefail
+          sdkmanager 'platforms;android-37.0' 'build-tools;37.0.0' emulator 'system-images;android-35;google_apis;x86_64' >/dev/null
+          echo no | avdmanager create avd --name WeshStoreCapture --package 'system-images;android-35;google_apis;x86_64' --device pixel_2
+          sudo chmod a+rw /dev/kvm
+
+      - name: Build real product composables and verify release boundary
+        run: |
+          ./gradlew testDebugUnitTest lintStoreScreenshot assembleStoreScreenshot assembleRelease
+          python3 tools/store-assets/verify_store_manifest.py
+          python3 tools/store-assets/verify_capture_release_boundary.py app/build/outputs/apk/release
+
+      - name: Capture fourteen synthetic product-view scenes
+        run: |
+          sdk_root="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
+          "$sdk_root/emulator/emulator" -avd WeshStoreCapture -port 5554 -no-window -no-audio -no-boot-anim -no-snapshot-load -no-snapshot-save -gpu swiftshader -camera-front none -camera-back none > "$RUNNER_TEMP/store-emulator.log" 2>&1 &
+          adb -s "$ANDROID_STORE_CAPTURE_SERIAL" wait-for-device
+          booted=false
+          for attempt in $(seq 1 180); do
+            if [[ "$(adb -s "$ANDROID_STORE_CAPTURE_SERIAL" shell getprop sys.boot_completed | tr -d '\r')" == 1 ]]; then
+              booted=true
+              break
+            fi
+            sleep 2
+          done
+          [[ "$booted" == true ]] || { echo 'Synthetic emulator did not finish booting'; exit 1; }
+          adb -s "$ANDROID_STORE_CAPTURE_SERIAL" shell wm size 1080x1920
+          adb -s "$ANDROID_STORE_CAPTURE_SERIAL" shell wm density 420
+          export ANDROID_STORE_CAPTURE_OUTPUT="$RUNNER_TEMP/android-store-candidate107-unbound"
+          bash tools/store-assets/capture_android_store_screenshots.sh
+
+      - name: Stop isolated emulator
+        if: always()
+        run: adb -s "$ANDROID_STORE_CAPTURE_SERIAL" emu kill >/dev/null 2>&1 || true
+
+      - name: Retain only sanitized synthetic images and source manifest
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: android-store-candidate107-unbound
+          path: ${{ runner.temp }}/android-store-candidate107-unbound
+          if-no-files-found: error
+          retention-days: 14

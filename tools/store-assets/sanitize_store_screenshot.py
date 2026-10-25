@@ -17,5 +17,8 @@ with Image.open(source) as image:
     if image.size != (1080, 1920):
         raise SystemExit(f"expected a 1080x1920 emulator capture, got {image.size}")
     clean = image.convert("RGBA")
+    if clean.getchannel("A").getextrema() != (255, 255):
+        raise SystemExit("a store capture must be opaque")
+    clean.info.clear()
     destination.parent.mkdir(parents=True, exist_ok=True)
     clean.save(destination, "PNG", optimize=False, compress_level=9)

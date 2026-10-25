@@ -1,8 +1,10 @@
 package com.bitchat.android.store
 
+import android.annotation.SuppressLint
 import android.content.res.Configuration
 import android.os.Build
 import android.os.Bundle
+import android.util.Log
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -10,14 +12,15 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.systemBarsPadding
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
-import androidx.core.view.WindowCompat
-import androidx.core.view.WindowInsetsCompat
-import androidx.core.view.WindowInsetsControllerCompat
 import com.bitchat.android.BuildConfig
 import com.bitchat.android.ui.pave.AboutScreen
-import com.bitchat.android.ui.pave.ConnexionSheetContent
+import com.bitchat.android.ui.pave.ConnexionSheet
 import com.bitchat.android.ui.pave.ExchangeProgress
 import com.bitchat.android.ui.pave.ExchangeScreen
 import com.bitchat.android.ui.pave.FakeWeshInternetModeState
@@ -57,20 +60,20 @@ class StoreScreenshotActivity : ComponentActivity() {
             setRecentsScreenshotEnabled(true)
         }
         enableEdgeToEdge()
-        WindowCompat.setDecorFitsSystemWindows(window, false)
         val language = normalizedLanguage(intent.getStringExtra(EXTRA_LANGUAGE))
         val scene = intent.getStringExtra(EXTRA_SCENE).takeIf { it in SCENES } ?: SCENES.first()
-        val insetsController = WindowInsetsControllerCompat(window, window.decorView)
-        insetsController.isAppearanceLightStatusBars = scene == "public"
-        insetsController.isAppearanceLightNavigationBars = false
-        insetsController.hide(
-            WindowInsetsCompat.Type.statusBars() or WindowInsetsCompat.Type.navigationBars(),
-        )
 
         val fixture = StoreFixture.load(this, language)
         setContent {
-            WeshPaveTheme(WeshThemeId.Nuit) {
+            MirroredProductionFrame {
                 StoreScene(scene, fixture)
+                LaunchedEffect(scene, language) {
+                    // The runner disables OS animations. Await real composition frames instead
+                    // of a fixed capture delay or a forced product-runtime state.
+                    repeat(2) { withFrameNanos { } }
+                    reportFullyDrawn()
+                    Log.i("WeshStoreCapture", "READY $language $scene")
+                }
             }
         }
     }
@@ -89,6 +92,26 @@ class StoreScreenshotActivity : ComponentActivity() {
         val SCENES = listOf("home", "public", "private", "exchange", "settings", "connection", "about")
 
         private fun normalizedLanguage(requested: String?): String = if (requested == "fr") "fr" else "en"
+    }
+}
+
+/**
+ * Infrastructure mirror, not a shared product root. MainActivity wraps the app in this standard
+ * Theme/Scaffold. Its COMPLETE route passes through OnboardingFlowScreen -> WeshScreen without
+ * forwarding the computed innerPadding; real screens consume their own system-bar insets.
+ * Additional padding here would change the frozen layout. The manifest binds the root-chain files
+ * and the complete app/src/main tree before the captures can be reviewed.
+ */
+@androidx.compose.runtime.Composable
+@SuppressLint("UnusedMaterial3ScaffoldPaddingParameter")
+private fun MirroredProductionFrame(content: @androidx.compose.runtime.Composable () -> Unit) {
+    WeshPaveTheme {
+        Scaffold(
+            modifier = Modifier.fillMaxSize(),
+            containerColor = MaterialTheme.colorScheme.background,
+        ) { _ ->
+            WeshPaveTheme(WeshThemeId.Nuit, content)
+        }
     }
 }
 
@@ -199,26 +222,21 @@ private fun StoreScene(scene: String, f: StoreFixture) {
             summary = PaveSettingsSummary(f.self, previewsHidden = true, meeting = f.meeting, blockedCount = 0, appearance = WeshAppearance.Nuit),
             onErase = {},
             onOpen = {},
-            autoStartOnBoot = true,
+            autoStartOnBoot = false,
             onAutoStartOnBoot = {},
             onBack = {},
             modifier = Modifier.background(WeshPave.colors.bg),
         )
 
-        "connection" -> Box(
-            Modifier
-                .fillMaxSize()
-                .background(WeshPave.colors.surfaceRaised)
-                .systemBarsPadding(),
-        ) {
-            ConnexionSheetContent(
+        "connection" -> Box(Modifier.fillMaxSize()) {
+            StoreScene("home", f)
+            val internet = remember {
+                FakeWeshInternetModeState(enabled = false, status = PaveInternetStatus.Off)
+            }
+            ConnexionSheet(
                 bluetooth = PaveBluetoothInfo(on = true, phonesInRange = 3),
-                internet = FakeWeshInternetModeState(
-                    enabled = true,
-                    status = PaveInternetStatus.On(relays = 2),
-                    disclosureAccepted = true,
-                ),
-                onClose = {},
+                internet = internet,
+                onDismiss = {},
             )
         }
 

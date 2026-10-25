@@ -108,17 +108,26 @@ class StoreScreenshotContractTest {
     }
 
     @Test
-    fun `capture acknowledges Android system coaching before taking screenshots`() {
+    fun `capture preserves system bars and waits for composed product views`() {
         val script = File("../tools/store-assets/capture_android_store_screenshots.sh").readText()
-        val acknowledgement = "settings put secure immersive_mode_confirmations confirmed"
-        assertTrue(script.contains(acknowledgement))
-        assertTrue(script.indexOf(acknowledgement) < script.indexOf("exec-out screencap"))
+        assertFalse(script.contains("adb devices"))
+        assertFalse(script.contains("immersive_mode_confirmations"))
         assertTrue(script.contains("command clock -e hhmm 0941"))
         assertTrue(script.contains("command exit"))
-        assertTrue(captureActivity.contains("background(WeshPave.colors.bg)"))
-        assertTrue(captureActivity.contains("background(WeshPave.colors.surfaceRaised)"))
-        assertTrue(captureActivity.contains("isAppearanceLightStatusBars = scene == \"public\""))
-        assertTrue(captureActivity.contains("isAppearanceLightNavigationBars = false"))
+        assertTrue(script.contains("READY ${'$'}language ${'$'}scene"))
+        assertTrue(script.contains("wait_store_capture_stability.py --target"))
+        assertTrue(script.contains("\"${'$'}api\" != 35 || \"${'$'}density\" != 420"))
+        assertTrue(script.contains("--context \"${'$'}temporary_dir/context.json\""))
+        assertFalse(captureActivity.contains("insetsController.hide"))
+        assertFalse(captureActivity.contains("isAppearanceLightStatusBars"))
+        assertFalse(captureActivity.contains("isAppearanceLightNavigationBars"))
+        assertTrue(captureActivity.contains("MirroredProductionFrame"))
+        assertTrue(captureActivity.contains("Scaffold("))
+        assertTrue(captureActivity.contains("containerColor = MaterialTheme.colorScheme.background"))
+        assertTrue(captureActivity.contains("ConnexionSheet("))
+        assertFalse(captureActivity.contains("ConnexionSheetContent("))
+        assertTrue(captureActivity.contains("withFrameNanos"))
+        assertTrue(captureActivity.contains("enabled = false, status = PaveInternetStatus.Off"))
     }
 
     @Test
