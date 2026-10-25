@@ -1,0 +1,116 @@
+name: Native candidate probe
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - tools/arti-build/**
+      - .github/workflows/native-candidate.yml
+
+permissions:
+  contents: read
+
+jobs:
+  native-candidate:
+    name: Clean native candidate ${{ matrix.replica }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        replica: [a, b]
+
+    steps:
+      - name: Checkout tested source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Verify source identity and native tooling tests
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git diff --exit-code HEAD
+          df -h .
+          python3 tools/arti-build/test-provenance.py
+          python3 tools/arti-build/test_native_symbols.py
+          python3 tools/arti-build/test_compare_candidates.py
+          bash -n tools/arti-build/build-arti.sh tools/arti-build/rebuild-in-container.sh tools/arti-build/compare-symbols.sh
+
+      - name: Rebuild four ABIs and native symbols from clean pinned inputs
+        env:
+          ARTI_SYMBOL_OUTPUT_DIR: ${{ runner.temp }}/native-candidate-${{ matrix.replica }}/symbols
+        run: tools/arti-build/rebuild-in-container.sh
+
+      - name: Collect complete candidate without accepting the old native manifests
+        env:
+          CANDIDATE_DIR: ${{ runner.temp }}/native-candidate-${{ matrix.replica }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$CANDIDATE_DIR/jniLibs" "$CANDIDATE_DIR/manifests"
+          for abi in arm64-v8a armeabi-v7a x86 x86_64; do
+            mkdir "$CANDIDATE_DIR/jniLibs/$abi"
+            cp "app/src/main/jniLibs/$abi/libarti_android.so" "$CANDIDATE_DIR/jniLibs/$abi/"
+          done
+          cp tools/arti-build/SHA256SUMS tools/arti-build/SOURCE_SHA256SUMS "$CANDIDATE_DIR/manifests/"
+          python3 - <<'PY'
+          import os, sys
+          from pathlib import Path
+          sys.path.insert(0, "tools/arti-build")
+          import compare_candidates
+          compare_candidates.verify_checkout(Path.cwd(), os.environ["GITHUB_SHA"])
+          compare_candidates.validate_candidate(Path(os.environ["CANDIDATE_DIR"]), Path.cwd())
+          PY
+          df -h .
+
+      - name: Upload complete native replica
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: native-candidate-${{ matrix.replica }}
+          path: ${{ runner.temp }}/native-candidate-${{ matrix.replica }}/
+          retention-days: 14
+          if-no-files-found: error
+          compression-level: 0
+
+  compare-native-candidates:
+    name: Compare all candidate native bytes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    needs: native-candidate
+
+    steps:
+      - name: Checkout tested verification source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Download replica A
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: native-candidate-a
+          path: ${{ runner.temp }}/native-candidate-a
+
+      - name: Download replica B
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: native-candidate-b
+          path: ${{ runner.temp }}/native-candidate-b
+
+      - name: Verify inventory, source binding, all bytes and unchanged checksum gate
+        run: |
+          set -euo pipefail
+          python3 tools/arti-build/compare_candidates.py \
+            "$RUNNER_TEMP/native-candidate-a" "$RUNNER_TEMP/native-candidate-b" \
+            --repository-root "$GITHUB_WORKSPACE" --expected-sha "$GITHUB_SHA"
+          tools/arti-build/compare-symbols.sh \
+            "$RUNNER_TEMP/native-candidate-a/symbols" "$RUNNER_TEMP/native-candidate-b/symbols"
+
+      - name: Upload verified candidate for review
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: verified-native-candidate
+          path: ${{ runner.temp }}/native-candidate-a/
+          retention-days: 14
+          if-no-files-found: error
+          compression-level: 0

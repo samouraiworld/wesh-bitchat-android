@@ -3,8 +3,8 @@ use jni::sys::{jint, jlong, jstring};
 use jni::JNIEnv;
 use jni::JavaVM;
 
-use arti_client::config::TorClientConfigBuilder;
-use arti_client::{IsolationToken, StreamPrefs, TorClient};
+use arti_client::config::{BoolOrAuto, TorClientConfigBuilder};
+use arti_client::{IsolationToken, StreamPrefs, TorClient, TorClientConfig};
 use tor_rtcompat::PreferredRuntime;
 
 use anyhow::Result;
@@ -91,6 +91,28 @@ const ACCEPT_RETRY: Duration = Duration::from_millis(500);
 
 /// At most one log line per interval for refused connections, so a burst cannot flood the logs.
 const REFUSAL_LOG_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Wesh is a Tor client, with no provisioned Tor private keys. The upstream `keymgr`
+/// feature exposes the storage setter; it does not mean the store should be opened.
+fn client_config(state_dir: PathBuf, cache_dir: PathBuf) -> Result<TorClientConfig> {
+    let mut builder = TorClientConfigBuilder::from_directories(state_dir, cache_dir);
+    builder
+        .storage()
+        .keystore()
+        .enabled(BoolOrAuto::Explicit(false));
+    let config = builder.build()?;
+    require_disabled_keystore(&config)?;
+    Ok(config)
+}
+
+/// Refuse both implicit defaults and an enabled store before any bootstrap can start.
+fn require_disabled_keystore(config: &TorClientConfig) -> Result<()> {
+    let keystore = config.keystore();
+    if keystore.enabled().as_bool() != Some(false) || keystore.is_enabled() {
+        anyhow::bail!("Tor keystore must be explicitly disabled");
+    }
+    Ok(())
+}
 
 /// Aborts the SOCKS task, drops the client inside its runtime, then shuts the runtime down,
 /// which ends every Arti background task (circuits, guards, directory fetches). False when the
@@ -298,7 +320,7 @@ pub extern "C" fn Java_org_torproject_arti_ArtiNative_initialize(
         log_info!("State dir: {:?}", state_dir);
 
         // Create config with Android-specific directories
-        let config = TorClientConfigBuilder::from_directories(state_dir, cache_dir).build()?;
+        let config = client_config(state_dir, cache_dir)?;
 
         // Create client with Android-specific config
         let client = TorClient::create_bootstrapped(config).await?;
@@ -764,6 +786,102 @@ mod android_logger {
                 text.as_ptr() as *const c_char,
             );
         }
+    }
+}
+
+// The host tests never run Android logging. Keep the Android symbol shim test-only;
+// it is absent from every packaged library and does not add a JNI entry point.
+#[cfg(all(test, not(target_os = "android")))]
+#[export_name = "__android_log_write"]
+pub extern "C" fn host_test_android_log_write(
+    _priority: std::ffi::c_int,
+    _tag: *const std::ffi::c_char,
+    _text: *const std::ffi::c_char,
+) -> std::ffi::c_int {
+    0
+}
+
+#[cfg(test)]
+mod keystore_policy_tests {
+    use super::{client_config, require_disabled_keystore};
+    use arti_client::{
+        config::{BoolOrAuto, TorClientConfigBuilder},
+        TorClient,
+    };
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    struct SyntheticDirectory(PathBuf);
+
+    impl SyntheticDirectory {
+        fn new() -> Self {
+            static NEXT: AtomicU64 = AtomicU64::new(0);
+            let path = std::env::temp_dir().join(format!(
+                "wesh-keystore-policy-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed),
+            ));
+            std::fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for SyntheticDirectory {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.0).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn inert_client_does_not_create_a_keystore() {
+        let directory = SyntheticDirectory::new();
+        let state = directory.0.join("state");
+        let cache = directory.0.join("cache");
+        let config = client_config(state.clone(), cache).unwrap();
+        assert_eq!(config.keystore().enabled().as_bool(), Some(false));
+        assert!(!config.keystore().is_enabled());
+        assert!(config.keystore().primary_kind().is_none());
+
+        // Upstream guarantees this public API never connects to the network.
+        let client = TorClient::builder().config(config).create_inert().unwrap();
+        assert!(!state.join("keystore").exists());
+        drop(client);
+        assert!(!state.join("keystore").exists());
+    }
+
+    #[tokio::test]
+    async fn inert_client_ignores_an_unusable_synthetic_keystore_path() {
+        let directory = SyntheticDirectory::new();
+        let state = directory.0.join("state");
+        let cache = directory.0.join("cache");
+        std::fs::create_dir(&state).unwrap();
+        let sentinel = state.join("keystore");
+        let contents = b"synthetic sentinel, not a keystore or private key";
+        std::fs::write(&sentinel, contents).unwrap();
+        let config = client_config(state, cache).unwrap();
+
+        // Opening this path as a native keystore would fail because it is a file.
+        let client = TorClient::builder().config(config).create_inert().unwrap();
+        drop(client);
+        assert!(sentinel.is_file());
+        assert_eq!(std::fs::read(sentinel).unwrap(), contents);
+    }
+
+    #[test]
+    fn implicit_default_is_refused_before_bootstrap() {
+        let config = TorClientConfigBuilder::default().build().unwrap();
+        assert!(require_disabled_keystore(&config).is_err());
+    }
+
+    #[test]
+    fn explicitly_enabled_keystore_is_refused_before_bootstrap() {
+        let mut builder = TorClientConfigBuilder::default();
+        builder
+            .storage()
+            .keystore()
+            .enabled(BoolOrAuto::Explicit(true));
+        let config = builder.build().unwrap();
+        assert!(require_disabled_keystore(&config).is_err());
     }
 }
 
