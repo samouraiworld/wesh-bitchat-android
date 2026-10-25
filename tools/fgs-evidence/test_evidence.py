@@ -2,6 +2,7 @@
 import hashlib
 from pathlib import Path
 import stat
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -125,6 +126,46 @@ class EvidenceChecks(unittest.TestCase):
 
     def test_diagnostic_missing_package_has_no_path_output(self):
         self.assertIsNone(diagnose.installed_revision(Path("synthetic-missing-package.xml")))
+
+    def test_input_method_visibility_parses_actual_boolean_fields(self):
+        self.assertIs(capture.parse_ime_visibility("  mInputShown=true\n  mShowRequested=true\n"), True)
+        self.assertIs(capture.parse_ime_visibility("  mInputShown=false\n  mShowRequested=false\n"), False)
+
+    def test_missing_or_ambiguous_input_method_visibility_is_unknown(self):
+        self.assertIsNone(capture.parse_ime_visibility("  mShowRequested=true\n"))
+        self.assertIsNone(capture.parse_ime_visibility("mInputShown=true\nmInputShown=false\n"))
+
+    def test_back_is_sent_only_for_confirmed_visible_keyboard(self):
+        with patch("capture.adb", return_value="  mInputShown=true\n") as command:
+            capture.hide_keyboard_if_shown(capture.SERIALS[0])
+            self.assertEqual(command.call_args_list[-1].args,
+                             (capture.SERIALS[0], "shell", "input", "keyevent", "4"))
+            self.assertEqual(command.call_count, 2)
+
+    def test_no_back_when_keyboard_is_not_visible(self):
+        with patch("capture.adb", return_value="  mInputShown=false\n") as command:
+            capture.hide_keyboard_if_shown(capture.SERIALS[0])
+            self.assertEqual(command.call_count, 1)
+
+    def test_unknown_keyboard_state_aborts_without_back(self):
+        with patch("capture.adb", return_value="  mShowRequested=true\n") as command:
+            with self.assertRaises(capture.ImeVisibilityUnknown):
+                capture.hide_keyboard_if_shown(capture.SERIALS[0])
+            self.assertEqual(command.call_count, 1)
+
+    def test_keyboard_query_scopes_each_owned_emulator(self):
+        result = subprocess.CompletedProcess([], 0, b"  mInputShown=false\n", b"")
+        with patch("capture.subprocess.run", return_value=result) as command:
+            for serial in capture.SERIALS:
+                capture.hide_keyboard_if_shown(serial)
+            self.assertEqual([call.args[0] for call in command.call_args_list], [
+                ["adb", "-s", serial, "shell", "dumpsys", "input_method"] for serial in capture.SERIALS])
+
+    def test_keyboard_query_rejects_every_other_target_before_execution(self):
+        with patch("capture.subprocess.run") as command:
+            with self.assertRaises(ValueError):
+                capture.hide_keyboard_if_shown("emulator-5558")
+            command.assert_not_called()
 
 
 if __name__ == "__main__":

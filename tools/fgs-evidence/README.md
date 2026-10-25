@@ -59,6 +59,12 @@ KVM handling, real-discovery requirements or recording assertions. A third video
 attempt requires review of this exact correction and a deliberate Lead label;
 it has not been automatically started.
 
+Nickname entry dismisses the keyboard only when the owned emulator's actual
+input-method state reports `mInputShown=true`. False sends no Back; a missing or
+ambiguous field aborts with `ime_visibility_unknown`, without navigating Welcome
+blindly. The raw state stays in memory; no preference, identity or keyboard
+configuration is seeded or forced.
+
 The fixed canonical artifact is `12601010558` from release run `40197176611`,
 source `5008c95ae99933c180ee2ac6f767dd0e9c203a21`, tag
 `v1.0.0-beta.3-android.107` (annotated, **not Git-signed**). Its ZIP and all eleven

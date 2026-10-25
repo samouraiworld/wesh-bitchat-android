@@ -20,6 +20,10 @@ MESSAGE_B = "FGS-public-B-107"
 MESSAGE_BACKGROUND = "FGS-background-107"
 
 
+class ImeVisibilityUnknown(RuntimeError):
+    """A named collection gate; never include the raw input-method dump."""
+
+
 def adb(serial, *args, timeout=12):
     if serial not in SERIALS:
         raise ValueError("Only the two owned emulator serials are allowed")
@@ -63,6 +67,20 @@ def wait_ui(serial, label, deadline, contains=False):
     raise RuntimeError("Expected real UI state was not reached")
 
 
+def parse_ime_visibility(dump):
+    states = re.findall(r"\bmInputShown=(true|false)\b", dump)
+    return states[0] == "true" if len(states) == 1 else None
+
+
+def hide_keyboard_if_shown(serial):
+    # This raw synthetic-emulator state is read only in memory and never exported.
+    shown = parse_ime_visibility(adb(serial, "shell", "dumpsys", "input_method"))
+    if shown is None:
+        raise ImeVisibilityUnknown()
+    if shown:
+        adb(serial, "shell", "input", "keyevent", "4")
+
+
 def onboarding(serial, nickname, deadline):
     adb(serial, "shell", "am", "start", "-n", COMPONENT)
     named = False
@@ -80,7 +98,7 @@ def onboarding(serial, nickname, deadline):
             adb(serial, "shell", "input", "keyevent", "123")
             adb(serial, "shell", "input", "keyevent", *(["67"] * 40))
             adb(serial, "shell", "input", "text", nickname)
-            adb(serial, "shell", "input", "keyevent", "4")
+            hide_keyboard_if_shown(serial)
             named = True
             continue
         # Only actual product actions and Android permission buttons; no arbitrary dialog dismissal.
@@ -236,6 +254,9 @@ def main(root):
         if time.monotonic() >= deadline:
             raise RuntimeError("Scenario exceeded recording budget")
         receipt["result"] = "PASS_SIMULATED_BLE_ONLY"
+    except ImeVisibilityUnknown:
+        receipt["failureGate"] = "ime_visibility_unknown"
+        raise
     finally:
         # On success, preserve real post-roll until the OS recorder's fixed 180-second limit.
         # This covers startup latency without weakening the conservative duration assertion.
@@ -295,5 +316,7 @@ def main(root):
 if __name__ == "__main__":
     try:
         main(Path(sys.argv[1]))
+    except ImeVisibilityUnknown:
+        sys.exit("FGS UI gate failed: ime_visibility_unknown; no Back or passing video exported")
     except Exception:
         sys.exit("Real emulator attempt did not complete; no passing video is exported.")
