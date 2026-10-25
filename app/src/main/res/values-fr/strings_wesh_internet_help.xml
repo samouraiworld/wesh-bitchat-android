@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="wesh_pave_internet_help_network">Vérifiez que le Wi-Fi ou les données mobiles donnent accès à Internet, puis appuyez sur Réessayer.</string>
+    <string name="wesh_pave_internet_help_tor">Vérifiez votre connexion Internet, puis appuyez sur Réessayer. Si Tor ne se connecte toujours pas, essayez un autre réseau.</string>
+    <string name="wesh_pave_internet_help_relays">Les relais de messages n’ont pas répondu. Patientez un instant, puis appuyez sur Réessayer.</string>
+    <string name="wesh_pave_internet_help_preserved">Cette erreur de connexion n’efface ni vos messages ni vos contacts. Les messages en attente ne sont pas confirmés comme livrés. Vous pouvez désactiver le mode Internet et continuer par Bluetooth avec vos contacts à proximité.</string>
+</resources>

@@ -191,11 +191,12 @@ fun MeetingNoteScreen(
 
 /**
  * Ce contact: the local name and memo of a QR contact ([qrName] null hides them for any other
- * conversation), with the name from the QR code always shown, then Block and Remove.
+ * conversation), with the name from the QR code and its key fingerprint, then Block and Remove.
  */
 @Composable
 fun ContactSettingsScreen(
     qrName: String?,
+    contactFingerprint: String?,
     alias: String,
     onAliasChange: (String) -> Unit,
     memo: String,
@@ -211,7 +212,16 @@ fun ContactSettingsScreen(
     val c = WeshPave.colors
     SettingsDetailFrame(stringResource(R.string.wesh_pave_fluo_contact_actions_title), onBack) {
         if (qrName != null) {
-            Text(stringResource(R.string.wesh_pave_fluo_contact_qr_name, remoteDisplayName(qrName)), style = WeshType.body, color = c.ink)
+            Column(verticalArrangement = Arrangement.spacedBy(WeshSpace.s1)) {
+                Text(stringResource(R.string.wesh_pave_fluo_contact_qr_name, remoteDisplayName(qrName)), style = WeshType.body, color = c.ink)
+                Text(stringResource(R.string.wesh_pave_fingerprint_contact), style = WeshType.caption, color = c.inkMuted)
+                if (contactFingerprint != null) {
+                    val spoken = stringResource(R.string.wesh_pave_fingerprint_label) + " : " + PaveFingerprint.spoken(contactFingerprint)
+                    Text(contactFingerprint, style = WeshType.fingerprint, color = c.ink, modifier = Modifier.semantics { contentDescription = spoken })
+                } else {
+                    Text(stringResource(R.string.wesh_pave_fingerprint_unavailable), style = WeshType.caption, color = c.warning)
+                }
+            }
             PaveTextArea(alias, onAliasChange, stringResource(R.string.wesh_pave_fluo_contact_alias), singleLine = true, enabled = !saving)
             PaveTextArea(memo, onMemoChange, stringResource(R.string.wesh_pave_fluo_contact_memo), singleLine = false, enabled = !saving)
             Text(stringResource(R.string.wesh_pave_fluo_contact_note_body), style = WeshType.caption, color = c.inkMuted)

@@ -31,6 +31,7 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.bitchat.android.ui.qrCameraSelector
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.BinaryBitmap
 import com.google.zxing.DecodeHintType
@@ -193,7 +194,7 @@ internal class ScannerBindingGuard {
 }
 
 /**
- * Back camera preview that reports each new decoded text once. Needs the CAMERA permission.
+ * Camera preview that reports each new decoded text once. Needs the CAMERA permission.
  * Only the centered [viewfinder] square of the preview is decoded, so a code elsewhere in view
  * (a stranger's, in a crowd) is never read.
  */
@@ -263,8 +264,12 @@ fun PaveQrScanner(
                     .build()
                     .also { it.setAnalyzer(executor, analyzer) }
                 runCatching {
+                    val selector = qrCameraSelector(
+                        provider.hasCamera(CameraSelector.DEFAULT_BACK_CAMERA),
+                        provider.hasCamera(CameraSelector.DEFAULT_FRONT_CAMERA),
+                    ) ?: error("No camera available")
                     provider.unbindAll()
-                    provider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis)
+                    provider.bindToLifecycle(lifecycleOwner, selector, preview, analysis)
                 }.onFailure { Log.w("PaveQrScanner", "Camera unavailable") }
                 val release: () -> Unit = {
                     analysis.clearAnalyzer()

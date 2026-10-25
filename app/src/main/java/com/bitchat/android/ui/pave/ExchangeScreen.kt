@@ -51,6 +51,7 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.bitchat.android.R
+import com.bitchat.android.ui.hasQrCamera
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.isGranted
 import com.google.accompanist.permissions.rememberPermissionState
@@ -182,6 +183,19 @@ private fun CameraArea(onScanned: (String) -> Unit, decoder: QrFrameDecoder) {
         return
     }
     val context = LocalContext.current
+    val hasCamera = remember(context) { hasQrCamera(context.packageManager) }
+    if (!hasCamera) {
+        Column(
+            modifier = Modifier.fillMaxWidth().heightIn(min = 240.dp).clip(shape).background(c.surface).padding(WeshSpace.s4),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(WeshSpace.s3, Alignment.CenterVertically),
+        ) {
+            Icon(Icons.Rounded.NoPhotography, contentDescription = null, tint = c.warning, modifier = Modifier.size(32.dp))
+            Text(stringResource(R.string.wesh_camera_unavailable), style = WeshType.headline, color = c.ink, textAlign = TextAlign.Center)
+            Text(stringResource(R.string.wesh_camera_unavailable_body), style = WeshType.body, color = c.ink, textAlign = TextAlign.Center)
+        }
+        return
+    }
     val camera = rememberPermissionState(Manifest.permission.CAMERA)
     // Never asked on open: the rationale comes first, the request only on "Autoriser la caméra".
     var asked by rememberSaveable { mutableStateOf(false) }

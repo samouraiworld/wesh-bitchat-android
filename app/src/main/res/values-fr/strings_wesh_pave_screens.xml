@@ -10,7 +10,7 @@
     <string name="wesh_pave_exchange_they_pending">Votre code</string>
     <string name="wesh_pave_exchange_i_scanned">Son code est scanné</string>
     <string name="wesh_pave_exchange_i_pending">Son code</string>
-    <string name="wesh_pave_exchange_footer">À deux coches, la discussion privée s’ouvre toute seule.</string>
+    <string name="wesh_pave_exchange_footer">Après le scan des deux codes, touchez « Ouvrir la discussion » pour continuer.</string>
     <string name="wesh_pave_step_done">Fait</string>
     <string name="wesh_pave_step_pending">En attente</string>
     <string name="wesh_pave_camera_denied">Autorisez la caméra dans Réglages</string>
@@ -52,7 +52,7 @@
         <item quantity="many">Connecté via Tor · %d relais</item>
         <item quantity="other">Connecté via Tor · %d relais</item>
     </plurals>
-    <string name="wesh_pave_internet_error_tor">Tor est bloqué sur ce réseau.</string>
+    <string name="wesh_pave_internet_error_tor">Tor n’a pas réussi à se connecter.</string>
     <string name="wesh_pave_internet_error_network">Pas de réseau pour l’instant.</string>
     <string name="wesh_pave_internet_error_relays">Les relais ne répondent pas.</string>
     <string name="wesh_pave_internet_unavailable">Indisponible dans cette version.</string>

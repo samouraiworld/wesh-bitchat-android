@@ -246,6 +246,8 @@
   <string name="verify_qr_unavailable">qr indisponible</string>
   <string name="verify_camera_permission">permission caméra requise</string>
   <string name="verify_request_camera">activer caméra</string>
+  <string name="wesh_camera_unavailable">Cet appareil n’a pas de caméra</string>
+  <string name="wesh_camera_unavailable_body">Vous pouvez afficher votre QR, mais cet appareil ne peut pas scanner celui de votre contact. Un contact privé est vérifié uniquement après le scan des deux codes. Le salon local reste accessible.</string>
   <string name="verify_paste_label">coller url de vérification</string>
   <string name="verify_validate">valider</string>
   <string name="verify_scanned">vérification demandée</string>
