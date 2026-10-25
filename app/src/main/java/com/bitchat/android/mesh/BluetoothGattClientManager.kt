@@ -1,19 +1,26 @@
 package com.bitchat.android.mesh
 
+import android.annotation.SuppressLint
 import android.bluetooth.*
 import android.bluetooth.le.BluetoothLeScanner
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.content.Context
+import android.location.LocationManager
 import android.os.ParcelUuid
 import android.os.Build
+import android.os.SystemClock
+import android.provider.Settings
 import android.util.Log
+import androidx.annotation.RequiresApi
 import com.bitchat.android.protocol.BitchatPacket
 import com.bitchat.android.util.AppConstants
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.yield
 import java.util.*
 import kotlinx.coroutines.Job
 import com.bitchat.android.ui.debug.DebugSettingsManager
@@ -30,7 +37,17 @@ class BluetoothGattClientManager(
     private val powerManager: PowerManager,
     private val delegate: BluetoothConnectionManagerDelegate?,
     private val inboundLimiter: InboundLinkRateLimiter = InboundLinkRateLimiter(),
-    private val currentTimeMillis: () -> Long = System::currentTimeMillis
+    private val platformSdkInt: Int = Build.VERSION.SDK_INT,
+    private val legacyLocationEnabledProvider: (() -> Boolean)? = null,
+    private val beforeScanPublication: (() -> Unit)? = null,
+    private val afterScanCallbackPreflight: (() -> Unit)? = null,
+    private val afterScanScheduleOwnerCheck: ((shouldScan: Boolean) -> Unit)? = null,
+    private val roleFailure: (
+        ownerGeneration: Long,
+        reason: String,
+        action: BluetoothRoleFailureAction
+    ) -> Unit = { _, _, _ -> },
+    private val elapsedRealtimeMillis: () -> Long = SystemClock::elapsedRealtime
 ) {
     
     companion object {
@@ -86,30 +103,56 @@ class BluetoothGattClientManager(
     // Scan management
     private data class ActiveScan(
         val scanner: BluetoothLeScanner,
-        val callback: ScanCallback
+        val callback: ScanCallback,
+        val generation: Long,
+        var platformStartReturned: Boolean = false,
+        var stopIssuedAfterStart: Boolean = false
+    )
+    private data class ScanAdmission(val callback: ScanCallback, val generation: Long)
+    private data class ScanJobs(val dutyCycle: Job?, val watchdog: Job?)
+    private data class ScanScheduleChange(
+        val previous: ScanJobs,
+        val next: Job?,
+        val ownerGeneration: Long,
+        val enabled: Boolean,
+        val continuous: Boolean
     )
     private val scanLock = Any()
     @Volatile private var activeScan: ActiveScan? = null
     
     // Scan rate limiting to prevent "scanning too frequently" errors
-    private var lastScanStartTime = 0L
+    private val scanRateLimit = 5000L // Minimum 5 seconds between scan start attempts
+    // A monotonic clock begins at boot, so the sentinel must still allow the first immediate scan.
+    private var lastScanStartTime = -scanRateLimit
     private var lastScanStopTime = 0L
     @Volatile private var isCurrentlyScanning = false
-    private val scanRateLimit = 5000L // Minimum 5 seconds between scan start attempts
 
     // Self-healing scan state.
     // scanningDesired distinguishes "we want to be scanning but it isn't running" (a fault to recover
     // from) from "scanning is intentionally off" (e.g. duty-cycle OFF window or client disabled).
     @Volatile private var scanningDesired = false
+    @Volatile private var legacyLocationAllowed = true
+    @Volatile private var scanSupported = true
     @Volatile private var lastScanResultTime = 0L
     private var scanRetryCount = 0
     private var scanWatchdogJob: Job? = null
     private var scanDutyCycleJob: Job? = null
+    private var scanScheduleGeneration = 0L
+    private var scanGeneration = 0L
+    private var scanIntentGeneration = 0L
+    private var locationObservationGeneration = 0L
+    private var ownerGeneration = 0L
     
     // State management
     @Volatile private var isActive = false
     private val clientLock = Any()
     private val clientAttempts = mutableMapOf<String, ClientAttempt>()
+    /**
+     * Exact scan generation allowed to create a client attempt. Publication and invalidation take
+     * [scanLock] then [clientLock]; dial admission takes only [clientLock]. This makes invalidation
+     * and attempt creation linearizable without holding [scanLock] across Android platform calls.
+     */
+    private var dialableScan: ScanAdmission? = null
     private enum class ClientPhase { CONNECTING, MTU, DISCOVERY, CCCD, READY, CLOSED }
     
     /**
@@ -117,7 +160,7 @@ class BluetoothGattClientManager(
      */
     fun start(): Boolean = startResult() == BluetoothRoleStartResult.STARTED
 
-    internal fun startResult(): BluetoothRoleStartResult {
+    internal fun startResult(ownerGeneration: Long = 0L): BluetoothRoleStartResult {
         // Respect debug setting
         if (!isClientRoleEnabled()) {
             Log.i(TAG, "Client start skipped: BLE/GATT Client disabled in debug settings")
@@ -143,18 +186,30 @@ class BluetoothGattClientManager(
             return BluetoothRoleStartResult.ADAPTER_OFF
         }
 
-        val scannerAvailable = try {
-            bleScanner != null
-        } catch (_: SecurityException) {
-            Log.w(TAG, "Bluetooth permission revoked while acquiring scanner")
-            return BluetoothRoleStartResult.PERMISSION_DENIED
+        if (scanSupported) {
+            val scannerAvailable = try {
+                bleScanner != null
+            } catch (_: SecurityException) {
+                Log.w(TAG, "Bluetooth permission revoked while acquiring scanner")
+                return BluetoothRoleStartResult.PERMISSION_DENIED
+            }
+            if (!scannerAvailable) {
+                Log.e(TAG, "BLE scanner not available")
+                return BluetoothRoleStartResult.RESOURCE_UNAVAILABLE
+            }
         }
-        if (!scannerAvailable) {
-            Log.e(TAG, "BLE scanner not available")
-            return BluetoothRoleStartResult.RESOURCE_UNAVAILABLE
+
+        val locationObservation = synchronized(scanLock) { locationObservationGeneration }
+        val initialLocationAllowed = readLegacyLocationEnabled()
+        synchronized(scanLock) {
+            if (locationObservation == locationObservationGeneration &&
+                legacyLocationAllowed != initialLocationAllowed) {
+                legacyLocationAllowed = initialLocationAllowed
+                ++scanIntentGeneration
+            }
+            this.ownerGeneration = ownerGeneration
+            isActive = true
         }
-        
-        isActive = true
         
         connectionScope.launch {
             applyPowerProfile(powerManager.profile.value)
@@ -167,15 +222,20 @@ class BluetoothGattClientManager(
      * Stop client manager
      */
     fun stop() {
-        isActive = false
+        val stoppedScan: ActiveScan?
+        val stoppedJobs: ScanJobs
+        synchronized(scanLock) {
+            isActive = false
+            scanningDesired = false
+            ++scanIntentGeneration
+            stoppedScan = detachActiveScanLocked()
+            stoppedJobs = detachScheduledScanJobsLocked()
+        }
+        cancelScanJobs(stoppedJobs)
         synchronized(clientLock) {
             clientAttempts.values.toList().forEach { it.finish() }
         }
-        scanningDesired = false
-        scanDutyCycleJob?.cancel()
-        scanDutyCycleJob = null
-        stopScanWatchdog()
-        stopScanning()
+        stoppedScan?.let(::stopScanGeneration)
         Log.i(TAG, "GATT client manager stopped")
     }
 
@@ -188,14 +248,95 @@ class BluetoothGattClientManager(
      * Handle scan state changes from power manager
      */
     fun onScanStateChanged(shouldScan: Boolean) {
+        applyScanState(shouldScan, requiredScheduleOwner = null)
+    }
+
+    /**
+     * Apply a schedule mutation only while its owner is current. Owner validation and desired-state
+     * mutation share [scanLock], so a replaced duty job cannot stop a newer scan generation.
+     */
+    private fun applyScanState(shouldScan: Boolean, requiredScheduleOwner: Long?): Boolean {
         val enabled = isClientRoleEnabled()
-        scanningDesired = shouldScan && enabled
-        if (shouldScan && enabled) {
+        var scanToStop: ActiveScan? = null
+        val desired = synchronized(scanLock) {
+            if (requiredScheduleOwner != null &&
+                requiredScheduleOwner != scanScheduleGeneration) return false
+            if (requiredScheduleOwner != null) afterScanScheduleOwnerCheck?.invoke(shouldScan)
+            val next = shouldScan && enabled && scanSupported && isActive
+            if (scanningDesired != next) {
+                scanningDesired = next
+                ++scanIntentGeneration
+            }
+            if (!next) scanToStop = detachActiveScanLocked()
+            next
+        }
+        if (desired) {
             startScanning()
         } else {
-            stopScanning()
+            scanToStop?.let(::stopScanGeneration)
+        }
+        return requiredScheduleOwner == null || (enabled && isActive && scanSupported)
+    }
+
+    /** Refresh the legacy Android Location gate from process-scope receiver state. */
+    fun refreshLegacyLocationState() {
+        if (platformSdkInt >= Build.VERSION_CODES.S) return
+        onLegacyLocationChanged(readLegacyLocationEnabled())
+    }
+
+    /**
+     * Android 11 and older gate BLE discovery on the system Location switch. Preserve the desired
+     * power-profile state while Location is off, but detach the exact scan generation immediately.
+     * Android 12+ intentionally ignores the legacy switch.
+     */
+    fun onLegacyLocationChanged(enabled: Boolean) {
+        if (platformSdkInt >= Build.VERSION_CODES.S) return
+        var scanToStop: ActiveScan? = null
+        val changed = synchronized(scanLock) {
+            ++locationObservationGeneration
+            val stateChanged = if (legacyLocationAllowed == enabled) false else {
+                legacyLocationAllowed = enabled
+                ++scanIntentGeneration
+                true
+            }
+            if (!enabled) scanToStop = detachActiveScanLocked()
+            stateChanged
+        }
+        if (!enabled) {
+            scanToStop?.let(::stopScanGeneration)
+            return
+        }
+        if (changed && isActive && scanningDesired && scanSupported && isClientRoleEnabled()) {
+            forceRestartScan()
         }
     }
+
+    @SuppressLint("NewApi")
+    @Suppress("DEPRECATION")
+    private fun readLegacyLocationEnabled(): Boolean {
+        if (platformSdkInt >= Build.VERSION_CODES.S) return true
+        legacyLocationEnabledProvider?.let { provider ->
+            return try { provider() } catch (_: Exception) { false }
+        }
+        return try {
+            if (platformSdkInt >= Build.VERSION_CODES.P) {
+                locationManagerEnabled()
+            } else {
+                Settings.Secure.getInt(
+                    context.applicationContext.contentResolver,
+                    Settings.Secure.LOCATION_MODE,
+                    Settings.Secure.LOCATION_MODE_OFF
+                ) != Settings.Secure.LOCATION_MODE_OFF
+            }
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    @RequiresApi(Build.VERSION_CODES.P)
+    private fun locationManagerEnabled(): Boolean =
+        (context.applicationContext.getSystemService(Context.LOCATION_SERVICE) as? LocationManager)
+            ?.isLocationEnabled ?: false
     
     /**
      * Start scanning with rate limiting
@@ -204,11 +345,17 @@ class BluetoothGattClientManager(
     private fun startScanning() {
         // Respect debug setting
         val enabled = isClientRoleEnabled()
-        val scanner = bleScanner
-        if (!permissionManager.hasBluetoothPermissions() || scanner == null || !isActive || !scanningDesired || !enabled) return
+        val scanner = try {
+            bleScanner
+        } catch (_: SecurityException) {
+            Log.w(TAG, "Bluetooth permission revoked while acquiring scanner")
+            return
+        }
+        if (!permissionManager.hasBluetoothPermissions() || scanner == null || !isActive ||
+            !scanningDesired || !legacyLocationAllowed || !scanSupported || !enabled) return
         
         // Rate limit scan starts to prevent "scanning too frequently" errors
-        val currentTime = currentTimeMillis()
+        val currentTime = elapsedRealtimeMillis()
         if (isCurrentlyScanning) {
             return
         }
@@ -216,12 +363,15 @@ class BluetoothGattClientManager(
         val timeSinceLastStart = currentTime - lastScanStartTime
         if (timeSinceLastStart < scanRateLimit) {
             val remainingWait = scanRateLimit - timeSinceLastStart
+            val intentGeneration = synchronized(scanLock) { scanIntentGeneration }
             Log.d(TAG, "Scan rate limited: waiting ${remainingWait}ms before starting scan")
             
             // Schedule delayed scan start
             connectionScope.launch {
                 delay(remainingWait)
-                if (isActive && scanningDesired && !isCurrentlyScanning && isClientRoleEnabled()) {
+                if (isCurrentScanIntent(intentGeneration) && isActive && scanningDesired &&
+                    legacyLocationAllowed && scanSupported &&
+                    !isCurrentlyScanning && isClientRoleEnabled()) {
                     startScanning()
                 }
             }
@@ -235,28 +385,46 @@ class BluetoothGattClientManager(
         val scanFilters = listOf(scanFilter)
 
         val callback = object : ScanCallback() {
-            private fun isCurrent(): Boolean = activeScan?.callback === this && isActive && scanningDesired
+            private fun currentAdmission(): ScanAdmission? = synchronized(scanLock) {
+                activeScan?.takeIf {
+                    it.callback === this && isActive && scanningDesired &&
+                        legacyLocationAllowed && scanSupported
+                }?.let { ScanAdmission(this, it.generation) }
+            }
 
             override fun onScanResult(callbackType: Int, result: ScanResult) {
-                if (isCurrent() && permissionManager.hasBluetoothPermissions()) handleScanResult(result)
+                val admission = currentAdmission() ?: return
+                afterScanCallbackPreflight?.invoke()
+                if (permissionManager.hasBluetoothPermissions()) handleScanResult(result, admission)
             }
 
             override fun onBatchScanResults(results: MutableList<ScanResult>) {
                 results.forEach { result ->
-                    if (isCurrent() && permissionManager.hasBluetoothPermissions()) handleScanResult(result)
+                    val admission = currentAdmission() ?: return
+                    afterScanCallbackPreflight?.invoke()
+                    if (permissionManager.hasBluetoothPermissions()) handleScanResult(result, admission)
                 }
             }
 
             override fun onScanFailed(errorCode: Int) {
-                if (!isCurrent()) return
-                isCurrentlyScanning = false
-                lastScanStopTime = currentTimeMillis()
+                if (errorCode == ScanCallback.SCAN_FAILED_FEATURE_UNSUPPORTED) {
+                    disableUnsupportedScanGeneration(this)
+                    Log.e(TAG, "Scan failed: $errorCode")
+                    return
+                }
+                val failedScan = synchronized(scanLock) {
+                    val active = activeScan
+                    if (active?.callback !== this || !isActive) return
+                    (detachActiveScanLocked(active) ?: return).also {
+                        lastScanStopTime = elapsedRealtimeMillis()
+                    }
+                }
 
                 when (errorCode) {
                     ScanCallback.SCAN_FAILED_ALREADY_STARTED -> {
                         // Already started: the stack thinks a scan is running. Re-arm from a clean
                         // state so we don't stay wedged (stop then restart with backoff).
-                        stopScanning()
+                        stopScanGeneration(failedScan)
                         scheduleScanRestart("already-started", SCAN_RETRY_BASE_MS)
                     }
                     ScanCallback.SCAN_FAILED_APPLICATION_REGISTRATION_FAILED -> {
@@ -267,7 +435,6 @@ class BluetoothGattClientManager(
                     ScanCallback.SCAN_FAILED_INTERNAL_ERROR -> {
                         scheduleScanRestart("internal-error", SCAN_RETRY_BASE_MS)
                     }
-                    ScanCallback.SCAN_FAILED_FEATURE_UNSUPPORTED -> Unit // permanent: don't retry
                     ScanCallback.SCAN_FAILED_OUT_OF_HARDWARE_RESOURCES -> {
                         // Out of hardware resources: back off longer so other scanners/connections
                         // can free up before we try again.
@@ -283,21 +450,68 @@ class BluetoothGattClientManager(
                 Log.e(TAG, "Scan failed: $errorCode")
             }
         }
-        
-        synchronized(scanLock) {
-            if (!isActive || !scanningDesired || isCurrentlyScanning) return
-            val scan = ActiveScan(scanner, callback)
+
+        beforeScanPublication?.invoke()
+        val scan = synchronized(scanLock) {
+            if (!isActive || !scanningDesired || !legacyLocationAllowed || !scanSupported ||
+                isCurrentlyScanning || !permissionManager.hasBluetoothPermissions() ||
+                !isClientRoleEnabled()) return
+            val scan = ActiveScan(scanner, callback, ++scanGeneration)
             activeScan = scan
-            try {
-                lastScanStartTime = currentTime
-                isCurrentlyScanning = true
-                scanner.startScan(scanFilters, powerManager.getScanSettings(), callback)
-                Log.i(TAG, "BLE scan started")
-            } catch (e: Exception) {
-                Log.e(TAG, "Exception starting scan: ${e.message}")
-                if (activeScan === scan) activeScan = null
-                isCurrentlyScanning = false
+            synchronized(clientLock) {
+                dialableScan = ScanAdmission(callback, scan.generation)
             }
+            lastScanStartTime = elapsedRealtimeMillis()
+            isCurrentlyScanning = true
+            scan
+        }
+        try {
+            scanner.startScan(scanFilters, powerManager.getScanSettings(), callback)
+            Log.i(TAG, "BLE scan started")
+        } catch (_: SecurityException) {
+            Log.w(TAG, "Bluetooth permission revoked while starting scan")
+            synchronized(scanLock) {
+                if (activeScan === scan) {
+                    detachActiveScanLocked(scan)
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "BLE scan could not be started (${e.javaClass.simpleName})")
+            synchronized(scanLock) {
+                if (activeScan === scan) {
+                    detachActiveScanLocked(scan)
+                }
+            }
+        } finally {
+            val stale = synchronized(scanLock) {
+                scan.platformStartReturned = true
+                activeScan !== scan || activeScan?.generation != scan.generation
+            }
+            if (stale) stopScanGeneration(scan)
+        }
+    }
+
+    private fun disableUnsupportedScanGeneration(callback: ScanCallback) {
+        val disabled = synchronized(scanLock) {
+            val failedScan = activeScan ?: return
+            if (!isActive || !scanSupported || failedScan.callback !== callback ||
+                failedScan.generation != scanGeneration) return
+            detachActiveScanLocked(failedScan)
+            lastScanStopTime = elapsedRealtimeMillis()
+            scanSupported = false
+            scanningDesired = false
+            ++scanIntentGeneration
+            Triple(failedScan, ownerGeneration, detachScheduledScanJobsLocked())
+        }
+        stopScanGeneration(disabled.first)
+        cancelScanJobs(disabled.third)
+        connectionScope.launch {
+            yield()
+            roleFailure(
+                disabled.second,
+                "scan-feature-unsupported",
+                BluetoothRoleFailureAction.DISABLE_CLIENT_SCAN
+            )
         }
     }
     
@@ -309,12 +523,41 @@ class BluetoothGattClientManager(
         val scan = synchronized(scanLock) {
             // Detach this generation before touching Android: permission loss cannot retain a
             // live flag, and adapter replacement cannot redirect the stop to a different scanner.
-            activeScan.also {
-                activeScan = null
-                isCurrentlyScanning = false
-            }
+            detachActiveScanLocked()
         } ?: return
-        lastScanStopTime = currentTimeMillis()
+        lastScanStopTime = elapsedRealtimeMillis()
+        stopScanGeneration(scan)
+    }
+
+    /** Caller must hold [scanLock]. Lock order is always scan -> client. */
+    private fun detachActiveScanLocked(expected: ActiveScan? = null): ActiveScan? {
+        val scan = activeScan ?: run {
+            synchronized(clientLock) { dialableScan = null }
+            isCurrentlyScanning = false
+            return null
+        }
+        if (expected != null && scan !== expected) return null
+        synchronized(clientLock) {
+            val admission = dialableScan
+            if (admission?.callback === scan.callback && admission.generation == scan.generation) {
+                dialableScan = null
+            }
+        }
+        activeScan = null
+        isCurrentlyScanning = false
+        return scan
+    }
+
+    @Suppress("DEPRECATION")
+    private fun stopScanGeneration(scan: ActiveScan) {
+        val shouldStop = synchronized(scanLock) {
+            if (!scan.platformStartReturned) true
+            else if (scan.stopIssuedAfterStart) false else {
+                scan.stopIssuedAfterStart = true
+                true
+            }
+        }
+        if (!shouldStop) return
         try {
             scan.scanner.stopScan(scan.callback)
         } catch (_: SecurityException) {
@@ -322,6 +565,10 @@ class BluetoothGattClientManager(
         } catch (_: Exception) {
             Log.w(TAG, "Error stopping scan")
         }
+    }
+
+    private fun isCurrentScanIntent(generation: Long): Boolean = synchronized(scanLock) {
+        generation == scanIntentGeneration
     }
 
     /**
@@ -332,13 +579,34 @@ class BluetoothGattClientManager(
     private fun scheduleScanRestart(reason: String, baseDelayMs: Long) {
         scanRetryCount++
         val delayMs = (baseDelayMs * scanRetryCount).coerceAtMost(SCAN_MAX_RETRY_DELAY_MS)
+        val intentGeneration = synchronized(scanLock) { scanIntentGeneration }
         Log.w(TAG, "Scheduling scan restart in ${delayMs}ms (attempt $scanRetryCount, reason=$reason)")
         connectionScope.launch {
             delay(delayMs)
-            if (isActive && scanningDesired && isClientRoleEnabled() && !isCurrentlyScanning) {
+            if (isCurrentScanIntent(intentGeneration) && isActive && scanningDesired &&
+                legacyLocationAllowed && scanSupported &&
+                isClientRoleEnabled() && !isCurrentlyScanning) {
                 startScanning()
             }
         }
+    }
+
+    /** Caller must hold [scanLock]. Invalidating the owner fences jobs before cancellation runs. */
+    private fun detachScheduledScanJobsLocked(): ScanJobs {
+        ++scanScheduleGeneration
+        val jobs = ScanJobs(scanDutyCycleJob, scanWatchdogJob)
+        scanDutyCycleJob = null
+        scanWatchdogJob = null
+        return jobs
+    }
+
+    private fun cancelScanJobs(jobs: ScanJobs) {
+        jobs.dutyCycle?.cancel()
+        jobs.watchdog?.cancel()
+    }
+
+    private fun isScanScheduleOwner(generation: Long): Boolean = synchronized(scanLock) {
+        generation == scanScheduleGeneration && isActive && scanSupported
     }
 
     /**
@@ -346,49 +614,63 @@ class BluetoothGattClientManager(
      * onScanFailed (internal stack reset, Doze, background throttling), which leaves the app
      * believing it is scanning while it is not. This re-arms the scanner in those cases.
      */
-    private fun startScanWatchdog() {
-        scanWatchdogJob?.cancel()
-        scanWatchdogJob = connectionScope.launch {
-            while (isActive) {
-                delay(SCAN_WATCHDOG_INTERVAL_MS)
-                try {
-                    // Only act when we are supposed to be scanning. Honors duty-cycle OFF windows
-                    // and the client-disabled state via scanningDesired.
-                    if (!isActive || !scanningDesired || !isClientRoleEnabled()) continue
-                    if (!permissionManager.hasBluetoothPermissions() || bluetoothAdapter?.isEnabled != true) continue
+    private suspend fun runScanWatchdog(ownerGeneration: Long) {
+        while (isScanScheduleOwner(ownerGeneration)) {
+            delay(SCAN_WATCHDOG_INTERVAL_MS)
+            if (!isScanScheduleOwner(ownerGeneration)) break
+            try {
+                // Only act when we are supposed to be scanning. Honors intentional OFF windows.
+                if (!scanningDesired || !legacyLocationAllowed || !isClientRoleEnabled()) continue
+                if (!permissionManager.hasBluetoothPermissions() || bluetoothAdapter?.isEnabled != true) continue
 
-                    val now = currentTimeMillis()
-                    if (!isCurrentlyScanning) {
-                        Log.w(TAG, "Watchdog: scan desired but not running -> restarting scan")
-                        startScanning()
-                    } else if (lastScanResultTime > 0L &&
-                        now - lastScanResultTime > SCAN_STALE_RESULT_MS &&
-                        now - lastScanStartTime > SCAN_STALE_RESULT_MS) {
-                        // We think we're scanning but haven't seen anything for a long time. The scan
-                        // may have silently died (flag wedged true). Force a clean re-arm.
-                        Log.w(TAG, "Watchdog: no scan results for ${(now - lastScanResultTime) / 1000}s -> forcing scan restart")
-                        forceRestartScan()
+                val now = elapsedRealtimeMillis()
+                if (!isCurrentlyScanning) {
+                    Log.w(TAG, "Watchdog: scan desired but not running -> restarting scan")
+                    startScanning()
+                } else {
+                    val lastLivenessAt = maxOf(lastScanStartTime, lastScanResultTime)
+                    if (now - lastLivenessAt >= SCAN_STALE_RESULT_MS) {
+                        // This includes a scanner which never produced its first result.
+                        Log.w(TAG, "Watchdog: scan liveness expired -> forcing scan restart")
+                        forceRestartScan(ownerGeneration)
                     }
-                } catch (e: Exception) {
-                    Log.w(TAG, "Scan watchdog error: ${e.message}")
                 }
+            } catch (e: Exception) {
+                Log.w(TAG, "Scan watchdog error: ${e.javaClass.simpleName}")
             }
         }
     }
 
-    private fun stopScanWatchdog() {
-        scanWatchdogJob?.cancel()
-        scanWatchdogJob = null
+    private suspend fun runDutyCycle(
+        ownerGeneration: Long,
+        schedule: PowerManager.BleSchedule
+    ) {
+        while (applyScanState(true, ownerGeneration)) {
+            delay(schedule.scanOnMs)
+            if (!applyScanState(false, ownerGeneration)) break
+            delay(schedule.scanOffMs)
+        }
     }
 
     /**
      * Force a clean scan restart, clearing a possibly-wedged isCurrentlyScanning flag.
      */
-    private fun forceRestartScan() {
-        stopScanning()
+    private fun forceRestartScan(requiredScheduleOwner: Long? = null) {
+        val (scan, intentGeneration) = synchronized(scanLock) {
+            if (requiredScheduleOwner != null &&
+                requiredScheduleOwner != scanScheduleGeneration) return
+            detachActiveScanLocked() to scanIntentGeneration
+        }
+        scan?.let(::stopScanGeneration)
         connectionScope.launch {
             delay(500)
-            if (isActive && scanningDesired && isClientRoleEnabled() && !isCurrentlyScanning) {
+            val mayRestart = synchronized(scanLock) {
+                (requiredScheduleOwner == null ||
+                    requiredScheduleOwner == scanScheduleGeneration) &&
+                    intentGeneration == scanIntentGeneration && isActive && scanningDesired &&
+                    legacyLocationAllowed && scanSupported && !isCurrentlyScanning
+            }
+            if (mayRestart && isClientRoleEnabled()) {
                 startScanning()
             }
         }
@@ -397,8 +679,8 @@ class BluetoothGattClientManager(
     /**
      * Handle scan result and initiate connection if appropriate
      */
-    private fun handleScanResult(result: ScanResult) {
-        if (!permissionManager.hasBluetoothPermissions()) return
+    private fun handleScanResult(result: ScanResult, admission: ScanAdmission) {
+        if (!permissionManager.hasBluetoothPermissions() || !isScanAdmissionCurrent(admission)) return
         val device = result.device
         val rssi = result.rssi
         val deviceAddress = device.address
@@ -411,11 +693,11 @@ class BluetoothGattClientManager(
         }
 
         // Proof the scanner is alive and finding our network: refresh liveness and clear backoff.
-        lastScanResultTime = currentTimeMillis()
+        lastScanResultTime = elapsedRealtimeMillis()
         scanRetryCount = 0
 
         // Legacy peers may expose an identity-shaped value. It is untrusted debug metadata only.
-        val serviceData = scanRecord?.getServiceData(ParcelUuid(AppConstants.Mesh.Gatt.SERVICE_UUID))
+        val serviceData = scanRecord.getServiceData(ParcelUuid(AppConstants.Mesh.Gatt.SERVICE_UUID))
         val advertisedPeerIDHint = if (serviceData != null && serviceData.size >= 8) {
             serviceData.joinToString("") { "%02x".format(it) }
         } else {
@@ -493,14 +775,19 @@ class BluetoothGattClientManager(
         
         // Service data is an unauthenticated compatibility/debug hint. It must never select,
         // suppress, or authenticate a connection; only a validated ANNOUNCE may bind identity.
-        connectToDevice(device, rssi)
+        connectToDevice(device, rssi, admission)
     }
     
     /**
      * Connect to a device as GATT client
      */
-    private fun connectToDevice(device: BluetoothDevice, rssi: Int): Boolean =
+    private fun connectToDevice(
+        device: BluetoothDevice,
+        rssi: Int,
+        scanAdmission: ScanAdmission? = null
+    ): Boolean =
         synchronized(clientLock) {
+            if (scanAdmission != null && dialableScan != scanAdmission) return@synchronized false
             if (!isClientRoleEnabled() || !permissionManager.hasBluetoothPermissions()) return@synchronized false
             val address = device.address
             if (connectionTracker.shouldSuppressClientDial(address) ||
@@ -539,6 +826,9 @@ class BluetoothGattClientManager(
                 false
             }
         }
+
+    private fun isScanAdmissionCurrent(admission: ScanAdmission): Boolean =
+        synchronized(clientLock) { dialableScan == admission }
 
     /** One callback owns one GATT generation, including the interval before MTU completes. */
     @Suppress("DEPRECATION")
@@ -719,7 +1009,7 @@ class BluetoothGattClientManager(
     fun restartScanning() {
         // Respect debug setting
         val enabled = isClientRoleEnabled()
-        if (!isActive || !enabled) return
+        if (!isActive || !enabled || !scanSupported) return
         
         connectionScope.launch {
             stopScanning()
@@ -732,30 +1022,29 @@ class BluetoothGattClientManager(
      * Apply the current process-wide profile without ever disabling background discovery.
      */
     fun applyPowerProfile(profile: PowerManager.RuntimePerformanceProfile) {
-        scanDutyCycleJob?.cancel()
-        scanDutyCycleJob = null
-        if (!isActive || !isClientRoleEnabled()) {
-            onScanStateChanged(false)
-            return
-        }
-
-        if (profile.ble.continuousScan) {
-            startScanWatchdog()
-            onScanStateChanged(true)
-            return
-        }
-
-        // Duty-cycled scans are re-armed every window, so the continuous-scan watchdog would only
-        // create background wakeups during intentional OFF periods.
-        stopScanWatchdog()
-        scanDutyCycleJob = connectionScope.launch {
-            while (isActive && isClientRoleEnabled()) {
-                onScanStateChanged(true)
-                delay(profile.ble.scanOnMs)
-                if (!isActive || !isClientRoleEnabled()) break
-                onScanStateChanged(false)
-                delay(profile.ble.scanOffMs)
+        val roleEnabled = isClientRoleEnabled()
+        val change = synchronized(scanLock) {
+            val previous = detachScheduledScanJobsLocked()
+            val owner = scanScheduleGeneration
+            val enabled = isActive && roleEnabled && scanSupported
+            if (!enabled) {
+                ScanScheduleChange(previous, null, owner, enabled = false, continuous = false)
+            } else {
+                val next = if (profile.ble.continuousScan) {
+                    connectionScope.launch(start = CoroutineStart.LAZY) { runScanWatchdog(owner) }
+                } else {
+                    connectionScope.launch(start = CoroutineStart.LAZY) { runDutyCycle(owner, profile.ble) }
+                }
+                if (profile.ble.continuousScan) scanWatchdogJob = next else scanDutyCycleJob = next
+                ScanScheduleChange(previous, next, owner, enabled = true, continuous = profile.ble.continuousScan)
             }
+        }
+        cancelScanJobs(change.previous)
+        change.next?.start()
+        if (!change.enabled) {
+            applyScanState(false, change.ownerGeneration)
+        } else if (change.continuous) {
+            applyScanState(true, change.ownerGeneration)
         }
     }
 } 

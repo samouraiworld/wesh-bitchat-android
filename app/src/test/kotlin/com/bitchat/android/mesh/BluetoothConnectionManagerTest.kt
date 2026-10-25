@@ -1,6 +1,10 @@
 package com.bitchat.android.mesh
 
+import android.Manifest
 import android.bluetooth.BluetoothAdapter
+import android.content.Intent
+import android.location.LocationManager
+import android.os.Looper
 import com.bitchat.android.model.FragmentPayload
 import com.bitchat.android.model.RoutedPacket
 import com.bitchat.android.protocol.BitchatPacket
@@ -23,6 +27,8 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
+import org.robolectric.Shadows.shadowOf
+import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -204,6 +210,48 @@ class BluetoothConnectionManagerTest {
         assertTrue(initialResumeWhenBluetoothOn(bluetoothEnabled = false, stopped = false))
         assertFalse(initialResumeWhenBluetoothOn(bluetoothEnabled = true, stopped = false))
         assertFalse(initialResumeWhenBluetoothOn(bluetoothEnabled = false, stopped = true))
+    }
+
+    @Config(sdk = [30])
+    @Test
+    fun `Android 11 observes location for process lifetime and unregisters on terminal stop`() {
+        val application = RuntimeEnvironment.getApplication()
+        val shadowApplication = shadowOf(application)
+        shadowApplication.grantPermissions(
+            Manifest.permission.BLUETOOTH,
+            Manifest.permission.BLUETOOTH_ADMIN,
+            Manifest.permission.ACCESS_COARSE_LOCATION,
+            Manifest.permission.ACCESS_FINE_LOCATION,
+            "${application.packageName}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"
+        )
+        val local = BluetoothConnectionManager(application, "0011223344556677")
+        try {
+            local.startServices()
+            val registration = shadowApplication.registeredReceivers.single {
+                it.intentFilter.hasAction(LocationManager.MODE_CHANGED_ACTION)
+            }
+            assertTrue(registration.intentFilter.hasAction(LocationManager.PROVIDERS_CHANGED_ACTION))
+
+            val clientField = BluetoothConnectionManager::class.java.getDeclaredField("clientManager").apply {
+                isAccessible = true
+            }
+            val client = clientField.get(local)
+            val generationField = client.javaClass.getDeclaredField("locationObservationGeneration").apply {
+                isAccessible = true
+            }
+            val before = generationField.getLong(client)
+
+            application.sendBroadcast(Intent(LocationManager.MODE_CHANGED_ACTION))
+            shadowOf(Looper.getMainLooper()).idle()
+
+            assertTrue(generationField.getLong(client) > before)
+            local.stopServices()
+            assertFalse(shadowApplication.registeredReceivers.any {
+                it.broadcastReceiver === registration.broadcastReceiver
+            })
+        } finally {
+            local.stopServices()
+        }
     }
 
     @Test

@@ -5,6 +5,8 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.location.LocationManager
+import android.os.Build
 import android.util.Log
 import androidx.core.content.ContextCompat
 import com.bitchat.android.model.RoutedPacket
@@ -29,7 +31,8 @@ internal enum class BluetoothRoleStartResult {
 enum class BluetoothRoleFailureAction {
     RETRY_STACK,
     STOP_TRANSPORT,
-    DISABLE_ROLE
+    DISABLE_ROLE,
+    DISABLE_CLIENT_SCAN
 }
 
 internal fun stackRecoveryDelayMs(attempt: Int): Long = when (attempt.coerceAtLeast(0)) {
@@ -176,7 +179,7 @@ class BluetoothConnectionManager(
     )
     private val clientManager = BluetoothGattClientManager(
         context, connectionScope, connectionTracker, permissionManager, powerManager, componentDelegate,
-        inboundLimiter
+        inboundLimiter, roleFailure = ::onBluetoothRoleFailure
     )
     
     // Service state
@@ -196,6 +199,7 @@ class BluetoothConnectionManager(
     @Volatile private var resumeWhenBluetoothOn = false
     private val adapterStates = Channel<Int>(Channel.UNLIMITED)
     private var adapterReceiver: BroadcastReceiver? = null
+    private var locationReceiver: BroadcastReceiver? = null
     private var stackRecoveryJob: Job? = null
     private var stackRecoveryEpoch = 0L
     private val stackRecoveryState = BluetoothStackRecoveryState()
@@ -405,6 +409,7 @@ class BluetoothConnectionManager(
         // Register even when Bluetooth is currently off. Otherwise no STATE_ON event can ever
         // reach this manager and a cold start with Bluetooth off remains wedged until process exit.
         registerAdapterReceiver()
+        registerLegacyLocationReceiver()
         // Arm recovery before reading adapter state, so a concurrent STATE_ON broadcast cannot
         // slip through the check-then-set window and leave the manager waiting forever.
         resumeWhenBluetoothOn = initialResumeWhenBluetoothOn(bluetoothEnabled = false, stopped = stopped)
@@ -464,7 +469,7 @@ class BluetoothConnectionManager(
                     }
 
                     if (startClient) {
-                        if (!acceptRoleStart(generation, "client", clientManager.startResult())) {
+                        if (!acceptRoleStart(generation, "client", clientManager.startResult(generation))) {
                             return@newStart
                         }
                         if (!isCurrentLifecycleGeneration(generation)) return@newStart
@@ -544,6 +549,7 @@ class BluetoothConnectionManager(
             old?.cancel()
             startupJob = null
             unregisterAdapterReceiver()
+            unregisterLegacyLocationReceiver()
             if (active) delegate?.onTransportStateChanged(false)
             componentLifecycle.newRelease(old) {
                 connectionScope.cancel()
@@ -621,6 +627,33 @@ class BluetoothConnectionManager(
         try { context.applicationContext.unregisterReceiver(receiver) } catch (_: IllegalArgumentException) { }
     }
 
+    /** Observe Android 11-and-older's process-wide Location gate independently of any Activity. */
+    @Synchronized private fun registerLegacyLocationReceiver() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S || stopped || locationReceiver != null) return
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                clientManager.refreshLegacyLocationState()
+            }
+        }
+        val filter = IntentFilter(LocationManager.MODE_CHANGED_ACTION).apply {
+            addAction(LocationManager.PROVIDERS_CHANGED_ACTION)
+        }
+        ContextCompat.registerReceiver(
+            context.applicationContext,
+            receiver,
+            filter,
+            ContextCompat.RECEIVER_NOT_EXPORTED
+        )
+        locationReceiver = receiver
+        clientManager.refreshLegacyLocationState()
+    }
+
+    @Synchronized private fun unregisterLegacyLocationReceiver() {
+        val receiver = locationReceiver ?: return
+        locationReceiver = null
+        try { context.applicationContext.unregisterReceiver(receiver) } catch (_: IllegalArgumentException) { }
+    }
+
     /**
      * A server/advertiser generation failed after start() had already returned. Recycle both BLE
      * roles through the same serialized release barrier used by adapter OFF/ON, with bounded
@@ -639,6 +672,13 @@ class BluetoothConnectionManager(
                     stackRecoveryState.markServerDisabled(ownerGeneration, transportReady)
                 }
                 Log.w(TAG, "Bluetooth role unavailable ($reason): keeping the other role active")
+                return
+            }
+            BluetoothRoleFailureAction.DISABLE_CLIENT_SCAN -> {
+                synchronized(this) {
+                    if (!isCurrentLifecycleGenerationLocked(ownerGeneration)) return
+                }
+                Log.w(TAG, "Bluetooth scanning unavailable ($reason): keeping GATT roles active")
                 return
             }
             BluetoothRoleFailureAction.STOP_TRANSPORT -> {
@@ -877,7 +917,7 @@ class BluetoothConnectionManager(
                 lifecycleEpoch.current()
             }
             if (isGattClientEnabled() && isCurrentLifecycleGeneration(generation)) {
-                acceptRoleStart(generation, "client", clientManager.startResult())
+                acceptRoleStart(generation, "client", clientManager.startResult(generation))
             }
         }.start()
     }
@@ -933,7 +973,7 @@ class BluetoothConnectionManager(
             }
             if (isGattClientEnabled()) {
                 if (!isCurrentLifecycleGeneration(generation)) return@newStart
-                if (!acceptRoleStart(generation, "client", clientManager.startResult())) {
+                if (!acceptRoleStart(generation, "client", clientManager.startResult(generation))) {
                     return@newStart
                 }
             }

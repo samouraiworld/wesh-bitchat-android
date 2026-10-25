@@ -18,6 +18,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
+import kotlin.concurrent.thread
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Test
@@ -51,6 +55,7 @@ class BluetoothGattClientCallbacksTest {
     private val characteristic = BluetoothGattCharacteristic(AppConstants.Mesh.Gatt.CHARACTERISTIC_UUID, 0, 0)
     private val descriptor = BluetoothGattDescriptor(AppConstants.Mesh.Gatt.DESCRIPTOR_UUID, 0)
     private val callbacks = mutableListOf<BluetoothGattCallback>()
+    private val roleFailures = mutableListOf<Triple<Long, String, BluetoothRoleFailureAction>>()
     private val client: BluetoothGattClientManager
 
     init {
@@ -75,8 +80,42 @@ class BluetoothGattClientCallbacksTest {
         if (Build.VERSION.SDK_INT >= 33) {
             whenever(gatt.writeDescriptor(eq(descriptor), any())).thenReturn(BluetoothStatusCodes.SUCCESS)
         }
-        client = BluetoothGattClientManager(context, scope, tracker, permissions, power, delegate) { scanTime }
+        client = BluetoothGattClientManager(
+            context,
+            scope,
+            tracker,
+            permissions,
+            power,
+            delegate,
+            roleFailure = { owner, reason, action -> roleFailures += Triple(owner, reason, action) },
+            elapsedRealtimeMillis = { scanTime }
+        )
     }
+
+    private fun clientForSdk(
+        sdk: Int,
+        locationEnabled: () -> Boolean = { true },
+        beforeScanPublication: (() -> Unit)? = null,
+        afterScanCallbackPreflight: (() -> Unit)? = null,
+        afterScanScheduleOwnerCheck: ((Boolean) -> Unit)? = null,
+        onRoleFailure: (Long, String, BluetoothRoleFailureAction) -> Unit = { owner, reason, action ->
+            roleFailures += Triple(owner, reason, action)
+        }
+    ) = BluetoothGattClientManager(
+        context = context,
+        connectionScope = scope,
+        connectionTracker = tracker,
+        permissionManager = permissions,
+        powerManager = power,
+        delegate = delegate,
+        platformSdkInt = sdk,
+        legacyLocationEnabledProvider = locationEnabled,
+        beforeScanPublication = beforeScanPublication,
+        afterScanCallbackPreflight = afterScanCallbackPreflight,
+        afterScanScheduleOwnerCheck = afterScanScheduleOwnerCheck,
+        roleFailure = onRoleFailure,
+        elapsedRealtimeMillis = { scanTime }
+    )
 
     @After fun tearDown() { client.stop(); scope.cancel() }
 
@@ -103,6 +142,40 @@ class BluetoothGattClientCallbacksTest {
         verify(delegate, never()).onDeviceConnected(any())
         verify(gatt).disconnect()
         verify(gatt).close()
+    }
+
+    private fun successfulScanResult(rssi: Int = -30): ScanResult {
+        val record = mock<ScanRecord> {
+            on { serviceUuids }.thenReturn(listOf(ParcelUuid(AppConstants.Mesh.Gatt.SERVICE_UUID)))
+        }
+        return mock {
+            on { device }.thenReturn(this@BluetoothGattClientCallbacksTest.device)
+            on { getRssi() }.thenReturn(rssi)
+            on { scanRecord }.thenReturn(record)
+        }
+    }
+
+    private fun deliverAfterInvalidationBarrier(
+        callback: ScanCallback,
+        result: ScanResult,
+        admitted: CountDownLatch,
+        resume: CountDownLatch,
+        invalidate: () -> Unit
+    ) {
+        val failure = AtomicReference<Throwable?>()
+        val delivery = thread(name = "synthetic-scan-delivery") {
+            try {
+                callback.onScanResult(0, result)
+            } catch (error: Throwable) {
+                failure.set(error)
+            }
+        }
+        assertTrue("scan callback did not reach admission barrier", admitted.await(5, TimeUnit.SECONDS))
+        invalidate()
+        resume.countDown()
+        delivery.join(5_000)
+        assertFalse("scan callback remained blocked", delivery.isAlive)
+        failure.get()?.let { throw AssertionError("scan callback failed", it) }
     }
 
     @Test fun `start reports unavailable scanner until the stack resource returns`() {
@@ -388,6 +461,524 @@ class BluetoothGattClientCallbacksTest {
         verify(replacementScanner, never()).stopScan(any<ScanCallback>())
     }
 
+    @Test fun `Android 11 initial location read fails closed and first on transition starts once`() {
+        var locationEnabled = false
+        val legacy = clientForSdk(Build.VERSION_CODES.R, locationEnabled = { locationEnabled })
+        try {
+            assertEquals(BluetoothRoleStartResult.STARTED, legacy.startResult(ownerGeneration = 41))
+            scope.runCurrent()
+            assertTrue(scanCallbacks.isEmpty())
+
+            locationEnabled = true
+            legacy.refreshLegacyLocationState()
+            scope.advanceTimeBy(500)
+            scope.runCurrent()
+            assertEquals(1, scanCallbacks.size)
+
+            legacy.refreshLegacyLocationState()
+            scope.advanceTimeBy(1_000)
+            scope.runCurrent()
+            assertEquals(1, scanCallbacks.size)
+        } finally {
+            legacy.stop()
+        }
+
+        val unreadable = clientForSdk(
+            Build.VERSION_CODES.R,
+            locationEnabled = { error("synthetic provider failure") }
+        )
+        try {
+            assertTrue(unreadable.start())
+            scope.runCurrent()
+            assertEquals(1, scanCallbacks.size)
+        } finally {
+            unreadable.stop()
+        }
+    }
+
+    @Test fun `location broadcast racing initial read wins over stale provider value`() {
+        lateinit var legacy: BluetoothGattClientManager
+        legacy = clientForSdk(Build.VERSION_CODES.R, locationEnabled = {
+            legacy.onLegacyLocationChanged(false)
+            true
+        })
+        try {
+            assertTrue(legacy.start())
+            scope.runCurrent()
+            assertTrue(scanCallbacks.isEmpty())
+        } finally {
+            legacy.stop()
+        }
+    }
+
+    @Test fun `Android 11 location off preserves desire and on creates one exact generation`() {
+        val legacy = clientForSdk(Build.VERSION_CODES.R)
+        try {
+            assertTrue(legacy.start())
+            scope.runCurrent()
+            val first = scanCallbacks.single()
+
+            legacy.onLegacyLocationChanged(false)
+            legacy.onLegacyLocationChanged(false)
+            verify(scanner, times(1)).stopScan(first)
+
+            scanTime += 5_000
+            legacy.onLegacyLocationChanged(true)
+            scope.advanceTimeBy(500)
+            scope.runCurrent()
+            assertEquals(2, scanCallbacks.size)
+
+            legacy.onLegacyLocationChanged(true)
+            scope.advanceTimeBy(1_000)
+            scope.runCurrent()
+            assertEquals(2, scanCallbacks.size)
+        } finally {
+            legacy.stop()
+        }
+    }
+
+    @Test fun `Android 11 location off between precheck and publication prevents scan`() {
+        lateinit var legacy: BluetoothGattClientManager
+        legacy = clientForSdk(
+            sdk = Build.VERSION_CODES.R,
+            beforeScanPublication = { legacy.onLegacyLocationChanged(false) }
+        )
+        try {
+            assertTrue(legacy.start())
+            scope.runCurrent()
+            assertTrue(scanCallbacks.isEmpty())
+            verify(scanner, never()).startScan(any(), any(), any<ScanCallback>())
+        } finally {
+            legacy.stop()
+        }
+    }
+
+    @Test fun `location off fences a pending transient retry before one on transition`() {
+        val legacy = clientForSdk(Build.VERSION_CODES.R)
+        try {
+            assertTrue(legacy.start())
+            scope.runCurrent()
+            scanCallbacks.single().onScanFailed(ScanCallback.SCAN_FAILED_INTERNAL_ERROR)
+
+            legacy.onLegacyLocationChanged(false)
+            scanTime += 5_000
+            scope.advanceTimeBy(5_000)
+            scope.runCurrent()
+            assertEquals(1, scanCallbacks.size)
+
+            legacy.onLegacyLocationChanged(true)
+            scope.advanceTimeBy(500)
+            scope.runCurrent()
+            assertEquals(2, scanCallbacks.size)
+        } finally {
+            legacy.stop()
+        }
+    }
+
+    @Test fun `location off atomically rejects a callback that passed scan preflight`() {
+        val admitted = CountDownLatch(1)
+        val resume = CountDownLatch(1)
+        val legacy = clientForSdk(
+            Build.VERSION_CODES.R,
+            afterScanCallbackPreflight = {
+                admitted.countDown()
+                check(resume.await(5, TimeUnit.SECONDS))
+            }
+        )
+        try {
+            assertTrue(legacy.start())
+            scope.runCurrent()
+            deliverAfterInvalidationBarrier(
+                scanCallbacks.single(), successfulScanResult(), admitted, resume
+            ) { legacy.onLegacyLocationChanged(false) }
+
+            verify(device, never()).connectGatt(eq(context), eq(false), any(), eq(BluetoothDevice.TRANSPORT_LE))
+            assertTrue(tracker.isConnectionAttemptAllowed(address))
+            assertTrue(callbacks.isEmpty())
+        } finally {
+            resume.countDown()
+            legacy.stop()
+        }
+    }
+
+    @Test fun `unsupported atomically rejects a callback that passed scan preflight`() {
+        val admitted = CountDownLatch(1)
+        val resume = CountDownLatch(1)
+        val modern = clientForSdk(
+            Build.VERSION_CODES.S,
+            afterScanCallbackPreflight = {
+                admitted.countDown()
+                check(resume.await(5, TimeUnit.SECONDS))
+            }
+        )
+        try {
+            assertTrue(modern.start())
+            scope.runCurrent()
+            val scan = scanCallbacks.single()
+            deliverAfterInvalidationBarrier(scan, successfulScanResult(), admitted, resume) {
+                scan.onScanFailed(ScanCallback.SCAN_FAILED_FEATURE_UNSUPPORTED)
+            }
+            scope.runCurrent()
+
+            verify(device, never()).connectGatt(eq(context), eq(false), any(), eq(BluetoothDevice.TRANSPORT_LE))
+            assertTrue(tracker.isConnectionAttemptAllowed(address))
+            assertTrue(callbacks.isEmpty())
+        } finally {
+            resume.countDown()
+            modern.stop()
+        }
+    }
+
+    @Test fun `stop atomically rejects a callback that passed scan preflight`() {
+        val admitted = CountDownLatch(1)
+        val resume = CountDownLatch(1)
+        val modern = clientForSdk(
+            Build.VERSION_CODES.S,
+            afterScanCallbackPreflight = {
+                admitted.countDown()
+                check(resume.await(5, TimeUnit.SECONDS))
+            }
+        )
+        try {
+            assertTrue(modern.start())
+            scope.runCurrent()
+            deliverAfterInvalidationBarrier(
+                scanCallbacks.single(), successfulScanResult(), admitted, resume
+            ) { modern.stop() }
+
+            verify(device, never()).connectGatt(eq(context), eq(false), any(), eq(BluetoothDevice.TRANSPORT_LE))
+            assertTrue(tracker.isConnectionAttemptAllowed(address))
+            assertTrue(callbacks.isEmpty())
+        } finally {
+            resume.countDown()
+            modern.stop()
+        }
+    }
+
+    @Test fun `Android 12 ignores legacy location provider and broadcasts`() {
+        var providerReads = 0
+        val modern = clientForSdk(Build.VERSION_CODES.S, locationEnabled = {
+            providerReads++
+            false
+        })
+        try {
+            assertTrue(modern.start())
+            scope.runCurrent()
+            assertEquals(0, providerReads)
+            assertEquals(1, scanCallbacks.size)
+
+            modern.onLegacyLocationChanged(false)
+            modern.refreshLegacyLocationState()
+            assertEquals(0, providerReads)
+            verify(scanner, never()).stopScan(any<ScanCallback>())
+        } finally {
+            modern.stop()
+        }
+    }
+
+    @Test fun `unsupported scan is permanent preserves established GATT and reports owner outside scan lock`() {
+        var callbackReturned = false
+        lateinit var unsupported: BluetoothGattClientManager
+        unsupported = clientForSdk(Build.VERSION_CODES.S, onRoleFailure = { owner, reason, action ->
+            unsupported.onScanStateChanged(false)
+            roleFailures += Triple(owner, reason, action)
+            callbackReturned = true
+        })
+        try {
+            assertEquals(BluetoothRoleStartResult.STARTED, unsupported.startResult(ownerGeneration = 44))
+            scope.runCurrent()
+            val scan = scanCallbacks.single()
+            assertTrue(unsupported.connectToAddress(address))
+            val attempt = callbacks.last()
+            subscribe(attempt)
+            attempt.onDescriptorWrite(gatt, descriptor, BluetoothGatt.GATT_SUCCESS)
+            val established = tracker.getDeviceConnection(address)
+            clearInvocations(gatt)
+
+            scan.onScanFailed(ScanCallback.SCAN_FAILED_FEATURE_UNSUPPORTED)
+            assertFalse(callbackReturned)
+            scope.runCurrent()
+
+            assertTrue(callbackReturned)
+            assertSame(established, tracker.getDeviceConnection(address))
+            verify(gatt, never()).disconnect()
+            verify(gatt, never()).close()
+            assertEquals(
+                listOf(Triple(44L, "scan-feature-unsupported", BluetoothRoleFailureAction.DISABLE_CLIENT_SCAN)),
+                roleFailures
+            )
+
+            scanTime += 600_000
+            unsupported.stop()
+            assertEquals(BluetoothRoleStartResult.STARTED, unsupported.startResult(ownerGeneration = 45))
+            scope.advanceTimeBy(600_000)
+            scope.runCurrent()
+            assertEquals(1, scanCallbacks.size)
+        } finally {
+            unsupported.stop()
+        }
+    }
+
+    @Test fun `synchronous unsupported callback defers manager notification beyond platform start`() {
+        var insidePlatformStart = false
+        lateinit var synchronous: BluetoothGattClientManager
+        synchronous = clientForSdk(Build.VERSION_CODES.S, onRoleFailure = { owner, reason, action ->
+            assertFalse(insidePlatformStart)
+            synchronous.onScanStateChanged(false)
+            roleFailures += Triple(owner, reason, action)
+        })
+        doAnswer {
+            val callback = it.getArgument<ScanCallback>(2)
+            scanCallbacks += callback
+            insidePlatformStart = true
+            callback.onScanFailed(ScanCallback.SCAN_FAILED_FEATURE_UNSUPPORTED)
+            assertTrue(roleFailures.isEmpty())
+            insidePlatformStart = false
+            null
+        }.whenever(scanner).startScan(any(), any(), any<ScanCallback>())
+
+        try {
+            assertEquals(BluetoothRoleStartResult.STARTED, synchronous.startResult(ownerGeneration = 48))
+            scope.runCurrent()
+            assertEquals(
+                listOf(Triple(48L, "scan-feature-unsupported", BluetoothRoleFailureAction.DISABLE_CLIENT_SCAN)),
+                roleFailures
+            )
+        } finally {
+            synchronous.stop()
+        }
+    }
+
+    @Test fun `stale unsupported callback cannot disable replacement scan generation`() {
+        val modern = clientForSdk(Build.VERSION_CODES.S)
+        try {
+            assertTrue(modern.start())
+            scope.runCurrent()
+            val stale = scanCallbacks.single()
+            modern.stop()
+            scanTime += 5_000
+            assertEquals(BluetoothRoleStartResult.STARTED, modern.startResult(ownerGeneration = 52))
+            scope.runCurrent()
+            assertEquals(2, scanCallbacks.size)
+
+            stale.onScanFailed(ScanCallback.SCAN_FAILED_FEATURE_UNSUPPORTED)
+            scope.runCurrent()
+
+            assertTrue(roleFailures.isEmpty())
+            verify(scanner, never()).stopScan(scanCallbacks.last())
+        } finally {
+            modern.stop()
+        }
+    }
+
+    @Test fun `continuous watchdog recycles a scan with zero first results at 120 seconds`() {
+        whenever(power.profile).thenReturn(
+            MutableStateFlow(PowerProfileResolver.resolve(100, true, false, false))
+        )
+        val modern = clientForSdk(Build.VERSION_CODES.S)
+        try {
+            assertTrue(modern.start())
+            scope.runCurrent()
+            val first = scanCallbacks.single()
+
+            repeat(4) {
+                scanTime += 30_000
+                scope.advanceTimeBy(30_000)
+                scope.runCurrent()
+            }
+            scope.advanceTimeBy(500)
+            scope.runCurrent()
+
+            assertEquals(2, scanCallbacks.size)
+            verify(scanner).stopScan(first)
+        } finally {
+            modern.stop()
+        }
+    }
+
+    @Test fun `monotonic clock near device boot does not delay the first scan`() {
+        scanTime = 0L
+        val modern = clientForSdk(Build.VERSION_CODES.S)
+        try {
+            assertTrue(modern.start())
+            scope.runCurrent()
+            assertEquals(1, scanCallbacks.size)
+        } finally {
+            modern.stop()
+        }
+    }
+
+    @Test fun `a recent scan result postpones the continuous watchdog deadline`() {
+        whenever(power.profile).thenReturn(
+            MutableStateFlow(PowerProfileResolver.resolve(100, true, false, false))
+        )
+        val modern = clientForSdk(Build.VERSION_CODES.S)
+        try {
+            assertTrue(modern.start())
+            scope.runCurrent()
+            val scan = scanCallbacks.single()
+
+            repeat(3) {
+                scanTime += 30_000
+                scope.advanceTimeBy(30_000)
+                scope.runCurrent()
+            }
+            val record = mock<ScanRecord> {
+                on { serviceUuids }.thenReturn(listOf(ParcelUuid(AppConstants.Mesh.Gatt.SERVICE_UUID)))
+            }
+            val result = mock<ScanResult> {
+                on { device }.thenReturn(this@BluetoothGattClientCallbacksTest.device)
+                on { rssi }.thenReturn(-95)
+                on { scanRecord }.thenReturn(record)
+            }
+            scan.onScanResult(0, result)
+
+            repeat(3) {
+                scanTime += 30_000
+                scope.advanceTimeBy(30_000)
+                scope.runCurrent()
+            }
+
+            assertEquals(1, scanCallbacks.size)
+            verify(scanner, never()).stopScan(scan)
+        } finally {
+            modern.stop()
+        }
+    }
+
+    @Test fun `watchdog uses monotonic time instead of scheduler or wall clock passage`() {
+        whenever(power.profile).thenReturn(
+            MutableStateFlow(PowerProfileResolver.resolve(100, true, false, false))
+        )
+        val modern = clientForSdk(Build.VERSION_CODES.S)
+        try {
+            assertTrue(modern.start())
+            scope.runCurrent()
+            val first = scanCallbacks.single()
+
+            // Scheduler time (and, in production, wall-clock time) may jump independently. The
+            // injected elapsed-realtime clock remains authoritative for the 120 second deadline.
+            scope.advanceTimeBy(300_000)
+            scope.runCurrent()
+            assertEquals(1, scanCallbacks.size)
+            verify(scanner, never()).stopScan(first)
+
+            scanTime += 120_000
+            scope.advanceTimeBy(30_000)
+            scope.runCurrent()
+            scope.advanceTimeBy(500)
+            scope.runCurrent()
+            assertEquals(2, scanCallbacks.size)
+            verify(scanner).stopScan(first)
+        } finally {
+            modern.stop()
+        }
+    }
+
+    @Test fun `replaced duty owner cannot turn off a newer continuous schedule`() {
+        val dutyProfile = PowerProfileResolver.resolve(100, false, false, false).copy(
+            ble = PowerManager.BleSchedule(scanOnMs = 1_000L, scanOffMs = 180_000L, continuousScan = false)
+        )
+        val continuousProfile = PowerProfileResolver.resolve(100, true, false, false)
+        whenever(power.profile).thenReturn(MutableStateFlow(dutyProfile))
+        val replacementAttempted = CountDownLatch(1)
+        val replacementCompleted = CountDownLatch(1)
+        var replacementThread: Thread? = null
+        lateinit var modern: BluetoothGattClientManager
+        modern = clientForSdk(
+            Build.VERSION_CODES.S,
+            afterScanScheduleOwnerCheck = { shouldScan ->
+                if (!shouldScan && replacementThread == null) {
+                    replacementThread = thread(name = "synthetic-profile-replacement") {
+                        replacementAttempted.countDown()
+                        modern.applyPowerProfile(continuousProfile)
+                        replacementCompleted.countDown()
+                    }
+                    assertTrue(replacementAttempted.await(5, TimeUnit.SECONDS))
+                    assertFalse(
+                        "replacement must wait for the atomic owner mutation",
+                        replacementCompleted.await(100, TimeUnit.MILLISECONDS)
+                    )
+                }
+            }
+        )
+        try {
+            assertTrue(modern.start())
+            scope.runCurrent()
+            assertEquals(1, scanCallbacks.size)
+            val first = scanCallbacks.single()
+
+            scanTime += 5_000
+            scope.advanceTimeBy(1_000)
+            scope.runCurrent()
+            replacementThread?.join(5_000)
+            assertTrue(replacementCompleted.await(5, TimeUnit.SECONDS))
+            scope.runCurrent()
+            assertEquals(2, scanCallbacks.size)
+            val replacement = scanCallbacks.last()
+            verify(scanner).stopScan(first)
+
+            scope.advanceTimeBy(180_000)
+            scope.runCurrent()
+            verify(scanner, never()).stopScan(replacement)
+        } finally {
+            modern.stop()
+        }
+    }
+
+    @Test fun `unsupported scan rejects all later profile schedules without wakeup or retry`() {
+        val continuousProfile = PowerProfileResolver.resolve(100, true, false, false)
+        val dutyProfile = continuousProfile.copy(
+            ble = PowerManager.BleSchedule(scanOnMs = 1_000L, scanOffMs = 1_000L, continuousScan = false)
+        )
+        val modern = clientForSdk(Build.VERSION_CODES.S)
+        try {
+            assertTrue(modern.start())
+            scope.runCurrent()
+            val failed = scanCallbacks.single()
+            failed.onScanFailed(ScanCallback.SCAN_FAILED_FEATURE_UNSUPPORTED)
+            scope.runCurrent()
+            clearInvocations(scanner)
+
+            modern.applyPowerProfile(dutyProfile)
+            modern.applyPowerProfile(continuousProfile)
+            scanTime += 600_000
+            scope.advanceTimeBy(600_000)
+            scope.runCurrent()
+
+            assertEquals(1, scanCallbacks.size)
+            verify(scanner, never()).startScan(any(), any(), any<ScanCallback>())
+            verify(scanner, never()).stopScan(any<ScanCallback>())
+        } finally {
+            modern.stop()
+        }
+    }
+
+    @Test fun `watchdog does not run during an intentional long duty cycle off window`() {
+        val dutyProfile = PowerProfileResolver.resolve(100, false, false, false).copy(
+            ble = PowerManager.BleSchedule(scanOnMs = 1_000L, scanOffMs = 180_000L, continuousScan = false)
+        )
+        whenever(power.profile).thenReturn(MutableStateFlow(dutyProfile))
+        val modern = clientForSdk(Build.VERSION_CODES.S)
+        try {
+            assertTrue(modern.start())
+            scope.runCurrent()
+            assertEquals(1, scanCallbacks.size)
+            scope.advanceTimeBy(1_000)
+            scope.runCurrent()
+            clearInvocations(scanner)
+
+            scanTime += 120_000
+            scope.advanceTimeBy(120_000)
+            scope.runCurrent()
+
+            assertEquals(1, scanCallbacks.size)
+            verify(scanner, never()).startScan(any(), any(), any<ScanCallback>())
+        } finally {
+            modern.stop()
+        }
+    }
+
     @Test fun `old scan results batches and failures cannot act on a restarted scanner`() {
         assertTrue(client.start())
         scope.runCurrent()
@@ -518,6 +1109,81 @@ class BluetoothGattClientCallbacksTest {
         val linkID = tracker.getAllDeviceConnections().single { it.isClient }.linkID
         assertNull(tracker.getPeerForLink(linkID))
         assertFalse(tracker.addressPeerMap.containsKey(address))
+    }
+
+    @Test fun `legacy dual role survivor is not redialed by location or watchdog generations`() {
+        whenever(power.profile).thenReturn(
+            MutableStateFlow(PowerProfileResolver.resolve(100, true, false, false))
+        )
+        tracker.addDeviceConnection(
+            address,
+            BluetoothConnectionTracker.DeviceConnection(
+                device, isClient = true, linkID = "legacy-client-link"
+            )
+        )
+        tracker.addServerConnection(
+            address,
+            BluetoothConnectionTracker.DeviceConnection(
+                device, isClient = false, linkID = "legacy-server-link"
+            )
+        )
+        assertTrue(
+            tracker.observePeerIfCurrent(
+                address,
+                "legacy-client-link",
+                REMOTE_PEER_ID,
+                supportsDeterministicElection = false
+            ).linksToClose.isEmpty()
+        )
+        assertTrue(
+            tracker.observePeerIfCurrent(
+                address,
+                "legacy-server-link",
+                REMOTE_PEER_ID,
+                supportsDeterministicElection = false
+            ).linksToClose.isEmpty()
+        )
+        val record = mock<ScanRecord> {
+            on { serviceUuids }.thenReturn(listOf(ParcelUuid(AppConstants.Mesh.Gatt.SERVICE_UUID)))
+        }
+        val result = mock<ScanResult> {
+            on { device }.thenReturn(this@BluetoothGattClientCallbacksTest.device)
+            on { rssi }.thenReturn(-30)
+            on { scanRecord }.thenReturn(record)
+        }
+        val legacy = clientForSdk(Build.VERSION_CODES.R)
+        try {
+            assertTrue(legacy.start())
+            scope.runCurrent()
+            val staleScan = scanCallbacks.single()
+            staleScan.onScanResult(0, result)
+
+            legacy.onLegacyLocationChanged(false)
+            scanTime += 5_000
+            legacy.onLegacyLocationChanged(true)
+            scope.advanceTimeBy(500)
+            scope.runCurrent()
+            assertEquals(2, scanCallbacks.size)
+
+            clearInvocations(device)
+            staleScan.onScanResult(0, result)
+            scanCallbacks.last().onScanResult(0, result)
+            repeat(4) {
+                scanTime += 30_000
+                scope.advanceTimeBy(30_000)
+                scope.runCurrent()
+            }
+            scope.advanceTimeBy(500)
+            scope.runCurrent()
+            assertEquals(3, scanCallbacks.size)
+            scanCallbacks.last().onScanResult(0, result)
+
+            verify(device, never()).connectGatt(eq(context), eq(false), any(), eq(BluetoothDevice.TRANSPORT_LE))
+            assertTrue(tracker.hasLink(address, "legacy-client-link"))
+            assertTrue(tracker.hasLink(address, "legacy-server-link"))
+        } finally {
+            legacy.stop()
+        }
     }
 
     @Test fun `repeated scan scheduling cannot recreate authenticated cooperative tie break loser`() {
