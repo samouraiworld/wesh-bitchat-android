@@ -69,6 +69,7 @@ class PacketProcessorAnnounceSideEffectTest {
         val signingKey = ByteArray(32) { 0x24 }
         val localPeerID = NoisePeerIdentity.derivePeerID(noiseKey)!!
         val security = SecurityManager(encryption, localPeerID)
+        val rejectedValidation = CompletableDeferred<Unit>()
         val tracker = BluetoothConnectionTracker(scope, mock(), localPeerID)
         val selfAddress = "AA:BB:CC:DD:EE:01"
         val witnessAddress = "AA:BB:CC:DD:EE:02"
@@ -78,7 +79,11 @@ class PacketProcessorAnnounceSideEffectTest {
             BluetoothConnectionTracker.DeviceConnection(device(witnessAddress), linkID = "witness-link"))
         val delegate = RecordingDelegate(
             acceptAnnounce = true,
-            validate = security::validatePacket,
+            validate = { packet, peerID ->
+                val valid = security.validatePacket(packet, peerID)
+                if (!valid) rejectedValidation.complete(Unit)
+                valid
+            },
             onValidatedSelf = selfHandler@ { routed ->
                 val observation = DirectLinkAnnouncementPolicy.observationFor(routed, 7u)
                     ?: return@selfHandler false
@@ -103,9 +108,7 @@ class PacketProcessorAnnounceSideEffectTest {
             ).also { it.signature = ByteArray(64) { 1 } }
 
             processor.processPacket(RoutedPacket(packet, localPeerID, selfAddress, "self-link"))
-            withTimeout(1_000) {
-                while (delegate.validatedSelfCount == 0) kotlinx.coroutines.delay(10)
-            }
+            withTimeout(1_000) { delegate.validatedSelfHandled.await() }
 
             assertFalse(tracker.hasLink(selfAddress, "self-link"))
             assertTrue(tracker.hasLink(witnessAddress, "witness-link"))
@@ -122,7 +125,7 @@ class PacketProcessorAnnounceSideEffectTest {
                 selfAddress,
                 "invalid-self-link"
             ))
-            kotlinx.coroutines.delay(150)
+            withTimeout(1_000) { rejectedValidation.await() }
             assertTrue(tracker.hasLink(selfAddress, "invalid-self-link"))
             assertEquals(1, delegate.validatedSelfCount)
         } finally {
@@ -225,6 +228,7 @@ class PacketProcessorAnnounceSideEffectTest {
         override fun isRelaySuppressed(packet: BitchatPacket, peerID: String) = relaySuppressed
         val handled = CompletableDeferred<Unit>()
         val handshakeHandled = CompletableDeferred<Unit>()
+        val validatedSelfHandled = CompletableDeferred<Unit>()
         val lastSeen = CompletableDeferred<String>()
         @Volatile var relayCount = 0
         @Volatile var validatedSelfCount = 0
@@ -233,7 +237,10 @@ class PacketProcessorAnnounceSideEffectTest {
         override fun validatePacketSecurity(packet: BitchatPacket, peerID: String) = validate(packet, peerID)
         override fun handleValidatedSelfAnnounce(routed: RoutedPacket): Boolean {
             validatedSelfCount += 1
-            return onValidatedSelf(routed)
+            val accepted = onValidatedSelf(routed)
+            // Publish completion only after the direct-link mutation is finished.
+            validatedSelfHandled.complete(Unit)
+            return accepted
         }
         override fun updatePeerLastSeen(peerID: String) {
             lastSeen.complete(peerID)
