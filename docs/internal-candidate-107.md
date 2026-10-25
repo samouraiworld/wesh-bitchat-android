@@ -7,10 +7,14 @@ Unlike the distributed 106 binary, that native client explicitly disables its
 Tor keystore and refuses implicit or enabled configuration before bootstrap.
 It does not remove the linked generic RSA/private-key implementation.
 
-The source preparation changes only the version code, its exact test assertion
-and this note. It preserves the reviewed native libraries and manifests, the
-toolchain pins, dependency lock, protocol and trust rules from the merged
-hardening change. No symbol archive, release tag or signed artifact is added.
+The source preparation changes the version code, its exact test assertion and
+the self-ANNOUNCE test fixture's synchronization. That fixture now awaits the
+finished direct-link callback and the actual security rejection instead of
+polling a pre-callback counter or waiting a fixed delay. All link, presence and
+relay assertions remain intact; no transport implementation changes.
+The reviewed native libraries and manifests, toolchain pins, dependency lock,
+protocol and trust rules from the merged hardening change are preserved. No
+symbol archive, release tag or signed artifact is added.
 
 ## Native provenance
 
