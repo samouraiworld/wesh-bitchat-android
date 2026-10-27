@@ -19,6 +19,30 @@ diagnostics. Each one-attempt approval was consumed by its named run. The curren
 tooling is rebound to canonical 108 and has no inherited approval: rebasing,
 validation or review does not authorize a label, capture, recording or upload.
 
+## Separate non-media onboarding check
+
+The exact label `fgs-onboarding-reviewed` enables a separate 25-minute job only
+after its exact PR head passes the static validation job. It checks out that head,
+reuses `prepare.py` to verify canonical Android 108, all eleven attestations,
+the unchanged APK payload and a disposable test signature, then starts one pinned
+API 35 Google APIs x86_64 revision 9 AVD. The existing real UI controller installs
+that test-signed canonical APK, preserves its generated synthetic nickname, taps
+the enabled Start action, handles actual permission prompts and requires the real
+`Public room` home state.
+
+This job does not call either emulator or guest recording, assemble media, send
+messages, assert peer discovery or foreground-service behavior, or upload any
+artifact. SDK, AVD and emulator output remains in the owned temporary directory;
+the only controller output is one allowlisted `PASS` or `FAIL` line with a gate
+and elapsed seconds. An `always()` cleanup removes the disposable signature, AVD,
+SDK logs and temporary data. Completion qualifies only the canonical first-launch
+onboarding path on that synthetic CI image. It is not physical evidence, FGS
+evidence, store media or permission for a later capture.
+
+The onboarding, read-only diagnostic and video jobs compare three distinct label
+names by exact equality. Adding `fgs-onboarding-reviewed` cannot activate either
+`fgs-emulator-diagnose` or `fgs-emulator-reviewed`; tests enforce that separation.
+
 The first reviewed attempt, [40214942196](https://github.com/samouraiworld/wesh-bitchat-android/actions/runs/40214942196),
 failed during Java setup: `21.0.11+10` was not a matching Temurin setup selector.
 Canonical verification, signing, SDK/AVD setup, BLE and recording did not run;
