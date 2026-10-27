@@ -42,7 +42,8 @@ ONBOARDING_TRACE_EVENTS = frozenset({
     "composer_ambiguous", "confirmation_visible", "confirmation_tap_requested",
     "confirmation_present_after_tap", "confirmation_dismissed",
     "feedback_destination_changed", "feedback_draft_changed",
-    "feedback_send_unavailable", "feedback_draft_unavailable",
+    "feedback_send_unavailable", "feedback_send_unconfirmed",
+    "feedback_draft_unavailable",
     "feedback_bluetooth_needed", "bubble_candidate_exact",
     "bubble_candidate_editor_only", "bubble_candidate_absent",
     "failure_caller_deadline_reached", "message_bubble", "remote_received",
@@ -829,6 +830,9 @@ SEND_FEEDBACK_EVENTS = {
     "The draft changed. Read your text again.": "feedback_draft_changed",
     "Local sending interrupted or unavailable. Your text is kept.":
         "feedback_send_unavailable",
+    "Sending could not be confirmed. The message may already have been received. "
+    "Sending it again may create a duplicate. Your text is kept.":
+        "feedback_send_unconfirmed",
     "Draft not saved on this phone. Do not close Wesh.":
         "feedback_draft_unavailable",
     "Turn Bluetooth on to write in the room.": "feedback_bluetooth_needed",

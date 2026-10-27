@@ -1517,6 +1517,43 @@ class EvidenceChecks(unittest.TestCase):
         self.assertEqual(failure.exception.gate, "message_submit_a")
         self.assertIn("feedback_destination_changed", [entry[0] for entry in observed])
 
+    def test_send_unconfirmed_feedback_fails_without_retrying(self):
+        focus = E.Element("node", {
+            "enabled": "true", "clickable": "true", "bounds": "[0,0][20,20]",
+            "package": capture.PACKAGE,
+        })
+        composer = E.Element("node", {"package": capture.PACKAGE})
+        E.SubElement(composer, "node", {
+            "class": "android.widget.EditText", "editable": "true",
+            "text": "synthetic", "package": capture.PACKAGE,
+        })
+        E.SubElement(composer, "node", {
+            "text": "Send in public", "enabled": "true", "clickable": "true",
+            "bounds": "[0,0][20,20]", "package": capture.PACKAGE,
+        })
+        uncertain = E.Element("node", {"package": capture.PACKAGE})
+        E.SubElement(uncertain, "node", {
+            "text": "Sending could not be confirmed. The message may already have been "
+                    "received. Sending it again may create a duplicate. Your text is kept.",
+            "package": capture.PACKAGE,
+        })
+        observed = []
+        with patch("capture.wait_action", return_value=focus), \
+             patch("capture.deadline_adb"), \
+             patch("capture.nodes", side_effect=[
+                 list(composer.iter("node")), list(uncertain.iter("node")),
+             ]), \
+             patch("capture.tap") as tap, \
+             patch("capture.time.monotonic", return_value=1.0):
+            with self.assertRaises(capture.GateError) as failure:
+                capture.send(
+                    capture.SERIALS[0], "synthetic", 10.0,
+                    observer=lambda *values: observed.append(values), trace_started=0.0,
+                )
+        self.assertEqual(failure.exception.gate, "message_submit_a")
+        self.assertEqual(tap.call_count, 2)
+        self.assertIn("feedback_send_unconfirmed", [entry[0] for entry in observed])
+
     def test_send_never_retaps_persistent_confirmation_and_traces_caller_deadline(self):
         focus = E.Element("node", {
             "enabled": "true", "clickable": "true", "bounds": "[0,0][20,20]",

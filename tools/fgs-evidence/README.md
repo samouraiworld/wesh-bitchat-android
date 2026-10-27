@@ -163,6 +163,11 @@ renames the failure gate nor asserts that the global scenario budget expired.
 An allowlisted feedback already visible before Send remains diagnostic and does
 not block the request; only a newly observed feedback after the request can
 classify a refusal, and it never overrides an exact canonical message bubble.
+The fixed unconfirmed-send warning is classified separately as
+`feedback_send_unconfirmed`: it fails the attempt while preserving the original
+`message_submit` gate and is never treated as permission to tap Send again. The
+warning explicitly describes a possibly delivered message, so the controller
+cannot safely infer that no transport handoff occurred.
 No UI text, message, bounds, node, XML or identifier is added to the trace, and
 success still requires exact canonical-app bubbles on both emulators.
 
