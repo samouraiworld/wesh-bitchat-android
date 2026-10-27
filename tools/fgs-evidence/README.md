@@ -197,6 +197,28 @@ composer, bubble, feedback and confirmation states are likewise re-emitted
 before the fixed failure event; the original gate and all time budgets remain
 unchanged.
 
+The first canonical 109 non-media run, `40541974677`, completed both real
+onboardings, foreground-service checks, peer discovery and both public-room
+open actions. It then reached neither Send request nor message bubble. Its
+closed trace recorded a single Wesh editor with a nonempty value different from
+the expected synthetic message and eventually ended at the caller deadline;
+recent snapshots completed, while the final command exhausted its remaining
+sub-second allowance. This alone does not establish a hung reader. The retained
+enums do not reveal the draft value and cannot prove which character transition
+failed.
+
+The controller previously tapped the Compose editor and immediately issued its
+single `input text` command without observing that the editor had actually
+gained focus. A red baseline test demonstrated that an explicitly unfocused
+editor still received that command. The controller now waits, under the existing
+deadline, for exactly one canonical-app editor with `focused=true` before its
+one text injection. It never clears, presses Back, retaps or retries. The fixed
+trace records `composer_focus_requested` and `composer_focused`, and classifies
+a nonempty mismatch only as shorter, longer or same-length-other; it never
+exports the value. A terminal snapshot failure re-emits those closed states so
+they survive the rolling tail. This correction does not change a reader, gate,
+budget, success criterion or media authorization.
+
 The first reviewed attempt, [40214942196](https://github.com/samouraiworld/wesh-bitchat-android/actions/runs/40214942196),
 failed during Java setup: `21.0.11+10` was not a matching Temurin setup selector.
 Canonical verification, signing, SDK/AVD setup, BLE and recording did not run;

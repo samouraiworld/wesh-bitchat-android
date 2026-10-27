@@ -1343,6 +1343,16 @@ class EvidenceChecks(unittest.TestCase):
             "enabled": "true", "clickable": "true", "bounds": "[0,0][20,20]",
             "package": capture.PACKAGE,
         })
+        unfocused = E.Element("node", {"package": capture.PACKAGE})
+        E.SubElement(unfocused, "node", {
+            "class": "android.widget.EditText", "editable": "true",
+            "focused": "false", "text": "", "package": capture.PACKAGE,
+        })
+        focused = E.Element("node", {"package": capture.PACKAGE})
+        E.SubElement(focused, "node", {
+            "class": "android.widget.EditText", "editable": "true",
+            "focused": "true", "text": "", "package": capture.PACKAGE,
+        })
         composer = E.Element("node", {"package": capture.PACKAGE})
         E.SubElement(composer, "node", {
             "class": "android.widget.EditText", "editable": "true",
@@ -1375,8 +1385,9 @@ class EvidenceChecks(unittest.TestCase):
         })
         observed = []
         with patch("capture.wait_action", return_value=control) as action, \
-             patch("capture.deadline_adb"), \
+             patch("capture.deadline_adb") as command, \
              patch("capture.nodes", side_effect=[
+                 list(unfocused.iter("node")), list(focused.iter("node")),
                  list(composer.iter("node")), list(dialog.iter("node")), [bubble],
              ]), \
              patch("capture.tap") as tap, \
@@ -1392,8 +1403,11 @@ class EvidenceChecks(unittest.TestCase):
         ])
         self.assertIs(tap.call_args_list[1].args[1], submit)
         self.assertIs(tap.call_args_list[-1].args[1], confirmation)
+        self.assertEqual(sum(call.args[4:6] == ("input", "text")
+                             for call in command.call_args_list), 1)
         self.assertEqual([entry[0] for entry in observed], [
-            "composer_expected", "bubble_candidate_editor_only", "send_requested",
+            "composer_focus_requested", "composer_focused", "composer_expected",
+            "bubble_candidate_editor_only", "send_requested",
             "composer_ambiguous", "bubble_candidate_absent", "confirmation_visible",
             "confirmation_tap_requested", "bubble_candidate_exact",
             "confirmation_dismissed", "message_bubble",
@@ -1415,6 +1429,7 @@ class EvidenceChecks(unittest.TestCase):
         })
         observed = []
         with patch("capture.wait_action", return_value=focus), \
+             patch("capture.wait_composer_focus"), \
              patch("capture.deadline_adb"), \
              patch("capture.nodes", return_value=list(root.iter("node"))) as snapshot, \
              patch("capture.tap") as tap, \
@@ -1429,8 +1444,78 @@ class EvidenceChecks(unittest.TestCase):
         self.assertEqual(tap.call_count, 1)
         self.assertIsNotNone(snapshot.call_args.kwargs["observer"])
         self.assertEqual([entry[0] for entry in observed], [
-            "composer_other", "bubble_candidate_absent",
+            "composer_same_length_other", "bubble_candidate_absent",
         ])
+
+    def test_composer_mismatch_diagnostics_export_only_fixed_size_classes(self):
+        def state(value):
+            editor = E.Element("node", {
+                "class": "android.widget.EditText", "editable": "true",
+                "text": value, "package": capture.PACKAGE,
+            })
+            return capture.composer_state([editor], "synthetic")
+
+        self.assertEqual(state("synthetic"), "expected")
+        self.assertEqual(state(""), "empty")
+        self.assertEqual(state("short"), "shorter")
+        self.assertEqual(state("synthetic-extra"), "longer")
+        self.assertEqual(state("different"), "same_length_other")
+        for event in ("composer_shorter", "composer_longer",
+                      "composer_same_length_other"):
+            self.assertIn(event, capture.ONBOARDING_TRACE_EVENTS)
+
+    def test_send_reemits_closed_mismatch_on_terminal_snapshot_failure(self):
+        focus = E.Element("node", {
+            "enabled": "true", "clickable": "true", "bounds": "[0,0][20,20]",
+            "package": capture.PACKAGE,
+        })
+        root = E.Element("node", {"package": capture.PACKAGE})
+        E.SubElement(root, "node", {
+            "class": "android.widget.EditText", "editable": "true",
+            "text": "short", "package": capture.PACKAGE,
+        })
+        timeout = capture.GateError("ui_dump_command_timeout", capture.SERIALS[0])
+        timeout.caller_deadline_reached = True
+        observed = []
+        with patch("capture.wait_action", return_value=focus), \
+             patch("capture.wait_composer_focus"), \
+             patch("capture.deadline_adb"), \
+             patch("capture.nodes", side_effect=[list(root.iter("node")), timeout]), \
+             patch("capture.tap"), \
+             patch("capture.bounded_sleep", return_value=True), \
+             patch("capture.time.monotonic", return_value=1.0):
+            with self.assertRaises(capture.GateError) as failure:
+                capture.send(
+                    capture.SERIALS[0], "synthetic", 10.0,
+                    observer=lambda *values: observed.append(values), trace_started=0.0,
+                )
+        self.assertIs(failure.exception, timeout)
+        events = [entry[0] for entry in observed]
+        self.assertEqual(events.count("composer_shorter"), 2)
+        self.assertEqual(events.count("bubble_candidate_absent"), 2)
+        self.assertEqual(events[-1], "failure_caller_deadline_reached")
+
+    def test_send_never_injects_text_before_unique_app_editor_is_focused(self):
+        focus = E.Element("node", {
+            "enabled": "true", "clickable": "true", "bounds": "[0,0][20,20]",
+            "package": capture.PACKAGE,
+        })
+        root = E.Element("node", {"package": capture.PACKAGE})
+        E.SubElement(root, "node", {
+            "class": "android.widget.EditText", "editable": "true",
+            "focused": "false", "text": "", "package": capture.PACKAGE,
+        })
+        with patch("capture.wait_action", return_value=focus), \
+             patch("capture.deadline_adb") as command, \
+             patch("capture.nodes", return_value=list(root.iter("node"))), \
+             patch("capture.tap"), \
+             patch("capture.bounded_sleep", return_value=False), \
+             patch("capture.time.monotonic", return_value=1.0):
+            with self.assertRaises(capture.GateError) as failure:
+                capture.send(capture.SERIALS[0], "synthetic", 10.0)
+        self.assertEqual(failure.exception.gate, "message_composer_a")
+        self.assertFalse(any(call.args[4:6] == ("input", "text")
+                             for call in command.call_args_list))
 
     def test_send_never_uses_foreign_submit_action_with_exact_app_draft(self):
         focus = E.Element("node", {
@@ -1447,6 +1532,7 @@ class EvidenceChecks(unittest.TestCase):
             "bounds": "[0,0][20,20]", "package": "com.android.systemui",
         })
         with patch("capture.wait_action", return_value=focus), \
+             patch("capture.wait_composer_focus"), \
              patch("capture.deadline_adb"), \
              patch("capture.nodes", return_value=list(root.iter("node"))), \
              patch("capture.tap") as tap, \
@@ -1480,6 +1566,7 @@ class EvidenceChecks(unittest.TestCase):
         })
         observed = []
         with patch("capture.wait_action", return_value=focus), \
+             patch("capture.wait_composer_focus"), \
              patch("capture.deadline_adb"), \
              patch("capture.nodes", side_effect=[list(composer.iter("node")), [bubble]]), \
              patch("capture.tap"), \
@@ -1513,6 +1600,7 @@ class EvidenceChecks(unittest.TestCase):
         })
         observed = []
         with patch("capture.wait_action", return_value=focus), \
+             patch("capture.wait_composer_focus"), \
              patch("capture.deadline_adb"), \
              patch("capture.nodes", side_effect=[
                  list(composer.iter("node")), list(rejected.iter("node")),
@@ -1549,6 +1637,7 @@ class EvidenceChecks(unittest.TestCase):
         })
         observed = []
         with patch("capture.wait_action", return_value=focus), \
+             patch("capture.wait_composer_focus"), \
              patch("capture.deadline_adb"), \
              patch("capture.nodes", side_effect=[
                  list(composer.iter("node")), list(uncertain.iter("node")),
@@ -1600,6 +1689,7 @@ class EvidenceChecks(unittest.TestCase):
         timeout.caller_deadline_reached = True
         observed = []
         with patch("capture.wait_action", return_value=focus), \
+             patch("capture.wait_composer_focus"), \
              patch("capture.deadline_adb"), \
              patch("capture.nodes", side_effect=[
                  list(composer.iter("node")), list(dialog.iter("node")),

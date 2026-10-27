@@ -38,8 +38,10 @@ ONBOARDING_TRACE_EVENTS = frozenset({
     "activity_resumed", "welcome_seen", "start_tapped", "bluetooth", "permission",
     "notifications", "auxiliary", "home", "unknown", "ui_prepare", "ui_stale",
     "ui_command", "ui_output", "ui_read", "ui_parse", "ui_complete", "room_open_tapped",
-    "send_requested", "composer_expected", "composer_empty", "composer_other",
-    "composer_ambiguous", "confirmation_visible", "confirmation_tap_requested",
+    "send_requested", "composer_focus_requested", "composer_focused",
+    "composer_expected", "composer_empty", "composer_other", "composer_shorter",
+    "composer_longer", "composer_same_length_other", "composer_ambiguous",
+    "confirmation_visible", "confirmation_tap_requested",
     "confirmation_present_after_tap", "confirmation_dismissed",
     "feedback_destination_changed", "feedback_draft_changed",
     "feedback_send_unavailable", "feedback_send_unconfirmed",
@@ -822,7 +824,11 @@ def composer_state(items, message):
         return "expected"
     if value == "":
         return "empty"
-    return "other"
+    if len(value) < len(message):
+        return "shorter"
+    if len(value) > len(message):
+        return "longer"
+    return "same_length_other"
 
 
 SEND_FEEDBACK_EVENTS = {
@@ -927,13 +933,34 @@ def wait_message_bubble(serial, message, deadline, observer=None, trace_started=
     raise GateError("message_receive" if remote else "message_submit", serial)
 
 
+def wait_composer_focus(serial, deadline, observer, trace_started, states):
+    trace_state_change(
+        observer, states, "composer_focus", "composer_focus_requested",
+        trace_started, serial)
+    while time.monotonic() < deadline:
+        items = scenario_nodes(serial, deadline, observer, trace_started, states)
+        editors = [node for node in items
+                   if node.get("package") == PACKAGE and is_editor(node)]
+        if len(editors) == 1 and editors[0].get("focused") == "true":
+            trace_state_change(
+                observer, states, "composer_focus", "composer_focused",
+                trace_started, serial)
+            return
+        if not bounded_sleep(deadline, 0.2):
+            break
+    for event in dict.fromkeys(event for event in states.values() if event is not None):
+        trace_scenario_progress(observer, event, trace_started, serial)
+    raise GateError("message_composer", serial)
+
+
 def send(serial, message, deadline, observer=None, trace_started=None):
     target = wait_action(serial, "Public message — everyone around", deadline,
                          failure_phase="message_composer", observer=observer,
                          trace_started=trace_started)
     tap(serial, target, "message_composer", deadline)
-    deadline_adb(serial, "message_composer", deadline, "shell", "input", "text", message)
     states = {}
+    wait_composer_focus(serial, deadline, observer, trace_started, states)
+    deadline_adb(serial, "message_composer", deadline, "shell", "input", "text", message)
     submit = None
     saw_expected_draft = False
     feedback_before_submit = None
