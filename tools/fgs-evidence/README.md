@@ -63,8 +63,34 @@ boot/install/UI sub-gate cannot be recovered and no BLE conclusion can be drawn.
 The corrected controller exports only named phase/side failures, retries transient
 UI dumps inside hard deadlines, waits for Bluetooth ON, installation, resumed
 activities, real home, FGS and real peer discovery. It never exports UI XML,
-logcat, host paths or exception text. One further attempt requires review of its
-exact head and a deliberate Lead label; no automatic rerun is permitted.
+logcat, host paths or exception text. One further attempt required review of its
+exact head and a deliberate Lead label; the next paragraph records the outcome
+of that single reviewed attempt, and no automatic rerun is permitted.
+
+The fifth and only approved host-display attempt,
+[40456733798](https://github.com/samouraiworld/wesh-bitchat-android/actions/runs/40456733798),
+used reviewed controller source `e2162cf8bff50b8cc065be83c1528e378620ff9c`.
+Canonical preparation passed and both owned emulators reached the
+`boot_install_bluetooth_ready` preflight event at 59.2 seconds. The controller
+then stopped during side A onboarding with the allowlisted aggregate gate
+`ui_dump_a`; it exported no scenario events or recordings. That one-attempt
+approval is consumed, so this history does not authorize a label, rerun or new
+capture.
+
+The exact subcause of `ui_dump_a` cannot be recovered from that privacy-minimal
+receipt: the old aggregate covered a dump timeout/nonzero result, a read
+timeout/nonzero result, and XML parse failure, while raw UI output was correctly
+not retained. A controller defect is independently proven: its entire retry
+window was six seconds, but Android's `uiautomator dump` implementation may wait
+up to ten seconds for UI idle before reading the hierarchy. The corrected
+snapshot reader has a 26-second cap beneath its caller's deadline, at most two
+dump commands capped at 13 seconds each, reads only within the remaining budget,
+and uses a fresh side-specific controller-owned path for each attempt. It removes
+that path before and after use and exports only allowlisted timeout, command,
+freshness, missing-output, read, parse or cleanup gates. It never exports XML or
+exception text. This fixes the proven six-versus-ten-second mismatch; it does
+**not** prove that mismatch was the cause of run 40456733798, nor establish any
+BLE or host-recorder result.
 
 Canonical 107 also applies Android `FLAG_SECURE` to the real `MainActivity`.
 Guest-side `adb shell screenrecord` is therefore not an acceptable capture path:
@@ -122,11 +148,13 @@ recorders retain their fixed 180-second limit for strict coverage and post-roll.
 With that specific approval, only after the genuine scenario and both host
 recorders succeed may CI export `recording-a.webm` and `recording-b.webm`,
 provenance, an allowlisted event receipt
-and checksums as a seven-day Actions artifact. **No human approval for this new
-host-display capture/export is recorded yet.** Before any label, run or upload, a
-human must explicitly approve this exact external capture of two fresh synthetic
-owned AVDs, its seven-day GitHub Actions retention and the reviewed source head.
-Approval of an earlier guest-side attempt does not carry over. Its result is
+and checksums as a seven-day Actions artifact. Human approval for exactly one
+host-display capture/export at source
+`e2162cf8bff50b8cc065be83c1528e378620ff9c` was recorded and consumed by failed
+run 40456733798. It does not authorize another label, run, capture or upload.
+Any future attempt requires new explicit approval for the exact reviewed source
+head, two fresh synthetic owned AVDs and seven-day GitHub Actions retention.
+Approval of an earlier attempt does not carry over. A successful result would be
 `SCENARIO_PASS_RECORDINGS_AWAIT_LOCAL_VALIDATION`, never qualified-video PASS.
 The receipt identifies the path as
 `captureSource=ANDROID_EMULATOR_HOST_PHYSICAL_DISPLAY_WEBM`.

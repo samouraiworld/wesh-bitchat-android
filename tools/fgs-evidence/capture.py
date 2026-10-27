@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+from threading import Lock
 import time
 import xml.etree.ElementTree as E
 
@@ -23,11 +24,18 @@ SCENARIO_RESULT = "SCENARIO_PASS_RECORDINGS_AWAIT_LOCAL_VALIDATION"
 CAPTURE_SOURCE = "ANDROID_EMULATOR_HOST_PHYSICAL_DISPLAY_WEBM"
 RECORDING_LIMIT_SECONDS = 180
 SCENARIO_BUDGET_SECONDS = 165
+UI_SNAPSHOT_BUDGET_SECONDS = 26
+UI_DUMP_COMMAND_SECONDS = 13
+UI_DUMP_ATTEMPTS = 2
+UI_CLEANUP_RESERVE_SECONDS = 1
+UI_FILE_COMMAND_SECONDS = 2
 
 SERIAL_PHASES = frozenset({
     "boot_timeout", "emulator_identity", "api_image", "device_setup",
     "bluetooth_on_timeout", "install", "package_verify", "activity_launch",
-    "activity_resume_timeout", "ui_dump", "ui_action", "nickname_field",
+    "activity_resume_timeout", "ui_dump_command_timeout", "ui_dump_command_error",
+    "ui_dump_stale", "ui_dump_output_missing", "ui_dump_read", "ui_dump_parse",
+    "ui_dump_cleanup", "ui_action", "nickname_field",
     "ime_visibility_unknown", "onboarding_welcome", "onboarding_bluetooth",
     "onboarding_notifications", "onboarding_permission", "onboarding_auxiliary",
     "onboarding_unknown", "fgs_timeout", "peer_discovery_timeout",
@@ -49,6 +57,9 @@ SCENARIO_STEPS = (
     "public_message_sent_while_other_app_in_background", "public_message_visible_after_resume_via_fgs_notification",
     "quit_action_stopped_service_and_removed_notification",
 )
+
+_UI_DUMP_SEQUENCE_LOCK = Lock()
+_UI_DUMP_SEQUENCE = {serial: 0 for serial in SERIALS}
 
 
 def gate_name(phase, serial=None):
@@ -112,25 +123,84 @@ def bounded_sleep(deadline, cap):
     return True
 
 
-def nodes(serial, deadline):
-    """Retry transient UIAutomator failures, but never beyond the caller's bounded deadline."""
-    retry_deadline = min(deadline, time.monotonic() + 6)
-    while time.monotonic() < retry_deadline:
+def ui_dump_path(serial):
+    """Return a controller-owned, side-specific path unique in this process."""
+    if serial not in SIDES:
+        raise ValueError("Only the two owned emulator serials are allowed")
+    with _UI_DUMP_SEQUENCE_LOCK:
+        _UI_DUMP_SEQUENCE[serial] += 1
+        sequence = _UI_DUMP_SEQUENCE[serial]
+    return f"/data/local/tmp/wesh-fgs-window-{SIDES[serial]}-{sequence:08d}.xml"
+
+
+def ui_timeout(deadline, cap):
+    """Unlike general adb deadlines, never round a UI budget past its deadline."""
+    remaining = deadline - time.monotonic()
+    return None if remaining <= 0 else min(cap, remaining)
+
+
+def ui_adb(serial, deadline, timeout_phase, error_phase, *args, cap):
+    timeout = ui_timeout(deadline, cap)
+    if timeout is None:
+        raise GateError(timeout_phase, serial)
+    try:
+        return adb(serial, *args, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise GateError(timeout_phase, serial) from None
+    except (RuntimeError, ValueError):
+        raise GateError(error_phase, serial) from None
+
+
+def ui_dump_attempt(serial, path, deadline):
+    """Create, read and remove one fresh hierarchy without exporting its contents."""
+    work_deadline = deadline - UI_CLEANUP_RESERVE_SECONDS
+    try:
+        ui_adb(serial, work_deadline, "ui_dump_cleanup", "ui_dump_cleanup",
+               "shell", "rm", "-f", path, cap=UI_FILE_COMMAND_SECONDS)
+        ui_adb(serial, work_deadline, "ui_dump_stale", "ui_dump_stale",
+               "shell", "test", "!", "-e", path, cap=UI_FILE_COMMAND_SECONDS)
+        ui_adb(serial, work_deadline, "ui_dump_command_timeout", "ui_dump_command_error",
+               "shell", "uiautomator", "dump", path, cap=UI_DUMP_COMMAND_SECONDS)
+        ui_adb(serial, work_deadline, "ui_dump_output_missing", "ui_dump_output_missing",
+               "shell", "test", "-s", path, cap=UI_FILE_COMMAND_SECONDS)
+        xml = ui_adb(serial, work_deadline, "ui_dump_read", "ui_dump_read",
+                     "exec-out", "cat", path, cap=UI_DUMP_COMMAND_SECONDS)
+        if not xml.strip():
+            raise GateError("ui_dump_output_missing", serial)
         try:
-            timeout = bounded_timeout(retry_deadline, 6)
-            if timeout is None:
-                break
-            adb(serial, "shell", "uiautomator", "dump", "/sdcard/wesh-fgs-window.xml", timeout=timeout)
-            timeout = bounded_timeout(retry_deadline, 6)
-            if timeout is None:
-                break
-            xml = adb(serial, "exec-out", "cat", "/sdcard/wesh-fgs-window.xml", timeout=timeout)
-            return list(E.fromstring(xml).iter("node"))
-        except (RuntimeError, subprocess.TimeoutExpired, E.ParseError):
-            remaining = retry_deadline - time.monotonic()
-            if remaining > 0:
-                time.sleep(min(0.25, remaining))
-    raise GateError("ui_dump", serial)
+            root = E.fromstring(xml)
+        except E.ParseError:
+            raise GateError("ui_dump_parse", serial) from None
+        items = list(root.iter("node"))
+        if root.tag != "hierarchy" or not items:
+            raise GateError("ui_dump_parse", serial)
+        return items
+    finally:
+        ui_adb(serial, deadline, "ui_dump_cleanup", "ui_dump_cleanup",
+               "shell", "rm", "-f", path, cap=UI_CLEANUP_RESERVE_SECONDS)
+
+
+def nodes(serial, deadline):
+    """Take at most two fresh snapshots inside a 26-second/caller deadline."""
+    snapshot_deadline = min(deadline, time.monotonic() + UI_SNAPSHOT_BUDGET_SECONDS)
+    if snapshot_deadline - time.monotonic() <= UI_CLEANUP_RESERVE_SECONDS:
+        raise GateError("ui_dump_command_timeout", serial)
+    last_failure = None
+    for attempt in range(UI_DUMP_ATTEMPTS):
+        if time.monotonic() >= snapshot_deadline:
+            break
+        path = ui_dump_path(serial)
+        try:
+            return ui_dump_attempt(serial, path, snapshot_deadline)
+        except GateError as failure:
+            if failure.gate == gate_name("ui_dump_cleanup", serial):
+                raise
+            last_failure = failure
+            if attempt + 1 < UI_DUMP_ATTEMPTS:
+                bounded_sleep(snapshot_deadline, 0.25)
+    if last_failure is not None:
+        raise last_failure
+    raise GateError("ui_dump_command_timeout", serial)
 
 
 def labels(items):

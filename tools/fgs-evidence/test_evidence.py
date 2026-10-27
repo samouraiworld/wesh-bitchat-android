@@ -101,35 +101,192 @@ class EvidenceChecks(unittest.TestCase):
 
     def test_failure_gates_are_allowlisted_and_never_accept_arbitrary_text(self):
         self.assertEqual(capture.gate_name("install", capture.SERIALS[1]), "install_b")
+        self.assertEqual(capture.gate_name("ui_dump_parse", capture.SERIALS[0]),
+                         "ui_dump_parse_a")
         self.assertEqual(capture.gate_name("scenario_budget"), "scenario_budget")
-        for phase, serial in (("private/path", capture.SERIALS[0]), ("install", "physical-device"),
-                              ("private/path", None)):
+        for phase, serial in (("private/path", capture.SERIALS[0]),
+                              ("ui_dump", capture.SERIALS[0]),
+                              ("install", "physical-device"), ("private/path", None)):
             with self.assertRaises(ValueError):
                 capture.gate_name(phase, serial)
 
     def test_ui_dump_retries_a_transient_failure_then_returns_real_nodes(self):
         xml = '<hierarchy><node text="Public room" enabled="true" /></hierarchy>'
-        with patch("capture.adb", side_effect=[RuntimeError("transient"), "", xml]) as command, \
+        responses = ["", "", RuntimeError("transient"), "",
+                     "", "", "", "", xml, ""]
+        with patch("capture.adb", side_effect=responses) as command, \
              patch("capture.time.sleep"):
-            items = capture.nodes(capture.SERIALS[0], capture.time.monotonic()+1)
+            items = capture.nodes(capture.SERIALS[0], capture.time.monotonic()+3)
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0].get("text"), "Public room")
-        self.assertEqual(command.call_count, 3)
+        self.assertEqual(command.call_count, 10)
+        dump_paths = [call.args[-1] for call in command.call_args_list
+                      if call.args[1:4] == ("shell", "uiautomator", "dump")]
+        self.assertEqual(len(dump_paths), 2)
+        self.assertNotEqual(dump_paths[0], dump_paths[1])
 
-    def test_ui_dump_caps_each_adb_call_to_remaining_deadline(self):
+    def test_ui_dump_allows_platform_nine_second_idle_wait(self):
         xml = '<hierarchy><node text="Public room" enabled="true" /></hierarchy>'
-        started = capture.time.monotonic()
-        with patch("capture.adb", side_effect=["", xml]) as command:
-            capture.nodes(capture.SERIALS[0], started+0.2)
-        self.assertEqual(command.call_count, 2)
-        self.assertTrue(all(0 < call.kwargs["timeout"] <= 0.2 for call in command.call_args_list))
+        clock = [100.0]
+        calls = []
+
+        def command(serial, *args, timeout):
+            calls.append((serial, args, timeout))
+            if args[0:3] == ("shell", "uiautomator", "dump"):
+                self.assertGreaterEqual(timeout, 9)
+                clock[0] += 9
+            if args[0:2] == ("exec-out", "cat"):
+                return xml
+            return ""
+
+        with patch("capture.time.monotonic", side_effect=lambda: clock[0]), \
+             patch("capture.adb", side_effect=command):
+            items = capture.nodes(capture.SERIALS[0], 140.0)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(clock[0], 109.0)
+        self.assertTrue(all(0 < timeout <= capture.UI_DUMP_COMMAND_SECONDS
+                            for _, _, timeout in calls))
+
+    def test_ui_dump_caps_calls_to_snapshot_and_caller_deadlines(self):
+        xml = '<hierarchy><node text="Public room" enabled="true" /></hierarchy>'
+
+        def command(_serial, *args, timeout):
+            if args[0:2] == ("exec-out", "cat"):
+                return xml
+            return ""
+
+        with patch("capture.time.monotonic", return_value=100.0), \
+             patch("capture.adb", side_effect=command) as adb_command:
+            capture.nodes(capture.SERIALS[0], 105.0)
+        self.assertTrue(all(0 < call.kwargs["timeout"] <= 5
+                            for call in adb_command.call_args_list))
+        dump_call = next(call for call in adb_command.call_args_list
+                         if call.args[1:4] == ("shell", "uiautomator", "dump"))
+        self.assertLessEqual(dump_call.kwargs["timeout"], 4)
+
+    def test_ui_dump_two_timeouts_stay_inside_automatic_budget(self):
+        clock = [100.0]
+        dump_timeouts = []
+
+        def command(_serial, *args, timeout):
+            if args[0:3] == ("shell", "uiautomator", "dump"):
+                dump_timeouts.append(timeout)
+                clock[0] += timeout
+                raise subprocess.TimeoutExpired("adb", timeout)
+            return ""
+
+        def sleep(seconds):
+            clock[0] += seconds
+
+        with patch("capture.time.monotonic", side_effect=lambda: clock[0]), \
+             patch("capture.time.sleep", side_effect=sleep), \
+             patch("capture.adb", side_effect=command):
+            with self.assertRaises(capture.GateError) as failure:
+                capture.nodes(capture.SERIALS[0], 200.0)
+        self.assertEqual(failure.exception.gate, "ui_dump_command_timeout_a")
+        self.assertEqual(len(dump_timeouts), capture.UI_DUMP_ATTEMPTS)
+        self.assertTrue(all(timeout <= capture.UI_DUMP_COMMAND_SECONDS
+                            for timeout in dump_timeouts))
+        self.assertLessEqual(clock[0], 100.0 + capture.UI_SNAPSHOT_BUDGET_SECONDS)
 
     def test_expired_ui_deadline_runs_no_adb_and_has_named_gate(self):
         with patch("capture.adb") as command:
             with self.assertRaises(capture.GateError) as failure:
                 capture.nodes(capture.SERIALS[0], capture.time.monotonic()-1)
-        self.assertEqual(failure.exception.gate, "ui_dump_a")
+        self.assertEqual(failure.exception.gate, "ui_dump_command_timeout_a")
         command.assert_not_called()
+
+    def test_ui_dump_rejects_unverified_freshness_without_dumping(self):
+        def command(_serial, *args, timeout):
+            if args[0:4] == ("shell", "test", "!", "-e"):
+                raise RuntimeError("not fresh")
+            return ""
+
+        with patch("capture.adb", side_effect=command) as adb_command, \
+             patch("capture.time.sleep"):
+            with self.assertRaises(capture.GateError) as failure:
+                capture.nodes(capture.SERIALS[0], capture.time.monotonic()+2)
+        self.assertEqual(failure.exception.gate, "ui_dump_stale_a")
+        self.assertFalse(any(call.args[1:4] == ("shell", "uiautomator", "dump")
+                             for call in adb_command.call_args_list))
+
+    def test_ui_dump_rejects_missing_output_after_both_attempts(self):
+        def command(_serial, *args, timeout):
+            if args[0:3] == ("shell", "test", "-s"):
+                raise RuntimeError("missing")
+            return ""
+
+        with patch("capture.adb", side_effect=command), patch("capture.time.sleep"):
+            with self.assertRaises(capture.GateError) as failure:
+                capture.nodes(capture.SERIALS[1], capture.time.monotonic()+2)
+        self.assertEqual(failure.exception.gate, "ui_dump_output_missing_b")
+
+    def test_ui_dump_classifies_command_timeout_error_read_and_parse(self):
+        xml = '<hierarchy><node text="Public room" enabled="true" /></hierarchy>'
+        cases = (
+            ("timeout", "ui_dump_command_timeout_a"),
+            ("error", "ui_dump_command_error_a"),
+            ("read", "ui_dump_read_a"),
+            ("parse", "ui_dump_parse_a"),
+        )
+        for kind, expected in cases:
+            def command(_serial, *args, timeout, kind=kind):
+                if args[0:3] == ("shell", "uiautomator", "dump"):
+                    if kind == "timeout":
+                        raise subprocess.TimeoutExpired("adb", timeout)
+                    if kind == "error":
+                        raise RuntimeError("private command detail")
+                if args[0:2] == ("exec-out", "cat"):
+                    if kind == "read":
+                        raise RuntimeError("private read detail")
+                    return "not xml" if kind == "parse" else xml
+                return ""
+
+            with self.subTest(kind=kind), patch("capture.adb", side_effect=command), \
+                 patch("capture.time.sleep"):
+                with self.assertRaises(capture.GateError) as failure:
+                    capture.nodes(capture.SERIALS[0], capture.time.monotonic()+2)
+                self.assertEqual(failure.exception.gate, expected)
+                self.assertNotIn("private", str(failure.exception))
+
+    def test_ui_dump_paths_are_unique_side_specific_and_always_cleaned(self):
+        xml = '<hierarchy><node text="Public room" enabled="true" /></hierarchy>'
+        calls = []
+
+        def command(serial, *args, timeout):
+            calls.append((serial, args))
+            return xml if args[0:2] == ("exec-out", "cat") else ""
+
+        with patch("capture.adb", side_effect=command):
+            capture.nodes(capture.SERIALS[0], capture.time.monotonic()+2)
+            capture.nodes(capture.SERIALS[1], capture.time.monotonic()+2)
+        dump_paths = {serial: args[-1] for serial, args in calls
+                      if args[0:3] == ("shell", "uiautomator", "dump")}
+        self.assertRegex(dump_paths[capture.SERIALS[0]], r"wesh-fgs-window-a-\d{8}\.xml$")
+        self.assertRegex(dump_paths[capture.SERIALS[1]], r"wesh-fgs-window-b-\d{8}\.xml$")
+        self.assertNotEqual(*dump_paths.values())
+        for serial, path in dump_paths.items():
+            removals = [args for call_serial, args in calls if call_serial == serial and
+                        args == ("shell", "rm", "-f", path)]
+            self.assertEqual(len(removals), 2)
+
+    def test_ui_dump_cleanup_failure_is_fail_closed_and_hides_raw_detail(self):
+        xml = '<hierarchy><node text="Public room" enabled="true" /></hierarchy>'
+        removals = 0
+
+        def command(_serial, *args, timeout):
+            nonlocal removals
+            if args[0:3] == ("shell", "rm", "-f"):
+                removals += 1
+                if removals == 2:
+                    raise RuntimeError("private cleanup detail")
+            return xml if args[0:2] == ("exec-out", "cat") else ""
+
+        with patch("capture.adb", side_effect=command):
+            with self.assertRaises(capture.GateError) as failure:
+                capture.nodes(capture.SERIALS[0], capture.time.monotonic()+2)
+        self.assertEqual(failure.exception.gate, "ui_dump_cleanup_a")
+        self.assertNotIn("private", str(failure.exception))
 
     def test_expired_command_deadline_runs_no_adb(self):
         with patch("capture.adb") as command:
