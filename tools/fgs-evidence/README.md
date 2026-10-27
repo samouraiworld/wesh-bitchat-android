@@ -336,6 +336,27 @@ fail-closed checks. This does not weaken a gate, retry `NOT_SENT`, change the
 release app or `FLAG_SECURE`, or qualify footage before the full scenario and
 local media review pass.
 
+The standard 270-second run `40566266276` completed all three real public sends,
+all three opposite-side receipts, the background foreground-service notification,
+the background send and the resumed third receipt. It then recorded
+`quit_requested` at 222.604 seconds and stopped at `notification_expand_a` before
+observing an open notification shade or tapping Quit. That shared gate covers the
+HOME request, the status-bar expansion request and a snapshot without a SystemUI
+notification stack, so the receipt does not establish which one failed. It does
+establish that this was not the 270-second scenario boundary and does not qualify
+video.
+
+HOME and status-bar expansion are idempotent asynchronous requests. The Quit path
+therefore treats only their own `notification_expand_<side>` command errors as
+ambiguous and waits within the existing deadline for the real SystemUI stack.
+It also waits for the unique Wesh row after the stack opens and, after service
+shutdown, for an observed open stack in which the Wesh row has disappeared.
+Every other gate still propagates. Success still requires exactly one Quit action
+scoped to that row, an absent service and the absent notification postcondition;
+a permanently missing stack or persistent Wesh row fails closed. UI snapshots
+from this path now feed the same closed enum-only trace; no raw hierarchy or
+command output is retained.
+
 The first reviewed attempt, [40214942196](https://github.com/samouraiworld/wesh-bitchat-android/actions/runs/40214942196),
 failed during Java setup: `21.0.11+10` was not a matching Temurin setup selector.
 Canonical verification, signing, SDK/AVD setup, BLE and recording did not run;

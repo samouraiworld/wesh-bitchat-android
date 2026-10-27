@@ -304,6 +304,111 @@ class EvidenceChecks(unittest.TestCase):
             "notification_absent",
         ])
 
+    def test_quit_waits_for_real_shade_after_asynchronous_expand_request(self):
+        old_screen = [E.Element("node", {
+            "package": capture.PACKAGE, "text": "Public room",
+        })]
+        expanded, _expand, wesh_quit = self.notification_shade(expanded=True)
+        absent, _expand, _quit = self.notification_shade(include_wesh=False)
+        observer = Mock()
+        with patch("capture.deadline_adb"), \
+             patch("capture.fgs_active", side_effect=[True, False]), \
+             patch("capture.nodes", side_effect=[old_screen, expanded, absent]) as nodes, \
+             patch("capture.bounded_sleep", return_value=True), \
+             patch("capture.tap") as tap, \
+             patch("capture.time.monotonic", return_value=100.0):
+            capture.quit_via_notification(
+                capture.SERIALS[0], 150.0, observer=observer, trace_started=0.0,
+            )
+        self.assertEqual(nodes.call_count, 3)
+        self.assertTrue(all(call.kwargs.get("observer") is observer
+                            for call in nodes.call_args_list))
+        tap.assert_called_once_with(
+            capture.SERIALS[0], wesh_quit, "quit_action", 150.0)
+
+    def test_quit_waits_for_wesh_card_after_shade_opens(self):
+        stack_without_wesh, _expand, _quit = self.notification_shade(include_wesh=False)
+        expanded, _expand, wesh_quit = self.notification_shade(expanded=True)
+        absent, _expand, _quit = self.notification_shade(include_wesh=False)
+        with patch("capture.deadline_adb"), \
+             patch("capture.fgs_active", side_effect=[True, False]), \
+             patch("capture.nodes", side_effect=[stack_without_wesh, expanded, absent]), \
+             patch("capture.bounded_sleep", return_value=True), \
+             patch("capture.tap") as tap, \
+             patch("capture.time.monotonic", return_value=100.0):
+            capture.quit_via_notification(capture.SERIALS[0], 150.0)
+        tap.assert_called_once_with(
+            capture.SERIALS[0], wesh_quit, "quit_action", 150.0)
+
+    def test_quit_waits_for_old_wesh_row_to_disappear_after_service_stops(self):
+        expanded, _expand, wesh_quit = self.notification_shade(expanded=True)
+        absent, _expand, _quit = self.notification_shade(include_wesh=False)
+        with patch("capture.deadline_adb"), \
+             patch("capture.fgs_active", side_effect=[True, False]), \
+             patch("capture.nodes", side_effect=[expanded, expanded, absent]), \
+             patch("capture.bounded_sleep", return_value=True), \
+             patch("capture.tap") as tap, \
+             patch("capture.time.monotonic", return_value=100.0):
+            capture.quit_via_notification(capture.SERIALS[0], 150.0)
+        tap.assert_called_once_with(
+            capture.SERIALS[0], wesh_quit, "quit_action", 150.0)
+
+    def test_quit_refuses_permanent_wesh_row_after_service_stops(self):
+        expanded, _expand, _quit = self.notification_shade(expanded=True)
+        with patch("capture.deadline_adb"), \
+             patch("capture.fgs_active", side_effect=[True, False]), \
+             patch("capture.nodes", side_effect=[expanded, expanded]), \
+             patch("capture.bounded_sleep", return_value=False), \
+             patch("capture.tap"), \
+             patch("capture.time.monotonic", return_value=100.0):
+            with self.assertRaises(capture.GateError) as failure:
+                capture.quit_via_notification(capture.SERIALS[0], 150.0)
+        self.assertEqual(failure.exception.gate, "quit_timeout_a")
+
+    def test_quit_accepts_ambiguous_home_and_expand_errors_only_with_real_shade(self):
+        expanded, _expand, wesh_quit = self.notification_shade(expanded=True)
+        absent, _expand, _quit = self.notification_shade(include_wesh=False)
+        failures = [
+            capture.GateError("notification_expand", capture.SERIALS[0]),
+            capture.GateError("notification_expand", capture.SERIALS[0]),
+            None,
+        ]
+        with patch("capture.deadline_adb", side_effect=failures) as deadline_adb, \
+             patch("capture.fgs_active", side_effect=[True, False]), \
+             patch("capture.nodes", side_effect=[expanded, absent]), \
+             patch("capture.tap") as tap, \
+             patch("capture.time.monotonic", return_value=100.0):
+            capture.quit_via_notification(capture.SERIALS[0], 150.0)
+        self.assertEqual(deadline_adb.call_count, 3)
+        tap.assert_called_once_with(
+            capture.SERIALS[0], wesh_quit, "quit_action", 150.0)
+
+    def test_quit_refuses_ambiguous_expand_error_without_real_shade(self):
+        old_screen = [E.Element("node", {
+            "package": capture.PACKAGE, "text": "Public room",
+        })]
+        with patch("capture.deadline_adb", side_effect=[
+                 None, capture.GateError("notification_expand", capture.SERIALS[0])]), \
+             patch("capture.fgs_active", return_value=True), \
+             patch("capture.nodes", return_value=old_screen), \
+             patch("capture.bounded_sleep", return_value=False), \
+             patch("capture.tap") as tap, \
+             patch("capture.time.monotonic", return_value=100.0):
+            with self.assertRaises(capture.GateError) as failure:
+                capture.quit_via_notification(capture.SERIALS[0], 150.0)
+        self.assertEqual(failure.exception.gate, "notification_expand_a")
+        tap.assert_not_called()
+
+    def test_notification_request_never_swallows_an_unrelated_gate(self):
+        with patch("capture.deadline_adb", side_effect=capture.GateError(
+                "ui_action", capture.SERIALS[0])):
+            with self.assertRaises(capture.GateError) as failure:
+                capture.request_notification_command(
+                    capture.SERIALS[0], 150.0,
+                    "shell", "cmd", "statusbar", "expand-notifications",
+                )
+        self.assertEqual(failure.exception.gate, "ui_action_a")
+
     def test_quit_never_claims_notification_absent_when_shade_snapshot_is_collapsed(self):
         collapsed, _wesh_expand, _quit = self.notification_shade()
         expanded, _expand, _wesh_quit = self.notification_shade(expanded=True)
@@ -314,6 +419,7 @@ class EvidenceChecks(unittest.TestCase):
         with patch("capture.deadline_adb"), \
              patch("capture.fgs_active", side_effect=[True, False]), \
              patch("capture.nodes", side_effect=[collapsed, expanded, app_only]), \
+             patch("capture.bounded_sleep", return_value=False), \
              patch("capture.tap"), \
              patch("capture.time.monotonic", return_value=100.0):
             with self.assertRaises(capture.GateError) as failure:

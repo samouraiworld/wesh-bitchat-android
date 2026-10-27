@@ -1195,11 +1195,57 @@ def scoped_notification_action(items, content, action, resource_id=None):
     return (row, actions[0]) if len(actions) == 1 else None
 
 
+def wait_notification_stack(serial, deadline, observer=None):
+    """Observe an actually open SystemUI shade after an asynchronous request."""
+    while time.monotonic() < deadline:
+        items = nodes(serial, deadline, observer=observer)
+        if notification_stack(items) is not None:
+            return items
+        if not bounded_sleep(deadline, 0.4):
+            break
+    raise GateError("notification_expand", serial)
+
+
+def wait_notification_row_ready(serial, content, items, deadline, observer=None):
+    """Wait for exactly one content-scoped row after the shade itself is visible."""
+    while time.monotonic() < deadline:
+        if notification_row(items, content) is not None:
+            return items
+        if not bounded_sleep(deadline, 0.4):
+            break
+        items = wait_notification_stack(serial, deadline, observer=observer)
+    raise GateError("notification_expand", serial)
+
+
+def wait_notification_content_absent(serial, content, items, deadline, observer=None):
+    """Wait for content removal while continuing to require a visible SystemUI stack."""
+    while time.monotonic() < deadline:
+        stack = notification_stack(items)
+        if stack is None:
+            raise GateError("notification_expand", serial)
+        if not notification_content_nodes(stack, content):
+            return items
+        if not bounded_sleep(deadline, 0.4):
+            break
+        items = wait_notification_stack(serial, deadline, observer=observer)
+    raise GateError("quit_timeout", serial)
+
+
+def request_notification_command(serial, deadline, *args):
+    """Request an idempotent shade transition; its observed postcondition is authoritative."""
+    try:
+        deadline_adb(serial, "notification_expand", deadline, *args)
+    except GateError as failure:
+        if failure.gate != gate_name("notification_expand", serial):
+            raise
+
+
 def wait_scoped_notification_action(serial, content, action, deadline, failure_phase,
-                                    resource_id=None):
+                                    resource_id=None, observer=None):
     while time.monotonic() < deadline:
         match = scoped_notification_action(
-            nodes(serial, deadline), content, action, resource_id=resource_id)
+            nodes(serial, deadline, observer=observer), content, action,
+            resource_id=resource_id)
         if match is not None:
             return match
         if not bounded_sleep(deadline, 0.4):
@@ -1215,19 +1261,17 @@ def quit_via_notification(serial, deadline, observer=None, trace_started=None):
             trace_scenario_progress(observer, event, trace_started, serial)
 
     progress("quit_requested")
-    deadline_adb(serial, "notification_expand", deadline, "shell", "input", "keyevent", "3")
+    request_notification_command(
+        serial, deadline, "shell", "input", "keyevent", "3")
     timeout = bounded_timeout(deadline, 8)
     if timeout is None or not fgs_active(serial, timeout):
         raise GateError("fgs_timeout", serial)
-    deadline_adb(serial, "notification_expand", deadline,
-                 "shell", "cmd", "statusbar", "expand-notifications")
-    items = nodes(serial, deadline)
-    if notification_stack(items) is None:
-        raise GateError("notification_expand", serial)
+    request_notification_command(
+        serial, deadline, "shell", "cmd", "statusbar", "expand-notifications")
+    items = wait_notification_stack(serial, deadline, observer=observer)
     progress("shade_opened")
-    card = notification_row(items, "Mesh running")
-    if card is None:
-        raise GateError("notification_expand", serial)
+    items = wait_notification_row_ready(
+        serial, "Mesh running", items, deadline, observer=observer)
     progress("notification_card_found")
     scoped_quit = scoped_notification_action(items, "Mesh running", "Quit Wesh")
     if scoped_quit is None:
@@ -1239,7 +1283,8 @@ def quit_via_notification(serial, deadline, observer=None, trace_started=None):
         tap(serial, expand, "notification_expand", deadline)
         progress("expand_tapped")
         _card, quit_action = wait_scoped_notification_action(
-            serial, "Mesh running", "Quit Wesh", deadline, "quit_action")
+            serial, "Mesh running", "Quit Wesh", deadline, "quit_action",
+            observer=observer)
     else:
         _card, quit_action = scoped_quit
     progress("quit_action_found")
@@ -1259,15 +1304,12 @@ def quit_via_notification(serial, deadline, observer=None, trace_started=None):
     if not service_stopped:
         raise GateError("quit_timeout", serial)
     progress("service_stopped")
-    deadline_adb(serial, "notification_expand", deadline,
-                 "shell", "cmd", "statusbar", "expand-notifications")
-    final_items = nodes(serial, deadline)
-    final_stack = notification_stack(final_items)
-    if final_stack is None:
-        raise GateError("notification_expand", serial)
+    request_notification_command(
+        serial, deadline, "shell", "cmd", "statusbar", "expand-notifications")
+    final_items = wait_notification_stack(serial, deadline, observer=observer)
     progress("shade_opened")
-    if notification_content_nodes(final_stack, "Mesh running"):
-        raise GateError("quit_timeout", serial)
+    wait_notification_content_absent(
+        serial, "Mesh running", final_items, deadline, observer=observer)
     progress("notification_absent")
 
 
