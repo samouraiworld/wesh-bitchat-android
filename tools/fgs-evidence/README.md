@@ -88,6 +88,20 @@ an empirical compatibility check for the pinned API 35 Google APIs image: the
 reflected classes are platform `@hide` classes even though the invoked members
 are public, so static compilation alone is not a runtime qualification.
 
+The first run with that reader, `40513813866`, compiled it on the disposable
+runner and passed both pre-launch launcher healthchecks. After each real app
+launch, however, both sides returned a null active root; the final gate was
+`ui_reader_root_null_a`. No Welcome, onboarding or Quit milestone was qualified.
+Cleanup passed and the run exported zero artifacts. A platform
+connection does not itself guarantee that an active-window root is immediately
+available, so the reader now admits further root reads for four monotonic seconds
+inside the same connected bridge, sleeping at most 100 milliseconds between
+reads. It never starts a new read after that admission deadline. An individual
+platform root query can itself block for up to five seconds; therefore four
+seconds is not claimed as a wall-clock bound, and the unchanged 13-second host
+command timeout remains the hard limit. The reader still never calls
+`waitForIdle`, and an exhausted poll still returns the same closed root-null gate.
+
 The closed non-media trace is schema version 2. Every retained record now carries
 only `side=a`, `side=b` or `side=global`; it never uses a serial as an identifier.
 The existing 64-record head/tail bound, aggregate counts, finite timings and

@@ -2,6 +2,7 @@ package org.samouraiworld.wesh.tools;
 
 import android.app.UiAutomation;
 import android.graphics.Rect;
+import android.os.SystemClock;
 import android.util.Xml;
 import android.view.accessibility.AccessibilityNodeInfo;
 
@@ -25,6 +26,8 @@ public final class UiHierarchyReader {
     private static final Pattern OWNED_OUTPUT = Pattern.compile(
             "/data/local/tmp/wesh-fgs-window-[ab]-[0-9a-f]{16}-[0-9]{8}\\.xml");
     private static final long MAX_XML_BYTES = 8L * 1024L * 1024L;
+    private static final long ROOT_WAIT_MILLIS = 4_000L;
+    private static final long ROOT_POLL_MILLIS = 100L;
 
     private static final int OK = 0;
     private static final int ARGUMENT_ERROR = 20;
@@ -100,7 +103,7 @@ public final class UiHierarchyReader {
     }
 
     private static int dump(UiAutomation automation, File output) {
-        AccessibilityNodeInfo root = automation.getRootInActiveWindow();
+        AccessibilityNodeInfo root = waitForRoot(automation);
         if (root == null) {
             emit("WESH_UI_READER_ROOT_NULL", true);
             return ROOT_NULL;
@@ -138,6 +141,26 @@ public final class UiHierarchyReader {
                 // One-shot process termination releases the shell-side reference.
             }
         }
+    }
+
+    static AccessibilityNodeInfo waitForRoot(UiAutomation automation) {
+        long deadline = SystemClock.uptimeMillis() + ROOT_WAIT_MILLIS;
+        AccessibilityNodeInfo root = automation.getRootInActiveWindow();
+        while (root == null) {
+            long remaining = deadline - SystemClock.uptimeMillis();
+            if (remaining <= 0) {
+                return null;
+            }
+            SystemClock.sleep(Math.min(ROOT_POLL_MILLIS, remaining));
+            if (SystemClock.uptimeMillis() >= deadline) {
+                return null;
+            }
+            root = automation.getRootInActiveWindow();
+            if (root != null) {
+                return root;
+            }
+        }
+        return root;
     }
 
     private static int[] dimensions(AccessibilityNodeInfo root) {

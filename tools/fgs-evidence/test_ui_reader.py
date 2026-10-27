@@ -51,7 +51,13 @@ class UiReaderTests(unittest.TestCase):
                 package android.app;
                 import android.view.accessibility.AccessibilityNodeInfo;
                 public class UiAutomation {
-                    public AccessibilityNodeInfo getRootInActiveWindow() { return null; }
+                    private final int nullRoots;
+                    public int calls;
+                    public UiAutomation(int nullRoots) { this.nullRoots = nullRoots; }
+                    public AccessibilityNodeInfo getRootInActiveWindow() {
+                        calls += 1;
+                        return calls <= nullRoots ? null : new AccessibilityNodeInfo();
+                    }
                 }
             """,
             "android/graphics/Rect.java": """
@@ -73,6 +79,21 @@ class UiReaderTests(unittest.TestCase):
                 import org.xmlpull.v1.XmlPullParser;
                 public class Xml { public static XmlPullParser newPullParser() { return null; } }
             """,
+            "android/os/SystemClock.java": """
+                package android.os;
+                public class SystemClock {
+                    private static long now;
+                    public static long maxSleep;
+                    public static boolean oversleep;
+                    public static long uptimeMillis() { return now; }
+                    public static void sleep(long millis) {
+                        if (millis < 0) throw new IllegalArgumentException();
+                        now += millis + (oversleep ? 5_000L : 0L);
+                        maxSleep = Math.max(maxSleep, millis);
+                    }
+                    public static void reset() { now = 0; maxSleep = 0; oversleep = false; }
+                }
+            """,
             "org/xmlpull/v1/XmlPullParser.java": """
                 package org.xmlpull.v1;
                 import java.io.InputStream;
@@ -87,6 +108,22 @@ class UiReaderTests(unittest.TestCase):
                 package org.xmlpull.v1;
                 public class XmlPullParserException extends Exception {}
             """,
+            "org/samouraiworld/wesh/tools/UiHierarchyReaderHarness.java": """
+                package org.samouraiworld.wesh.tools;
+                import android.app.UiAutomation;
+                import android.os.SystemClock;
+                import android.view.accessibility.AccessibilityNodeInfo;
+                public class UiHierarchyReaderHarness {
+                    public static void main(String[] args) {
+                        SystemClock.reset();
+                        SystemClock.oversleep = args.length > 1;
+                        UiAutomation automation = new UiAutomation(Integer.parseInt(args[0]));
+                        AccessibilityNodeInfo root = UiHierarchyReader.waitForRoot(automation);
+                        System.out.println((root != null) + "," + automation.calls + ","
+                                + SystemClock.uptimeMillis() + "," + SystemClock.maxSleep);
+                    }
+                }
+            """,
         }
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -100,7 +137,26 @@ class UiReaderTests(unittest.TestCase):
                 [javac, "-source", "8", "-target", "8", "-d", str(root / "classes"),
                  *map(str, files)], capture_output=True, timeout=30,
             )
-        self.assertEqual(result.returncode, 0, "ui reader source compilation failed")
+            self.assertEqual(result.returncode, 0, "ui reader source compilation failed")
+            java = shutil.which("java")
+            if java is None:
+                self.skipTest("java unavailable")
+            for null_roots, oversleep, expected in (
+                    (0, False, "true,1,0,0"),
+                    (2, False, "true,3,200,100"),
+                    (100, False, "false,40,4000,100"),
+                    (2, True, "false,1,5100,100")):
+                arguments = [
+                    java, "-cp", str(root / "classes"),
+                    "org.samouraiworld.wesh.tools.UiHierarchyReaderHarness",
+                    str(null_roots),
+                ]
+                if oversleep:
+                    arguments.append("oversleep")
+                execution = subprocess.run(arguments, capture_output=True, timeout=10)
+                self.assertEqual(
+                    execution.returncode, 0, "ui reader root polling harness failed")
+                self.assertEqual(execution.stdout.decode().strip(), expected)
 
     def test_configure_checksums_owned_reader_and_cleanup_proves_absence(self):
         serial = capture.SERIALS[0]
