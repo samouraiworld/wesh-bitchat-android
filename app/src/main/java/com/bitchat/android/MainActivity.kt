@@ -407,9 +407,10 @@ class MainActivity : OrientationAwareActivity() {
         bluetoothStatusManager.logBluetoothStatus()
         mainViewModel.updateBluetoothStatus(bluetoothStatusManager.checkBluetoothStatus())
         
-        val bleRequired = try { com.bitchat.android.ui.debug.DebugPreferenceManager.getBleEnabled(true) } catch (_: Exception) { true }
-        if (!bleRequired) {
-            // Skip BLE checks entirely when BLE is disabled in debug settings
+        val bleRequired = bleRequired()
+        if (!shouldBlockOnBluetoothRadio(BuildConfig.WESH_POLICY, bleRequired)) {
+            // Wesh remains usable over Internet while the radio is off. Its BLE manager keeps an
+            // adapter receiver registered and resumes scanning automatically after STATE_ON.
             checkLocationAndProceed()
             return
         }
@@ -467,6 +468,12 @@ class MainActivity : OrientationAwareActivity() {
     private fun requiresSystemLocationForMesh(): Boolean =
         !BuildConfig.WESH_POLICY || Build.VERSION.SDK_INT < 31
 
+    private fun bleRequired(): Boolean = try {
+        com.bitchat.android.ui.debug.DebugPreferenceManager.getBleEnabled(true)
+    } catch (_: Exception) {
+        true
+    }
+
     private fun checkLocationAndProceed() {
         // For first-time users, skip location check and go straight to permissions
         // We'll check location after permissions are granted
@@ -483,6 +490,13 @@ class MainActivity : OrientationAwareActivity() {
         // For existing users, check location status
         locationStatusManager.logLocationStatus()
         mainViewModel.updateLocationStatus(locationStatusManager.checkLocationStatus())
+
+        if (!shouldBlockOnSystemLocationSwitch(BuildConfig.WESH_POLICY, requiredForBleScan = true)) {
+            // Android 11 and below still need the switch for BLE scanning, but Wesh's Settings and
+            // Internet transport remain usable while the BLE manager waits for it to return.
+            checkBatteryOptimizationAndProceed()
+            return
+        }
         
         when (mainViewModel.locationStatus.value) {
             LocationStatus.ENABLED -> {
@@ -522,7 +536,9 @@ class MainActivity : OrientationAwareActivity() {
         mainViewModel.updateLocationLoading(false)
         mainViewModel.updateLocationStatus(locationStatusManager.checkLocationStatus())
 
-        mainViewModel.updateOnboardingState(OnboardingState.LOCATION_CHECK)
+        if (shouldBlockOnSystemLocationSwitch(BuildConfig.WESH_POLICY, requiredForBleScan = true)) {
+            mainViewModel.updateOnboardingState(OnboardingState.LOCATION_CHECK)
+        }
     }
     
     /**
@@ -534,12 +550,14 @@ class MainActivity : OrientationAwareActivity() {
         mainViewModel.updateBluetoothStatus(bluetoothStatusManager.checkBluetoothStatus())
         
         when {
+            !permissionManager.areRequiredPermissionsGranted() -> {
+                // Permission remains a real prerequisite even though an unavailable radio does not
+                // hide Wesh's Internet and Settings surfaces.
+                mainViewModel.updateOnboardingState(OnboardingState.PERMISSION_EXPLANATION)
+            }
+            !shouldBlockOnBluetoothRadio(BuildConfig.WESH_POLICY, bleRequired()) -> Unit
             mainViewModel.bluetoothStatus.value == BluetoothStatus.NOT_SUPPORTED -> {
                 mainViewModel.updateOnboardingState(OnboardingState.BLUETOOTH_CHECK)
-            }
-            !permissionManager.areRequiredPermissionsGranted() -> {
-                // Actual permission state owns recovery; platform error wording varies.
-                mainViewModel.updateOnboardingState(OnboardingState.PERMISSION_EXPLANATION)
             }
             mainViewModel.onboardingState.value == OnboardingState.COMPLETE -> showBluetoothCheckUnlessItReturns()
             else -> {
@@ -610,18 +628,22 @@ class MainActivity : OrientationAwareActivity() {
             batteryOptimizationManager.isBatteryOptimizationDisabled() -> BatteryOptimizationStatus.DISABLED
             else -> BatteryOptimizationStatus.ENABLED
         }
+        mainViewModel.updateBluetoothStatus(currentBluetoothStatus)
+        currentLocationStatus?.let(mainViewModel::updateLocationStatus)
         
-        val bleRequired2 = try { com.bitchat.android.ui.debug.DebugPreferenceManager.getBleEnabled(true) } catch (_: Exception) { true }
+        val bleRequired2 = bleRequired()
         when {
-            bleRequired2 && currentBluetoothStatus != BluetoothStatus.ENABLED -> {
+            shouldBlockOnBluetoothRadio(BuildConfig.WESH_POLICY, bleRequired2) &&
+                currentBluetoothStatus != BluetoothStatus.ENABLED -> {
                 // Bluetooth still disabled, but now we have permissions to enable it
-                mainViewModel.updateBluetoothStatus(currentBluetoothStatus)
                 mainViewModel.updateOnboardingState(OnboardingState.BLUETOOTH_CHECK)
                 mainViewModel.updateBluetoothLoading(false)
             }
-            currentLocationStatus != null && currentLocationStatus != LocationStatus.ENABLED -> {
+            shouldBlockOnSystemLocationSwitch(
+                BuildConfig.WESH_POLICY,
+                requiredForBleScan = currentLocationStatus != null,
+            ) && currentLocationStatus != LocationStatus.ENABLED -> {
                 // Location services still disabled, but now we have permissions to enable it
-                mainViewModel.updateLocationStatus(currentLocationStatus)
                 mainViewModel.updateOnboardingState(OnboardingState.LOCATION_CHECK)
                 mainViewModel.updateLocationLoading(false)
             }
@@ -837,8 +859,9 @@ class MainActivity : OrientationAwareActivity() {
 
             // Check if Bluetooth was disabled while app was backgrounded
             val currentBluetoothStatus = bluetoothStatusManager.checkBluetoothStatus()
-            val bleRequired = try { com.bitchat.android.ui.debug.DebugPreferenceManager.getBleEnabled(true) } catch (_: Exception) { true }
-            if (bleRequired && currentBluetoothStatus != BluetoothStatus.ENABLED) {
+            if (shouldBlockOnBluetoothRadio(BuildConfig.WESH_POLICY, bleRequired()) &&
+                currentBluetoothStatus != BluetoothStatus.ENABLED
+            ) {
                 Log.w("MainActivity", "Bluetooth disabled while app was backgrounded")
                 mainViewModel.updateBluetoothStatus(currentBluetoothStatus)
                 showBluetoothCheckUnlessItReturns()
@@ -849,9 +872,11 @@ class MainActivity : OrientationAwareActivity() {
 
             // Check if location services were disabled while app was backgrounded
             val currentLocationStatus = locationStatusManager.checkLocationStatus()
-            if (currentLocationStatus != LocationStatus.ENABLED) {
+            mainViewModel.updateLocationStatus(currentLocationStatus)
+            if (shouldBlockOnSystemLocationSwitch(BuildConfig.WESH_POLICY, requiredForBleScan = true) &&
+                currentLocationStatus != LocationStatus.ENABLED
+            ) {
                 Log.w("MainActivity", "Location services disabled while app was backgrounded")
-                mainViewModel.updateLocationStatus(currentLocationStatus)
                 mainViewModel.updateOnboardingState(OnboardingState.LOCATION_CHECK)
                 mainViewModel.updateLocationLoading(false)
             }
@@ -940,6 +965,14 @@ internal fun welcomeStart(welcomed: Boolean, requiredGranted: Boolean, notificat
     notificationsPending -> com.bitchat.android.ui.pave.OnboardingStart.Notifications
     else -> com.bitchat.android.ui.pave.OnboardingStart.Welcome
 }
+
+/** Wesh treats the Bluetooth radio as one transport, not as a gate over Settings or Internet. */
+internal fun shouldBlockOnBluetoothRadio(weshPolicy: Boolean, bleTransportEnabled: Boolean): Boolean =
+    !weshPolicy && bleTransportEnabled
+
+/** Legacy Location can pause BLE scanning without hiding Wesh's transport-independent shell. */
+internal fun shouldBlockOnSystemLocationSwitch(weshPolicy: Boolean, requiredForBleScan: Boolean): Boolean =
+    !weshPolicy && requiredForBleScan
 
 /** A delayed Bluetooth result only owns navigation while its original COMPLETE gate still does. */
 internal fun shouldApplyBluetoothGraceResult(

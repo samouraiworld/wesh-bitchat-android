@@ -878,12 +878,35 @@ class ChatViewModel(
 
     fun weshBluetoothReady(): Boolean {
         val application = getApplication<Application>()
-        if (android.os.Build.VERSION.SDK_INT >= 31 && androidx.core.content.ContextCompat.checkSelfPermission(
-                application, android.Manifest.permission.BLUETOOTH_CONNECT
-            ) != android.content.pm.PackageManager.PERMISSION_GRANTED) return false
-        return runCatching {
+        val adapterEnabled = runCatching {
             application.getSystemService(android.bluetooth.BluetoothManager::class.java)?.adapter?.isEnabled == true
         }.getOrDefault(false)
+        val modernPermissionsGranted = android.os.Build.VERSION.SDK_INT < 31 || listOf(
+            android.Manifest.permission.BLUETOOTH_SCAN,
+            android.Manifest.permission.BLUETOOTH_CONNECT,
+            android.Manifest.permission.BLUETOOTH_ADVERTISE,
+        ).all { permission ->
+            androidx.core.content.ContextCompat.checkSelfPermission(application, permission) ==
+                android.content.pm.PackageManager.PERMISSION_GRANTED
+        }
+        val legacyLocationGranted = android.os.Build.VERSION.SDK_INT >= 31 || listOf(
+            android.Manifest.permission.ACCESS_COARSE_LOCATION,
+            android.Manifest.permission.ACCESS_FINE_LOCATION,
+        ).all { permission ->
+            androidx.core.content.ContextCompat.checkSelfPermission(application, permission) ==
+                android.content.pm.PackageManager.PERMISSION_GRANTED
+        }
+        val legacyLocationEnabled = android.os.Build.VERSION.SDK_INT >= 31 || runCatching {
+            val location = application.getSystemService(android.location.LocationManager::class.java)
+            location != null && androidx.core.location.LocationManagerCompat.isLocationEnabled(location)
+        }.getOrDefault(false)
+        return weshBluetoothScanAvailable(
+            sdkInt = android.os.Build.VERSION.SDK_INT,
+            adapterEnabled = adapterEnabled,
+            modernPermissionsGranted = modernPermissionsGranted,
+            legacyLocationGranted = legacyLocationGranted,
+            legacyLocationEnabled = legacyLocationEnabled,
+        )
     }
 
     /** Any enrolled, unblocked contact: the router sends over Bluetooth or Internet, or queues. */
@@ -1369,4 +1392,17 @@ class ChatViewModel(
     fun peerIdentityForNostrPubkey(pubkeyHex: String): PeerIdentity =
         PeerIdentity.nostr(pubkeyHex)
 
+}
+
+/** True only when Android currently permits an actual BLE scan, not merely when the radio is on. */
+internal fun weshBluetoothScanAvailable(
+    sdkInt: Int,
+    adapterEnabled: Boolean,
+    modernPermissionsGranted: Boolean,
+    legacyLocationGranted: Boolean,
+    legacyLocationEnabled: Boolean,
+): Boolean = adapterEnabled && if (sdkInt >= 31) {
+    modernPermissionsGranted
+} else {
+    legacyLocationGranted && legacyLocationEnabled
 }

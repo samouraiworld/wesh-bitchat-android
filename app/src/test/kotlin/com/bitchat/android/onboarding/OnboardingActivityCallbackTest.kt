@@ -4,6 +4,8 @@ import android.app.Application
 import com.bitchat.android.MainActivity
 import com.bitchat.android.MainViewModel
 import com.bitchat.android.shouldApplyBluetoothGraceResult
+import com.bitchat.android.shouldBlockOnBluetoothRadio
+import com.bitchat.android.shouldBlockOnSystemLocationSwitch
 import org.junit.Assert.assertEquals
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -40,12 +42,13 @@ class OnboardingActivityCallbackTest {
 
     @Test
     @Config(sdk = [30])
-    fun `legacy Android still requires its disabled system switch before scanning`() {
+    fun `legacy Android records its disabled scan switch without hiding Wesh`() {
         val fixture = fixture()
 
         fixture.locationDisabled()
 
-        assertEquals(OnboardingState.LOCATION_CHECK, fixture.model.onboardingState.value)
+        assertEquals(OnboardingState.COMPLETE, fixture.model.onboardingState.value)
+        assertEquals(LocationStatus.DISABLED, fixture.model.locationStatus.value)
     }
 
     @Test
@@ -58,55 +61,44 @@ class OnboardingActivityCallbackTest {
     }
 
     @Test
-    fun `Bluetooth off with all permissions granted retains an enable action`() {
+    fun `Bluetooth off keeps the Wesh shell and Settings accessible`() {
         val fixture = fixture(requiredGranted = true)
 
         fixture.bluetoothDisabled()
 
-        // Some tablets turn Bluetooth off on every sleep: the page waits out a short grace period.
         assertEquals(OnboardingState.COMPLETE, fixture.model.onboardingState.value)
         org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idleFor(java.time.Duration.ofSeconds(6))
-        assertEquals(OnboardingState.BLUETOOTH_CHECK, fixture.model.onboardingState.value)
+        assertEquals(OnboardingState.COMPLETE, fixture.model.onboardingState.value)
     }
 
     @Test
     @Config(sdk = [30])
-    fun `Bluetooth grace rechecks legacy Location after the radio returns`() {
-        val fixture = fixture(
-            location = LocationStatus.DISABLED,
-            bluetoothStatuses = listOf(BluetoothStatus.DISABLED, BluetoothStatus.ENABLED),
-        )
+    fun `Android 11 checks the BLE scan switch without gating Settings or Internet`() {
+        val fixture = fixture(location = LocationStatus.DISABLED)
 
-        fixture.bluetoothDisabled()
-        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper())
-            .idleFor(java.time.Duration.ofSeconds(6))
+        fixture.onboardingComplete()
 
-        assertEquals(OnboardingState.LOCATION_CHECK, fixture.model.onboardingState.value)
+        assertEquals(OnboardingState.INITIALIZING, fixture.model.onboardingState.value)
+        assertEquals(LocationStatus.DISABLED, fixture.model.locationStatus.value)
         verify(fixture.locationManager).checkLocationStatus()
     }
 
     @Test
-    fun `Bluetooth grace does not consult the obsolete Location gate on modern Android`() {
-        val fixture = fixture(
-            bluetoothStatuses = listOf(BluetoothStatus.DISABLED, BluetoothStatus.ENABLED),
-        )
+    fun `Bluetooth off does not consult the obsolete Location gate on modern Android`() {
+        val fixture = fixture()
 
         fixture.bluetoothDisabled()
-        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper())
-            .idleFor(java.time.Duration.ofSeconds(6))
 
         assertEquals(OnboardingState.COMPLETE, fixture.model.onboardingState.value)
         verify(fixture.locationManager, never()).checkLocationStatus()
     }
 
     @Test
-    fun `stale Bluetooth grace cannot overwrite a newer permission gate`() {
+    fun `Bluetooth state cannot overwrite a newer permission gate`() {
         val fixture = fixture(requiredGranted = true)
 
-        fixture.bluetoothDisabled()
         fixture.model.updateOnboardingState(OnboardingState.PERMISSION_EXPLANATION)
-        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper())
-            .idleFor(java.time.Duration.ofSeconds(6))
+        fixture.bluetoothDisabled()
 
         assertEquals(OnboardingState.PERMISSION_EXPLANATION, fixture.model.onboardingState.value)
     }
@@ -119,23 +111,37 @@ class OnboardingActivityCallbackTest {
     }
 
     @Test
-    fun `unsupported Bluetooth retains its blocked fallback instead of a generic error`() {
+    fun `unsupported Bluetooth does not hide Wesh Settings or Internet`() {
         val fixture = fixture(bluetooth = BluetoothStatus.NOT_SUPPORTED)
 
         fixture.bluetoothDisabled()
 
-        assertEquals(OnboardingState.BLUETOOTH_CHECK, fixture.model.onboardingState.value)
+        assertEquals(OnboardingState.COMPLETE, fixture.model.onboardingState.value)
         assertEquals(BluetoothStatus.NOT_SUPPORTED, fixture.model.bluetoothStatus.value)
     }
 
     @Test
+    fun `only the upstream shell treats an enabled BLE transport as a radio gate`() {
+        assertEquals(false, shouldBlockOnBluetoothRadio(weshPolicy = true, bleTransportEnabled = true))
+        assertEquals(true, shouldBlockOnBluetoothRadio(weshPolicy = false, bleTransportEnabled = true))
+        assertEquals(false, shouldBlockOnBluetoothRadio(weshPolicy = false, bleTransportEnabled = false))
+    }
+
+    @Test
+    fun `only the upstream shell treats legacy Location as a navigation gate`() {
+        assertEquals(false, shouldBlockOnSystemLocationSwitch(weshPolicy = true, requiredForBleScan = true))
+        assertEquals(true, shouldBlockOnSystemLocationSwitch(weshPolicy = false, requiredForBleScan = true))
+        assertEquals(false, shouldBlockOnSystemLocationSwitch(weshPolicy = false, requiredForBleScan = false))
+    }
+
+    @Test
     @Config(sdk = [30])
-    fun `legacy unavailable system switch retains its blocked fallback`() {
+    fun `legacy unavailable system switch remains visible without blocking Wesh`() {
         val fixture = fixture(location = LocationStatus.NOT_AVAILABLE)
 
         fixture.locationDisabled()
 
-        assertEquals(OnboardingState.LOCATION_CHECK, fixture.model.onboardingState.value)
+        assertEquals(OnboardingState.COMPLETE, fixture.model.onboardingState.value)
         assertEquals(LocationStatus.NOT_AVAILABLE, fixture.model.locationStatus.value)
     }
 
@@ -168,10 +174,13 @@ class OnboardingActivityCallbackTest {
         val permissionManager = mock<PermissionManager>()
         whenever(permissionManager.areRequiredPermissionsGranted()).thenReturn(requiredGranted)
         whenever(permissionManager.isFirstTimeLaunch()).thenReturn(false)
+        val batteryManager = mock<BatteryOptimizationManager>()
+        whenever(batteryManager.isBatteryOptimizationSupported()).thenReturn(false)
         set(activity, "mainViewModel\$delegate", lazyOf(model))
         set(activity, "locationStatusManager", locationManager)
         set(activity, "bluetoothStatusManager", bluetoothManager)
         set(activity, "permissionManager", permissionManager)
+        set(activity, "batteryOptimizationManager", batteryManager)
         return Fixture(activity, model, locationManager)
     }
 
@@ -192,6 +201,11 @@ class OnboardingActivityCallbackTest {
         )
 
         fun onboardingFailed() = invoke("handleOnboardingFailed", "Synthetic required permission missing")
+
+        fun onboardingComplete() {
+            MainActivity::class.java.getDeclaredMethod("handleOnboardingComplete")
+                .apply { isAccessible = true }.invoke(activity)
+        }
 
         private fun invoke(method: String, value: String) {
             MainActivity::class.java.getDeclaredMethod(method, String::class.java)

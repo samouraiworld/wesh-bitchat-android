@@ -269,6 +269,14 @@ class WeshInternetModeTest {
         assertEquals(WeshInternetState.Connecting(30), r(WeshInternetState.Error(WeshInternetError.TOR_BLOCKED), Event.Retry, booting))
         assertEquals(WeshInternetState.Connecting(30), r(WeshInternetState.Error(WeshInternetError.NO_NETWORK), Event.NetworkChanged(true), booting))
         assertEquals(WeshInternetState.Connecting(100), r(WeshInternetState.On, Event.Inputs(ready.copy(relays = 0)), ready.copy(relays = 0)))
+        assertEquals(
+            WeshInternetState.Error(WeshInternetError.NO_NETWORK),
+            r(WeshInternetState.On, Event.NetworkChanged(false), ready.copy(network = false)),
+        )
+        assertEquals(
+            WeshInternetState.On,
+            r(WeshInternetState.Error(WeshInternetError.NO_NETWORK), Event.NetworkChanged(true), ready),
+        )
         assertEquals(WeshInternetState.On, r(WeshInternetState.On, Event.Stalled, ready))
         listOf(WeshInternetState.On, WeshInternetState.Connecting(5), WeshInternetState.Error(WeshInternetError.RELAYS_UNREACHABLE))
             .forEach { assertEquals(WeshInternetState.Off, r(it, Event.Disable, ready)) }
