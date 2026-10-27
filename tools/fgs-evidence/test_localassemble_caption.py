@@ -18,6 +18,57 @@ PIL_AVAILABLE = importlib.util.find_spec("PIL") is not None
 
 
 class LocalAssembleCaptionTests(unittest.TestCase):
+    def test_scenario_clock_starts_at_zero_then_advances_strictly(self):
+        expected = ("recording_commands_started", "real_onboarding", "foreground_service")
+
+        def receipt(times):
+            return {"events": [
+                {"step": step, "elapsedSeconds": elapsed}
+                for step, elapsed in zip(expected, times)
+            ]}
+
+        self.assertEqual(localassemble.event_times(
+            receipt((0.0, 0.1, 0.2)), "events", expected, "sequence", "clock",
+            starts_at_zero=True, strictly_increasing=True), [0.0, 0.1, 0.2])
+        for invalid in ((0.1, 0.2, 0.3), (0.0, 0.0, 0.2), (0.0, 0.2, 0.2)):
+            with self.subTest(invalid=invalid), \
+                    self.assertRaisesRegex(localassemble.ValidationFailure, "clock"):
+                localassemble.event_times(
+                    receipt(invalid), "events", expected, "sequence", "clock",
+                    starts_at_zero=True, strictly_increasing=True)
+
+    def test_cleanup_diagnostics_allow_only_nonnegative_integer_side_counts(self):
+        self.assertEqual(localassemble.validate_cleanup_diagnostics({
+            "deferredUiDumpCleanupCountBySide": {"a": 0, "b": 3},
+        }), {"a": 0, "b": 3})
+
+        invalid = (
+            {"a": 0},
+            {"a": 0, "b": 0, "path": "/synthetic/private"},
+            {"a": -1, "b": 0},
+            {"a": False, "b": 0},
+            {"a": 0.5, "b": 0},
+        )
+        for counters in invalid:
+            with self.subTest(counters=counters), \
+                    self.assertRaisesRegex(localassemble.ValidationFailure, "cleanup_diagnostics"):
+                localassemble.validate_cleanup_diagnostics({
+                    "deferredUiDumpCleanupCountBySide": counters,
+                })
+
+    def test_attempt_receipt_rejects_every_unallowlisted_top_level_field(self):
+        attempt = {field: None for field in localassemble.ATTEMPT_FIELDS}
+        attempt["deferredUiDumpCleanupCountBySide"] = {"a": 0, "b": 0}
+        localassemble.validate_attempt_shape(attempt)
+
+        for field in ("rawUiDump", "cleanupPath", "runnerDiagnostic"):
+            contaminated = dict(attempt)
+            contaminated[field] = "synthetic private detail"
+            with self.subTest(field=field), \
+                    self.assertRaisesRegex(localassemble.ValidationFailure,
+                                                "scenario_receipt_fields"):
+                localassemble.validate_attempt_shape(contaminated)
+
     @unittest.skipUnless(PIL_AVAILABLE, "Pillow is an explicit local-assembly dependency")
     def test_footer_png_is_deterministic_and_confined_to_footer_dimensions(self):
         from PIL import Image

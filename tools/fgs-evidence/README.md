@@ -64,10 +64,10 @@ The corrected controller exports only named phase/side failures, retries transie
 UI dumps inside hard deadlines, waits for Bluetooth ON, installation, resumed
 activities, real home, FGS and real peer discovery. It never exports UI XML,
 logcat, host paths or exception text. One further attempt required review of its
-exact head and a deliberate Lead label; the next paragraph records the outcome
-of that single reviewed attempt, and no automatic rerun is permitted.
+exact head and a deliberate Lead label; the following history records each
+single reviewed attempt, and no automatic rerun is permitted.
 
-The fifth and only approved host-display attempt,
+The fifth approved host-display attempt,
 [40456733798](https://github.com/samouraiworld/wesh-bitchat-android/actions/runs/40456733798),
 used reviewed controller source `e2162cf8bff50b8cc065be83c1528e378620ff9c`.
 Canonical preparation passed and both owned emulators reached the
@@ -91,6 +91,29 @@ freshness, missing-output, read, parse or cleanup gates. It never exports XML or
 exception text. This fixes the proven six-versus-ten-second mismatch; it does
 **not** prove that mismatch was the cause of run 40456733798, nor establish any
 BLE or host-recorder result.
+
+The sixth attempt,
+[40458661485](https://github.com/samouraiworld/wesh-bitchat-android/actions/runs/40458661485),
+used reviewed controller source `90647c126a2f88f0e4b8be57e094bc60c55f6c85`.
+It reached boot/install/Bluetooth readiness at 58.1 seconds, completed both real
+onboardings at 106.4, confirmed both foreground services at 106.8 and displayed
+the real mutual netsim peer at 109.9. It then stopped in the pre-recording Quit
+stage with `ui_dump_cleanup_a`; no scenario event or recording was exported.
+That gate does not identify whether the strict preparatory removal (two-second
+cap) or the post-read removal (one-second cap) failed, nor whether adb timed out
+or returned an error. The old `finally` could also mask a successful snapshot or
+another active UI gate. The privacy-minimal receipt therefore proves neither the
+exact cleanup subcause nor side B's final state. Its one-attempt approval is
+consumed.
+
+The current reader keeps a strict controller-owned preparatory removal and
+nonexistence check for every unique side-specific path. Post-read removal is now
+best-effort for up to three seconds and cannot replace the functional result or
+its primary failure gate. Only unresolved counts for sides `a` and `b` may enter
+the receipt; owned paths stay in process memory for a bounded final sweep. XML,
+paths, stderr and exception text never enter evidence. The workflow uploads an
+exact receipt allowlist and always destroys the disposable AVD directory, so a
+deferred remote file cannot become an artifact.
 
 Canonical 107 also applies Android `FLAG_SECURE` to the real `MainActivity`.
 Guest-side `adb shell screenrecord` is therefore not an acceptable capture path:
@@ -126,17 +149,20 @@ All adb operations specify exactly one of the two created emulator serials.
 No GPS/location provider, real phone, account, camera, QR, logcat or private data
 is accessed. Internet mode remains at its product default OFF.
 
-Actual product onboarding and permission dialogs are operated in parallel through
-UIAutomator hierarchy plus scoped OS input, with a 90-second bounded deadline.
-Synthetic nicknames/messages are typed normally. The preflight must prove both
-real foreground services and mutual netsim discovery. It then invokes the real
-**Quit Wesh** notification action on both AVDs and verifies that both services and
-notifications are gone. No preference, permission, identity or peer is seeded.
+Preflight ends after both fresh AVDs boot, enable Bluetooth and install the
+unchanged-payload APK; it does not launch Wesh. Host-recorder capability is then
+checked and both host-side physical-display recordings must return `OK` before
+the first app launch. The zero-clock event is therefore
+`recording_commands_started`, not a claim that onboarding is already complete.
 
-Only then do both host-side physical-display recordings start. The captured sequence shows a fresh launch
-of each real app, both services starting, and a new real peer discovery inside
-Wesh. This setup/connection segment precedes interaction so the footage does not
-present an already-connected state as evidence. Each app must then receive the
+Actual first launch, product onboarding and permission dialogs are then operated
+in parallel through UIAutomator hierarchy plus scoped OS input, with a 90-second
+deadline clamped to the single 165-second recording clock. Synthetic nicknames
+and messages are typed normally. Completion of both onboardings, both real
+foreground services and mutual netsim discovery are recorded at their real,
+positive times. No preference, permission, identity or peer is seeded. This
+captures the in-app setup and connection before interaction rather than
+presenting an already-connected state as evidence. Each app must then receive the
 opposite app's public message. One app moves to background, its actual connected
 device FGS notification is shown, another real message is sent, the notification
 opens the app, and the message must be visible. This demonstrates sending while
@@ -148,10 +174,11 @@ recorders retain their fixed 180-second limit for strict coverage and post-roll.
 With that specific approval, only after the genuine scenario and both host
 recorders succeed may CI export `recording-a.webm` and `recording-b.webm`,
 provenance, an allowlisted event receipt
-and checksums as a seven-day Actions artifact. Human approval for exactly one
-host-display capture/export at source
-`e2162cf8bff50b8cc065be83c1528e378620ff9c` was recorded and consumed by failed
-run 40456733798. It does not authorize another label, run, capture or upload.
+and checksums as a seven-day Actions artifact. Separate one-attempt approvals for
+source `e2162cf8bff50b8cc065be83c1528e378620ff9c` and source
+`90647c126a2f88f0e4b8be57e094bc60c55f6c85` were consumed respectively by failed
+runs 40456733798 and 40458661485. Neither authorizes another label, run, capture
+or upload.
 Any future attempt requires new explicit approval for the exact reviewed source
 head, two fresh synthetic owned AVDs and seven-day GitHub Actions retention.
 Approval of an earlier attempt does not carry over. A successful result would be
@@ -173,7 +200,11 @@ python3 tools/fgs-evidence/localassemble.py --evidence <verified-evidence-direct
 ```
 
 The assembler refuses CI execution, extra files/symlinks/duplicate JSON keys,
-wrong controller source, incomplete manifests or changed inputs. Both local
+wrong controller source, incomplete manifests or changed inputs. It requires the
+single boot preflight event, `recording_commands_started` at zero, and all eight
+real product events at positive monotone times below 165 seconds. Deferred UI
+cleanup diagnostics must contain exactly nonnegative integer counts for sides
+`a` and `b`, never paths or XML. Both local
 `ffprobe` durations must strictly cover the last Quit event from the conservative
 clock started before either recorder command. The current CLI keeps the explicit
 `--font` input and requires Pillow in the local Python environment. Pillow renders

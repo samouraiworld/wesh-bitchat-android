@@ -1,4 +1,5 @@
 """Offline synthetic checks; these never launch adb, an emulator or a network request."""
+from contextlib import ExitStack
 import hashlib
 import json
 from pathlib import Path
@@ -6,7 +7,7 @@ import stat
 import subprocess
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 import xml.etree.ElementTree as E
 import zipfile
 
@@ -16,7 +17,41 @@ import localassemble
 import prepare
 
 
+class ImmediateFuture:
+    def __init__(self, operation, args):
+        try:
+            self.value = operation(*args)
+            self.error = None
+        except BaseException as error:
+            self.value = None
+            self.error = error
+
+    def result(self):
+        if self.error is not None:
+            raise self.error
+        return self.value
+
+
+class ImmediateExecutor:
+    def __init__(self, _workers):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def submit(self, operation, *args):
+        return ImmediateFuture(operation, args)
+
+
 class EvidenceChecks(unittest.TestCase):
+    def setUp(self):
+        with capture._UI_DUMP_DEFERRED_LOCK:
+            for paths in capture._UI_DUMP_DEFERRED.values():
+                paths.clear()
+
     def archive(self, directory, name, entries):
         path = Path(directory) / name
         with zipfile.ZipFile(path, "w") as archive:
@@ -103,6 +138,8 @@ class EvidenceChecks(unittest.TestCase):
         self.assertEqual(capture.gate_name("install", capture.SERIALS[1]), "install_b")
         self.assertEqual(capture.gate_name("ui_dump_parse", capture.SERIALS[0]),
                          "ui_dump_parse_a")
+        self.assertEqual(capture.gate_name("ui_dump_prepare_cleanup", capture.SERIALS[1]),
+                         "ui_dump_prepare_cleanup_b")
         self.assertEqual(capture.gate_name("scenario_budget"), "scenario_budget")
         for phase, serial in (("private/path", capture.SERIALS[0]),
                               ("ui_dump", capture.SERIALS[0]),
@@ -112,14 +149,14 @@ class EvidenceChecks(unittest.TestCase):
 
     def test_ui_dump_retries_a_transient_failure_then_returns_real_nodes(self):
         xml = '<hierarchy><node text="Public room" enabled="true" /></hierarchy>'
-        responses = ["", "", RuntimeError("transient"), "",
+        responses = ["", "", RuntimeError("transient"),
                      "", "", "", "", xml, ""]
         with patch("capture.adb", side_effect=responses) as command, \
              patch("capture.time.sleep"):
             items = capture.nodes(capture.SERIALS[0], capture.time.monotonic()+3)
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0].get("text"), "Public room")
-        self.assertEqual(command.call_count, 10)
+        self.assertEqual(command.call_count, 9)
         dump_paths = [call.args[-1] for call in command.call_args_list
                       if call.args[1:4] == ("shell", "uiautomator", "dump")]
         self.assertEqual(len(dump_paths), 2)
@@ -162,7 +199,7 @@ class EvidenceChecks(unittest.TestCase):
                             for call in adb_command.call_args_list))
         dump_call = next(call for call in adb_command.call_args_list
                          if call.args[1:4] == ("shell", "uiautomator", "dump"))
-        self.assertLessEqual(dump_call.kwargs["timeout"], 4)
+        self.assertLessEqual(dump_call.kwargs["timeout"], 5)
 
     def test_ui_dump_two_timeouts_stay_inside_automatic_budget(self):
         clock = [100.0]
@@ -270,23 +307,88 @@ class EvidenceChecks(unittest.TestCase):
                         args == ("shell", "rm", "-f", path)]
             self.assertEqual(len(removals), 2)
 
-    def test_ui_dump_cleanup_failure_is_fail_closed_and_hides_raw_detail(self):
+    def test_ui_dump_post_cleanup_failure_is_deferred_without_losing_snapshot(self):
         xml = '<hierarchy><node text="Public room" enabled="true" /></hierarchy>'
         removals = 0
+        final_timeout = None
 
         def command(_serial, *args, timeout):
-            nonlocal removals
+            nonlocal removals, final_timeout
             if args[0:3] == ("shell", "rm", "-f"):
                 removals += 1
                 if removals == 2:
-                    raise RuntimeError("private cleanup detail")
+                    final_timeout = timeout
+                    raise OSError("private cleanup spawn detail")
             return xml if args[0:2] == ("exec-out", "cat") else ""
 
         with patch("capture.adb", side_effect=command):
+            items = capture.nodes(capture.SERIALS[0], capture.time.monotonic()+2)
+        self.assertEqual(len(items), 1)
+        self.assertLessEqual(final_timeout, capture.UI_POST_CLEANUP_SECONDS)
+        self.assertEqual(capture.deferred_ui_dump_counts(), {"a": 1, "b": 0})
+        self.assertNotIn("private", json.dumps(capture.deferred_ui_dump_counts()))
+
+    def test_ui_dump_post_cleanup_never_masks_primary_failure(self):
+        removals = {}
+
+        def command(_serial, *args, timeout):
+            path = args[-1]
+            if args[0:3] == ("shell", "rm", "-f"):
+                removals[path] = removals.get(path, 0) + 1
+                if removals[path] == 2:
+                    raise OSError("private cleanup spawn detail")
+            if args[0:2] == ("exec-out", "cat"):
+                return "private malformed xml"
+            return ""
+
+        with patch("capture.adb", side_effect=command), patch("capture.time.sleep"):
             with self.assertRaises(capture.GateError) as failure:
-                capture.nodes(capture.SERIALS[0], capture.time.monotonic()+2)
-        self.assertEqual(failure.exception.gate, "ui_dump_cleanup_a")
+                capture.nodes(capture.SERIALS[0], capture.time.monotonic()+3)
+        self.assertEqual(failure.exception.gate, "ui_dump_parse_a")
         self.assertNotIn("private", str(failure.exception))
+        self.assertEqual(capture.deferred_ui_dump_counts(), {"a": 2, "b": 0})
+
+    def test_ui_dump_initial_cleanup_remains_strict_and_named(self):
+        def command(_serial, *args, timeout):
+            if args[0:3] == ("shell", "rm", "-f"):
+                raise RuntimeError("private prepare detail")
+            return ""
+
+        with patch("capture.adb", side_effect=command), patch("capture.time.sleep"):
+            with self.assertRaises(capture.GateError) as failure:
+                capture.nodes(capture.SERIALS[1], capture.time.monotonic()+3)
+        self.assertEqual(failure.exception.gate, "ui_dump_prepare_cleanup_b")
+        self.assertNotIn("private", str(failure.exception))
+
+    def test_ui_dump_sweep_uses_only_owned_paths_and_exports_counts_only(self):
+        owned_a = "/data/local/tmp/wesh-fgs-window-a-00000001.xml"
+        owned_b = "/data/local/tmp/wesh-fgs-window-b-00000001.xml"
+        self.assertTrue(capture.defer_ui_dump_cleanup(capture.SERIALS[0], owned_a))
+        self.assertTrue(capture.defer_ui_dump_cleanup(capture.SERIALS[1], owned_b))
+        self.assertFalse(capture.defer_ui_dump_cleanup(
+            capture.SERIALS[0], "/data/local/tmp/private.xml"))
+        self.assertEqual(capture.deferred_ui_dump_counts(), {"a": 1, "b": 1})
+        self.assertNotIn("wesh-fgs-window", json.dumps(capture.deferred_ui_dump_counts()))
+
+        with patch("capture.adb", return_value="") as command:
+            capture.sweep_deferred_ui_dumps(capture.time.monotonic()+6)
+        self.assertEqual(command.call_count, 2)
+        for call in command.call_args_list:
+            self.assertEqual(call.args[1:4], ("shell", "rm", "-f"))
+            self.assertTrue(all(capture.owned_ui_dump_path(call.args[0], path)
+                                for path in call.args[4:]))
+        self.assertEqual(capture.deferred_ui_dump_counts(), {"a": 0, "b": 0})
+
+    def test_ui_dump_sweep_failure_is_bounded_and_keeps_only_count(self):
+        owned = "/data/local/tmp/wesh-fgs-window-a-00000001.xml"
+        capture.defer_ui_dump_cleanup(capture.SERIALS[0], owned)
+        with patch("capture.adb", side_effect=OSError("private sweep spawn detail")) as command:
+            capture.sweep_deferred_ui_dumps(capture.time.monotonic()+6)
+        self.assertEqual(command.call_count, 1)
+        self.assertLessEqual(command.call_args.kwargs["timeout"],
+                             capture.UI_POST_CLEANUP_SECONDS)
+        self.assertEqual(capture.deferred_ui_dump_counts(), {"a": 1, "b": 0})
+        self.assertNotIn("private", json.dumps(capture.deferred_ui_dump_counts()))
 
     def test_expired_command_deadline_runs_no_adb(self):
         with patch("capture.adb") as command:
@@ -442,12 +544,182 @@ class EvidenceChecks(unittest.TestCase):
                 capture.wait_fgs_active(capture.SERIALS[0], capture.time.monotonic()+0.001)
         self.assertEqual(failure.exception.gate, "fgs_timeout_a")
 
-    def test_recorded_relaunch_contract_preserves_real_setup_window(self):
+    def test_recording_contract_captures_real_setup_before_interaction(self):
         self.assertEqual(capture.RECORDING_LIMIT_SECONDS, 180)
         self.assertEqual(capture.SCENARIO_BUDGET_SECONDS, 165)
-        self.assertIn("services_stopped_for_recorded_relaunch", capture.PREFLIGHT_STEPS)
-        self.assertEqual(capture.SCENARIO_STEPS[:2], (
-            "actual_onboarding_permissions_completed", "both_apps_display_real_peer"))
+        self.assertEqual(capture.PREFLIGHT_STEPS, ("boot_install_bluetooth_ready",))
+        self.assertEqual(capture.SCENARIO_STEPS[:4], (
+            "recording_commands_started", "actual_onboarding_permissions_completed",
+            "foreground_services_active", "both_apps_display_real_peer"))
+        main_source = Path(capture.__file__).read_text().split("def main(root):", 1)[1]
+        self.assertLess(main_source.index("start_host_recorder(serial"),
+                        main_source.index('event("recording_commands_started"'))
+        self.assertLess(main_source.index('event("recording_commands_started"'),
+                        main_source.index("pool.submit(onboarding"))
+        self.assertNotIn("recorded_relaunch", main_source)
+        self.assertIn("onboarding_deadline = min(deadline", main_source)
+        self.assertIn("service_deadline = min(deadline", main_source)
+        self.assertIn("peer_deadline = min(deadline", main_source)
+
+    def test_scenario_clock_has_explicit_zero_then_real_positive_onboarding(self):
+        receipt = {"events": []}
+        capture.append_scenario_event(
+            receipt, "recording_commands_started", video_start=100.0, elapsed=0.0)
+        with patch("capture.time.monotonic", return_value=148.3):
+            capture.append_scenario_event(
+                receipt, "actual_onboarding_permissions_completed", video_start=100.0)
+        self.assertEqual(receipt["events"], [
+            {"step": "recording_commands_started", "elapsedSeconds": 0.0},
+            {"step": "actual_onboarding_permissions_completed", "elapsedSeconds": 48.3},
+        ])
+
+    def test_scenario_clock_rejects_fake_or_over_budget_product_events(self):
+        receipt = {"events": []}
+        capture.append_scenario_event(
+            receipt, "recording_commands_started", video_start=100.0, elapsed=0.0)
+        with self.assertRaises(ValueError):
+            capture.append_scenario_event(
+                receipt, "actual_onboarding_permissions_completed",
+                video_start=100.0, elapsed=0.0)
+        with patch("capture.time.monotonic", return_value=265.0):
+            with self.assertRaises(capture.GateError) as failure:
+                capture.append_scenario_event(
+                    receipt, "actual_onboarding_permissions_completed", video_start=100.0)
+        self.assertEqual(failure.exception.gate, "scenario_budget")
+
+    def test_main_records_first_launch_setup_and_interaction_under_one_clock(self):
+        clock = [0.0]
+        calls = []
+        scenario_deadlines = []
+        exported = {}
+        video_origin = []
+        node = E.Element("node", {"enabled": "true", "bounds": "[0,0][2,2]"})
+
+        def advance(seconds):
+            clock[0] += seconds
+
+        def boot(serial, _apk):
+            calls.append(("boot", serial))
+            advance(5)
+
+        def capability(serial, _deadline):
+            calls.append(("capability", serial))
+
+        def start(serial, _path, deadline):
+            if not video_origin:
+                video_origin.append(clock[0])
+            calls.append(("start", serial))
+            scenario_deadlines.append(deadline)
+            advance(1)
+
+        def onboard(serial, _nickname, deadline):
+            calls.append(("onboarding", serial))
+            scenario_deadlines.append(deadline)
+            advance(10)
+
+        def fgs(serial, deadline):
+            calls.append(("fgs", serial))
+            scenario_deadlines.append(deadline)
+            advance(1)
+
+        def wait_ui(serial, label, deadline, *_args, **_kwargs):
+            calls.append(("wait_ui", serial, label))
+            scenario_deadlines.append(deadline)
+            advance(0.5 if label != "1 phone in range" else 1)
+            return node
+
+        def send(serial, _message, deadline):
+            calls.append(("send", serial))
+            scenario_deadlines.append(deadline)
+            advance(1)
+
+        def deadline_adb(_serial, _phase, deadline, *_args, **_kwargs):
+            scenario_deadlines.append(deadline)
+            advance(0.2)
+            return ""
+
+        def quit_action(serial, deadline):
+            calls.append(("quit", serial))
+            scenario_deadlines.append(deadline)
+            advance(1)
+
+        def export(_root, _recordings, receipt):
+            exported.update(json.loads(json.dumps(receipt)))
+
+        capture.defer_ui_dump_cleanup(
+            capture.SERIALS[0], "/data/local/tmp/wesh-fgs-window-a-00000001.xml")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root/"evidence").mkdir()
+            with patch.dict(capture.os.environ, {
+                    "GITHUB_ACTIONS": "true", "EVIDENCE_HEAD": "1"*40}, clear=False), \
+                 ExitStack() as stack:
+                stack.enter_context(patch("capture.ThreadPoolExecutor", ImmediateExecutor))
+                stack.enter_context(patch("capture.time.monotonic", side_effect=lambda: clock[0]))
+                stack.enter_context(patch("capture.boot_and_install", side_effect=boot))
+                stack.enter_context(patch("capture.require_host_recorder", side_effect=capability))
+                stack.enter_context(patch("capture.start_host_recorder", side_effect=start))
+                stack.enter_context(patch("capture.onboarding", side_effect=onboard))
+                stack.enter_context(patch("capture.wait_fgs_active", side_effect=fgs))
+                stack.enter_context(patch("capture.wait_ui", side_effect=wait_ui))
+                stack.enter_context(patch("capture.send", side_effect=send))
+                stack.enter_context(patch("capture.deadline_adb", side_effect=deadline_adb))
+                stack.enter_context(patch("capture.tap"))
+                stack.enter_context(patch("capture.quit_via_notification", side_effect=quit_action))
+                stack.enter_context(patch("capture.wait_host_recordings"))
+                stack.enter_context(patch("capture.export_host_recordings", side_effect=export))
+                stack.enter_context(patch("capture.adb", side_effect=OSError("private sweep spawn")))
+                capture.main(root)
+
+        starts = [index for index, call in enumerate(calls) if call[0] == "start"]
+        onboardings = [index for index, call in enumerate(calls) if call[0] == "onboarding"]
+        self.assertEqual(len(starts), 2)
+        self.assertEqual(len(onboardings), 2)
+        self.assertLess(max(starts), min(onboardings))
+        self.assertEqual([call for call in calls if call[0] == "quit"],
+                         [("quit", capture.SERIALS[0])])
+        self.assertTrue(all(deadline <= video_origin[0] + capture.SCENARIO_BUDGET_SECONDS
+                            for deadline in scenario_deadlines))
+        self.assertEqual([event["step"] for event in exported["preflightEvents"]],
+                         list(capture.PREFLIGHT_STEPS))
+        self.assertEqual([event["step"] for event in exported["events"]],
+                         list(capture.SCENARIO_STEPS))
+        self.assertEqual(exported["deferredUiDumpCleanupCountBySide"], {"a": 1, "b": 0})
+        self.assertNotIn("private", json.dumps(exported))
+        times = [event["elapsedSeconds"] for event in exported["events"]]
+        self.assertEqual(times[0], 0.0)
+        self.assertTrue(all(0 < value < capture.SCENARIO_BUDGET_SECONDS
+                            for value in times[1:]))
+        self.assertTrue(all(previous < current for previous, current in zip(times, times[1:])))
+
+    def test_main_second_recorder_failure_never_launches_or_exports(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root/"evidence").mkdir()
+            start = Mock(side_effect=[
+                None, capture.GateError("host_recorder_start", capture.SERIALS[1]),
+            ])
+            onboarding = Mock()
+            export = Mock()
+            wait_recordings = Mock()
+            with patch.dict(capture.os.environ, {
+                    "GITHUB_ACTIONS": "true", "EVIDENCE_HEAD": "1"*40}, clear=False), \
+                 patch("capture.ThreadPoolExecutor", ImmediateExecutor), \
+                 patch("capture.boot_and_install"), \
+                 patch("capture.require_host_recorder"), \
+                 patch("capture.start_host_recorder", start), \
+                 patch("capture.onboarding", onboarding), \
+                 patch("capture.wait_host_recordings", wait_recordings), \
+                 patch("capture.export_host_recordings", export):
+                with self.assertRaises(RuntimeError):
+                    capture.main(root)
+            attempt = json.loads((root/"evidence/attempt.json").read_text())
+        self.assertEqual(start.call_count, 2)
+        onboarding.assert_not_called()
+        wait_recordings.assert_not_called()
+        export.assert_not_called()
+        self.assertEqual(attempt["events"], [])
+        self.assertEqual(attempt["failureGate"], "host_recorder_start_b")
 
     def test_real_first_public_disclosure_requires_confirmation(self):
         title = E.Element("node", {"text": "Send to the public room?", "enabled": "true"})
@@ -552,8 +824,11 @@ class EvidenceChecks(unittest.TestCase):
                       "attestationsVerified": 11, "apkPayloadUnchanged": True}
         attempt = {"evidenceSource": source_head, "result": capture.SCENARIO_RESULT,
                    "captureSource": capture.CAPTURE_SOURCE,
+                   "environment": "Two API35 x86_64 AVDs; netsim simulated BLE",
+                   "emulator": "37.2.12", "systemImageRevision": 9,
                    "recordingsExported": True, "finalVideoQualified": False,
                    "notPhysicalEvidence": True, "notPlaySigned": True, "failureGate": None,
+                   "deferredUiDumpCleanupCountBySide": {"a": 0, "b": 0},
                    "preflightEvents": [{"step": step, "elapsedSeconds": number+1}
                                        for number, step in enumerate(capture.PREFLIGHT_STEPS)],
                    "events": [{"step": step, "elapsedSeconds": number+1}
@@ -574,7 +849,7 @@ class EvidenceChecks(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = self.local_bundle(directory)
             last, checksums = localassemble.validate_inputs(root, "1"*40)
-            self.assertEqual(last, 7)
+            self.assertEqual(last, len(capture.SCENARIO_STEPS))
             self.assertEqual(set(checksums), localassemble.HASHED_INPUTS)
             with self.assertRaises(localassemble.ValidationFailure):
                 localassemble.validate_inputs(root, "2"*40)
@@ -586,16 +861,15 @@ class EvidenceChecks(unittest.TestCase):
             with self.assertRaises(localassemble.ValidationFailure):
                 localassemble.validate_inputs(root, "1"*40)
 
-    def test_local_metadata_gate_rejects_missing_or_reordered_preflight(self):
-        for mutation in ("missing", "reordered"):
+    def test_local_metadata_gate_rejects_missing_or_wrong_preflight(self):
+        for mutation in ("missing", "wrong"):
             with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
                 root = self.local_bundle(directory)
                 attempt = json.loads((root/"attempt.json").read_text())
                 if mutation == "missing":
                     attempt["preflightEvents"].pop()
                 else:
-                    attempt["preflightEvents"][0], attempt["preflightEvents"][1] = (
-                        attempt["preflightEvents"][1], attempt["preflightEvents"][0])
+                    attempt["preflightEvents"][0]["step"] = "not_the_boot_gate"
                 (root/"attempt.json").write_text(json.dumps(attempt))
                 self.rehash_bundle(root)
                 with self.assertRaisesRegex(localassemble.ValidationFailure,
@@ -612,7 +886,7 @@ class EvidenceChecks(unittest.TestCase):
             (root/"attempt.json").write_text(json.dumps(attempt))
             self.rehash_bundle(root)
             last, _ = localassemble.validate_inputs(root, "1"*40)
-            self.assertEqual(last, 7)
+            self.assertEqual(last, len(capture.SCENARIO_STEPS))
 
     def test_local_metadata_gate_rejects_extra_file(self):
         with tempfile.TemporaryDirectory() as directory:

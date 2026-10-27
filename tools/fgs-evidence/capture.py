@@ -27,7 +27,7 @@ SCENARIO_BUDGET_SECONDS = 165
 UI_SNAPSHOT_BUDGET_SECONDS = 26
 UI_DUMP_COMMAND_SECONDS = 13
 UI_DUMP_ATTEMPTS = 2
-UI_CLEANUP_RESERVE_SECONDS = 1
+UI_POST_CLEANUP_SECONDS = 3
 UI_FILE_COMMAND_SECONDS = 2
 
 SERIAL_PHASES = frozenset({
@@ -35,24 +35,23 @@ SERIAL_PHASES = frozenset({
     "bluetooth_on_timeout", "install", "package_verify", "activity_launch",
     "activity_resume_timeout", "ui_dump_command_timeout", "ui_dump_command_error",
     "ui_dump_stale", "ui_dump_output_missing", "ui_dump_read", "ui_dump_parse",
-    "ui_dump_cleanup", "ui_action", "nickname_field",
+    "ui_dump_prepare_cleanup", "ui_action", "nickname_field",
     "ime_visibility_unknown", "onboarding_welcome", "onboarding_bluetooth",
     "onboarding_notifications", "onboarding_permission", "onboarding_auxiliary",
     "onboarding_unknown", "fgs_timeout", "peer_discovery_timeout",
     "public_room_open", "message_composer", "message_submit",
     "message_confirmation", "message_receive", "notification_expand",
     "notification_visible", "notification_open", "quit_action", "quit_timeout",
-    "recorded_relaunch", "host_recorder_capability", "host_recorder_start",
+    "host_recorder_capability", "host_recorder_start",
     "host_recording_file",
 })
-GLOBAL_GATES = frozenset({"unclassified_controller_failure", "scenario_budget", "evidence_export"})
-PREFLIGHT_STEPS = (
-    "boot_install_bluetooth_ready", "actual_onboarding_permissions_completed",
-    "foreground_services_active", "both_apps_display_real_peer",
-    "services_stopped_for_recorded_relaunch",
-)
+GLOBAL_GATES = frozenset({
+    "unclassified_controller_failure", "scenario_budget", "scenario_clock", "evidence_export",
+})
+PREFLIGHT_STEPS = ("boot_install_bluetooth_ready",)
 SCENARIO_STEPS = (
-    "actual_onboarding_permissions_completed", "both_apps_display_real_peer",
+    "recording_commands_started", "actual_onboarding_permissions_completed",
+    "foreground_services_active", "both_apps_display_real_peer",
     "public_messages_received_in_both_directions", "background_connected_device_notification_visible",
     "public_message_sent_while_other_app_in_background", "public_message_visible_after_resume_via_fgs_notification",
     "quit_action_stopped_service_and_removed_notification",
@@ -60,6 +59,8 @@ SCENARIO_STEPS = (
 
 _UI_DUMP_SEQUENCE_LOCK = Lock()
 _UI_DUMP_SEQUENCE = {serial: 0 for serial in SERIALS}
+_UI_DUMP_DEFERRED_LOCK = Lock()
+_UI_DUMP_DEFERRED = {serial: set() for serial in SERIALS}
 
 
 def gate_name(phase, serial=None):
@@ -151,20 +152,98 @@ def ui_adb(serial, deadline, timeout_phase, error_phase, *args, cap):
         raise GateError(error_phase, serial) from None
 
 
+def owned_ui_dump_path(serial, path):
+    side = SIDES.get(serial)
+    return side is not None and re.fullmatch(
+        rf"/data/local/tmp/wesh-fgs-window-{side}-\d{{8}}\.xml", path,
+    ) is not None
+
+
+def defer_ui_dump_cleanup(serial, path):
+    if not owned_ui_dump_path(serial, path):
+        return False
+    with _UI_DUMP_DEFERRED_LOCK:
+        _UI_DUMP_DEFERRED[serial].add(path)
+    return True
+
+
+def best_effort_ui_dump_cleanup(serial, path, deadline):
+    """Attempt bounded removal; retain only an owned path in memory on failure."""
+    timeout = ui_timeout(deadline, UI_POST_CLEANUP_SECONDS)
+    if timeout is None:
+        defer_ui_dump_cleanup(serial, path)
+        return False
+    try:
+        adb(serial, "shell", "rm", "-f", path, timeout=timeout)
+    except (RuntimeError, ValueError, OSError, subprocess.TimeoutExpired):
+        defer_ui_dump_cleanup(serial, path)
+        return False
+    with _UI_DUMP_DEFERRED_LOCK:
+        _UI_DUMP_DEFERRED[serial].discard(path)
+    return True
+
+
+def sweep_deferred_ui_dumps(deadline):
+    """Retry controller-owned paths only; never turn hygiene into scenario success/failure."""
+    for serial in SERIALS:
+        with _UI_DUMP_DEFERRED_LOCK:
+            paths = sorted(_UI_DUMP_DEFERRED[serial])
+        if not paths or not all(owned_ui_dump_path(serial, path) for path in paths):
+            continue
+        timeout = ui_timeout(deadline, UI_POST_CLEANUP_SECONDS)
+        if timeout is None:
+            continue
+        try:
+            adb(serial, "shell", "rm", "-f", *paths, timeout=timeout)
+        except (RuntimeError, ValueError, OSError, subprocess.TimeoutExpired):
+            continue
+        with _UI_DUMP_DEFERRED_LOCK:
+            _UI_DUMP_DEFERRED[serial].difference_update(paths)
+
+
+def deferred_ui_dump_counts():
+    with _UI_DUMP_DEFERRED_LOCK:
+        return {SIDES[serial]: len(_UI_DUMP_DEFERRED[serial]) for serial in SERIALS}
+
+
+def append_scenario_event(receipt, name, video_start, elapsed=None):
+    index = len(receipt["events"])
+    if index >= len(SCENARIO_STEPS) or name != SCENARIO_STEPS[index]:
+        raise ValueError("Unallowlisted scenario event sequence")
+    if name == "recording_commands_started":
+        if elapsed != 0.0:
+            raise ValueError("Recording clock must start at zero")
+        value = 0.0
+    else:
+        if elapsed is not None:
+            raise ValueError("Recorded product events require the real clock")
+        value = time.monotonic() - video_start
+        if value <= 0 or value >= SCENARIO_BUDGET_SECONDS:
+            raise GateError("scenario_budget")
+    rounded = round(value, 3)
+    if name != "recording_commands_started" and (
+            rounded <= 0 or rounded >= SCENARIO_BUDGET_SECONDS):
+        raise GateError("scenario_budget")
+    if receipt["events"] and rounded <= receipt["events"][-1]["elapsedSeconds"]:
+        raise GateError("scenario_clock")
+    receipt["events"].append({"step": name, "elapsedSeconds": rounded})
+
+
 def ui_dump_attempt(serial, path, deadline):
     """Create, read and remove one fresh hierarchy without exporting its contents."""
-    work_deadline = deadline - UI_CLEANUP_RESERVE_SECONDS
+    read_complete = False
     try:
-        ui_adb(serial, work_deadline, "ui_dump_cleanup", "ui_dump_cleanup",
+        ui_adb(serial, deadline, "ui_dump_prepare_cleanup", "ui_dump_prepare_cleanup",
                "shell", "rm", "-f", path, cap=UI_FILE_COMMAND_SECONDS)
-        ui_adb(serial, work_deadline, "ui_dump_stale", "ui_dump_stale",
+        ui_adb(serial, deadline, "ui_dump_stale", "ui_dump_stale",
                "shell", "test", "!", "-e", path, cap=UI_FILE_COMMAND_SECONDS)
-        ui_adb(serial, work_deadline, "ui_dump_command_timeout", "ui_dump_command_error",
+        ui_adb(serial, deadline, "ui_dump_command_timeout", "ui_dump_command_error",
                "shell", "uiautomator", "dump", path, cap=UI_DUMP_COMMAND_SECONDS)
-        ui_adb(serial, work_deadline, "ui_dump_output_missing", "ui_dump_output_missing",
+        ui_adb(serial, deadline, "ui_dump_output_missing", "ui_dump_output_missing",
                "shell", "test", "-s", path, cap=UI_FILE_COMMAND_SECONDS)
-        xml = ui_adb(serial, work_deadline, "ui_dump_read", "ui_dump_read",
+        xml = ui_adb(serial, deadline, "ui_dump_read", "ui_dump_read",
                      "exec-out", "cat", path, cap=UI_DUMP_COMMAND_SECONDS)
+        read_complete = True
         if not xml.strip():
             raise GateError("ui_dump_output_missing", serial)
         try:
@@ -174,16 +253,21 @@ def ui_dump_attempt(serial, path, deadline):
         items = list(root.iter("node"))
         if root.tag != "hierarchy" or not items:
             raise GateError("ui_dump_parse", serial)
+    except Exception:
+        if read_complete:
+            best_effort_ui_dump_cleanup(serial, path, deadline)
+        else:
+            defer_ui_dump_cleanup(serial, path)
+        raise
+    else:
+        best_effort_ui_dump_cleanup(serial, path, deadline)
         return items
-    finally:
-        ui_adb(serial, deadline, "ui_dump_cleanup", "ui_dump_cleanup",
-               "shell", "rm", "-f", path, cap=UI_CLEANUP_RESERVE_SECONDS)
 
 
 def nodes(serial, deadline):
     """Take at most two fresh snapshots inside a 26-second/caller deadline."""
     snapshot_deadline = min(deadline, time.monotonic() + UI_SNAPSHOT_BUDGET_SECONDS)
-    if snapshot_deadline - time.monotonic() <= UI_CLEANUP_RESERVE_SECONDS:
+    if snapshot_deadline - time.monotonic() <= 0:
         raise GateError("ui_dump_command_timeout", serial)
     last_failure = None
     for attempt in range(UI_DUMP_ATTEMPTS):
@@ -193,8 +277,6 @@ def nodes(serial, deadline):
         try:
             return ui_dump_attempt(serial, path, snapshot_deadline)
         except GateError as failure:
-            if failure.gate == gate_name("ui_dump_cleanup", serial):
-                raise
             last_failure = failure
             if attempt + 1 < UI_DUMP_ATTEMPTS:
                 bounded_sleep(snapshot_deadline, 0.25)
@@ -567,6 +649,7 @@ def main(root):
         "emulator": "37.2.12", "systemImageRevision": 9, "evidenceSource": os.environ["EVIDENCE_HEAD"],
         "captureSource": CAPTURE_SOURCE,
         "notPhysicalEvidence": True, "notPlaySigned": True,
+        "deferredUiDumpCleanupCountBySide": {"a": 0, "b": 0},
         "recordingsExported": False, "finalVideoQualified": False,
     }
     recordings = [root / "avd" / f"wesh-fgs-{side}.avd" / "console_out" /
@@ -581,10 +664,7 @@ def main(root):
         receipt["preflightEvents"].append({"step": name, "elapsedSeconds": round(time.monotonic()-attempt_start, 1)})
 
     def event(name, elapsed=None):
-        if name not in SCENARIO_STEPS:
-            raise ValueError("Unallowlisted scenario event")
-        value = time.monotonic()-video_start if elapsed is None else elapsed
-        receipt["events"].append({"step": name, "elapsedSeconds": round(value, 1)})
+        append_scenario_event(receipt, name, video_start, elapsed)
 
     try:
         with ThreadPoolExecutor(2) as pool:
@@ -593,68 +673,37 @@ def main(root):
                 future.result()
         preflight_event("boot_install_bluetooth_ready")
 
-        onboarding_deadline = time.monotonic() + 90
+        recorder_deadline = time.monotonic() + 20
+        for serial in SERIALS:
+            require_host_recorder(serial, recorder_deadline)
+        video_start = time.monotonic()
+        deadline = video_start + SCENARIO_BUDGET_SECONDS
+        recorder_start_deadline = min(deadline, video_start + 12)
+        for serial, path in zip(SERIALS, recordings):
+            start_host_recorder(serial, path, recorder_start_deadline)
+        last_recorder_start = time.monotonic()
+        event("recording_commands_started", 0.0)
+
+        # The first product launch, onboarding, permission prompts, service start and peer setup are
+        # all real actions inside the two host recordings, before the declared device interaction.
+        onboarding_deadline = min(deadline, time.monotonic() + 90)
         with ThreadPoolExecutor(2) as pool:
             futures = [pool.submit(onboarding, serial, nickname, onboarding_deadline)
                        for serial, nickname in zip(SERIALS, ("FGS-A", "FGS-B"))]
             for future in futures:
                 future.result()
-        preflight_event("actual_onboarding_permissions_completed")
+        event("actual_onboarding_permissions_completed")
 
-        service_deadline = time.monotonic() + 35
+        service_deadline = min(deadline, time.monotonic() + 35)
         with ThreadPoolExecutor(2) as pool:
             futures = [pool.submit(wait_fgs_active, serial, service_deadline) for serial in SERIALS]
             for future in futures:
                 future.result()
-        preflight_event("foreground_services_active")
+        event("foreground_services_active")
 
-        peer_deadline = time.monotonic() + 90
+        peer_deadline = min(deadline, time.monotonic() + 90)
         with ThreadPoolExecutor(2) as pool:
             futures = [pool.submit(wait_ui, serial, "1 phone in range", peer_deadline, True,
-                                   "peer_discovery_timeout") for serial in SERIALS]
-            for future in futures:
-                future.result()
-        preflight_event("both_apps_display_real_peer")
-
-        # Establish compatibility first, then really stop both product services. The recording must
-        # show a fresh app launch and real rediscovery rather than presenting a pre-connected state.
-        stop_deadline = time.monotonic() + 35
-        with ThreadPoolExecutor(2) as pool:
-            futures = [pool.submit(quit_via_notification, serial, stop_deadline) for serial in SERIALS]
-            for future in futures:
-                future.result()
-        preflight_event("services_stopped_for_recorded_relaunch")
-
-        recorder_deadline = time.monotonic() + 20
-        for serial in SERIALS:
-            require_host_recorder(serial, recorder_deadline)
-        video_start = time.monotonic()
-        recorder_start_deadline = video_start + 12
-        for serial, path in zip(SERIALS, recordings):
-            start_host_recorder(serial, path, recorder_start_deadline)
-        last_recorder_start = time.monotonic()
-
-        # Onboarding is a genuine precondition completed immediately before recording. The video
-        # begins from stopped services and then shows a fresh launch and real peer rediscovery.
-        event("actual_onboarding_permissions_completed", 0.0)
-        deadline = video_start + SCENARIO_BUDGET_SECONDS
-
-        for serial in SERIALS:
-            deadline_adb(serial, "recorded_relaunch", deadline,
-                         "shell", "am", "start", "-n", COMPONENT)
-        with ThreadPoolExecutor(2) as pool:
-            futures = [pool.submit(wait_activity_resumed, serial, min(deadline, time.monotonic()+20))
-                       for serial in SERIALS]
-            for future in futures:
-                future.result()
-        with ThreadPoolExecutor(2) as pool:
-            futures = [pool.submit(wait_fgs_active, serial, min(deadline, time.monotonic()+35))
-                       for serial in SERIALS]
-            for future in futures:
-                future.result()
-        reconnect_deadline = min(deadline, time.monotonic() + 90)
-        with ThreadPoolExecutor(2) as pool:
-            futures = [pool.submit(wait_ui, serial, "1 phone in range", reconnect_deadline, True,
                                    "peer_discovery_timeout") for serial in SERIALS]
             for future in futures:
                 future.result()
@@ -701,6 +750,8 @@ def main(root):
             except GateError as error:
                 receipt["result"] = "NOT_COMPLETED"
                 receipt["failureGate"] = error.gate
+        sweep_deferred_ui_dumps(time.monotonic() + 2 * UI_POST_CLEANUP_SECONDS)
+        receipt["deferredUiDumpCleanupCountBySide"] = deferred_ui_dump_counts()
         (root / "evidence/attempt.json").write_text(json.dumps(receipt, indent=2)+"\n")
 
     if receipt["result"] != SCENARIO_RESULT:

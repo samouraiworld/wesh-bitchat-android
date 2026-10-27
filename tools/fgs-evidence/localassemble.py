@@ -24,6 +24,12 @@ CAPTION_LINES = (
     "Wesh 107 - two emulators - simulated BLE netsim",
     "Canonical APK payload - disposable test signature",
 )
+ATTEMPT_FIELDS = frozenset({
+    "result", "failureGate", "preflightEvents", "events", "environment", "emulator",
+    "systemImageRevision", "evidenceSource", "captureSource", "notPhysicalEvidence",
+    "notPlaySigned", "recordingsExported", "finalVideoQualified",
+    "deferredUiDumpCleanupCountBySide",
+})
 
 
 class ValidationFailure(ValueError):
@@ -45,7 +51,8 @@ def unique_json(path):
     return json.loads(path.read_text(), object_pairs_hook=unique)
 
 
-def event_times(receipt, key, expected, sequence_gate, clock_gate, *, starts_at_zero=False):
+def event_times(receipt, key, expected, sequence_gate, clock_gate, *, starts_at_zero=False,
+                strictly_increasing=False):
     events = receipt.get(key)
     require(isinstance(events, list) and len(events) == len(expected) and
             all(isinstance(event, dict) and set(event) == {"step", "elapsedSeconds"}
@@ -54,11 +61,30 @@ def event_times(receipt, key, expected, sequence_gate, clock_gate, *, starts_at_
     times = [event["elapsedSeconds"] for event in events]
     require(all(type(value) in (int, float) and math.isfinite(value) and value >= 0
                 for value in times) and times == sorted(times) and
-            (not starts_at_zero or times[0] == 0), clock_gate)
+            (not starts_at_zero or times[0] == 0) and
+            (not strictly_increasing or
+             all(previous < current for previous, current in zip(times, times[1:]))),
+            clock_gate)
     return times
 
 
-def validate_inputs(evidence, source_head):
+def validate_cleanup_diagnostics(attempt):
+    counters = attempt.get("deferredUiDumpCleanupCountBySide")
+    require(isinstance(counters, dict) and set(counters) == {"a", "b"} and
+            all(type(value) is int and value >= 0 for value in counters.values()),
+            "cleanup_diagnostics")
+    return counters
+
+
+def validate_attempt_shape(attempt):
+    # A closed receipt schema prevents paths, raw UI dumps, or other incidental runner data
+    # from entering the locally published sidecar.
+    require(isinstance(attempt, dict) and set(attempt) == ATTEMPT_FIELDS,
+            "scenario_receipt_fields")
+    return validate_cleanup_diagnostics(attempt)
+
+
+def validate_bundle(evidence, source_head):
     require(re.fullmatch(r"[0-9a-f]{40}", source_head) is not None, "controller_source_invalid")
     require({p.name for p in evidence.iterdir()} == HASHED_INPUTS | {"SHA256SUMS"}, "recording_inventory")
     require(all(p.is_file() and not p.is_symlink() for p in evidence.iterdir()), "recording_file_type")
@@ -75,6 +101,7 @@ def validate_inputs(evidence, source_head):
     require(provenance["source"] == SOURCE and provenance["unsignedApkSHA256"] == FILES[APK] and
             provenance["attestationsVerified"] == 11 and provenance["apkPayloadUnchanged"] is True,
             "canonical_provenance")
+    validate_attempt_shape(attempt)
     require(attempt["evidenceSource"] == source_head and attempt["result"] == SCENARIO_RESULT and
             attempt["recordingsExported"] is True and attempt["finalVideoQualified"] is False and
             attempt["notPhysicalEvidence"] is True and attempt["notPlaySigned"] is True and
@@ -83,9 +110,15 @@ def validate_inputs(evidence, source_head):
     event_times(attempt, "preflightEvents", PREFLIGHT_EVENTS,
                 "preflight_event_sequence", "preflight_event_clock")
     times = event_times(attempt, "events", EVENTS,
-                        "scenario_event_sequence", "scenario_event_clock", starts_at_zero=True)
+                        "scenario_event_sequence", "scenario_event_clock", starts_at_zero=True,
+                        strictly_increasing=True)
     require(all(value < 165 for value in times), "scenario_event_clock")
-    return times[-1], checksums
+    return times[-1], checksums, attempt
+
+
+def validate_inputs(evidence, source_head):
+    last_quit, checksums, _ = validate_bundle(evidence, source_head)
+    return last_quit, checksums
 
 
 def run_tool(binary, *args, timeout=30):
@@ -207,7 +240,8 @@ def assemble(evidence, output, source_head, ffmpeg, ffprobe, font):
     require(not output.exists() and not sidecar.exists(), "local_output_already_exists")
     require(font.is_file() and re.fullmatch(r"[A-Za-z0-9_ /.-]+", str(font)) is not None,
             "font_path_not_supported")
-    last_quit, inputs = validate_inputs(evidence, source_head)
+    last_quit, inputs, attempt = validate_bundle(evidence, source_head)
+    cleanup_counts = validate_cleanup_diagnostics(attempt)
     input_media = [probe_video(ffprobe, evidence/name) for name in RECORDINGS]
     durations = [media["durationSeconds"] for media in input_media]
     # The clock began before either OS recorder command: retain that conservative strict check.
@@ -237,6 +271,7 @@ def assemble(evidence, output, source_head, ffmpeg, ffprobe, font):
             "canonicalSource": SOURCE,
             "inputsSHA256": inputs, "fontSHA256": digest(font), "footerSHA256": digest(footer),
             "recordingDurationsSeconds": durations, "lastQuitElapsedSeconds": last_quit,
+            "deferredUiDumpCleanupCountBySide": cleanup_counts,
             "inputMedia": input_media, "outputMedia": output_media,
             "outputDurationSeconds": output_duration, "outputSHA256": digest(temporary),
             "physicalEvidence": False, "googleApproved": False, "visualReviewCompleted": False,
