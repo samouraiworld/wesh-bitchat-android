@@ -38,7 +38,14 @@ ONBOARDING_TRACE_EVENTS = frozenset({
     "activity_resumed", "welcome_seen", "start_tapped", "bluetooth", "permission",
     "notifications", "auxiliary", "home", "unknown", "ui_prepare", "ui_stale",
     "ui_command", "ui_output", "ui_read", "ui_parse", "ui_complete", "room_open_tapped",
-    "send_requested", "confirmation_tapped", "message_bubble", "remote_received",
+    "send_requested", "composer_expected", "composer_empty", "composer_other",
+    "composer_ambiguous", "confirmation_visible", "confirmation_tap_requested",
+    "confirmation_present_after_tap", "confirmation_dismissed",
+    "feedback_destination_changed", "feedback_draft_changed",
+    "feedback_send_unavailable", "feedback_draft_unavailable",
+    "feedback_bluetooth_needed", "bubble_candidate_exact",
+    "bubble_candidate_editor_only", "bubble_candidate_absent",
+    "failure_caller_deadline_reached", "message_bubble", "remote_received",
     "background_requested", "notification_visible", "notification_open_tapped",
     "activity_resumed_after_notification", "quit_requested", "shade_opened",
     "notification_card_found", "expand_tapped", "quit_action_found", "quit_tapped",
@@ -539,6 +546,8 @@ def tap(serial, node, phase="ui_action", deadline=None):
     if not points:
         raise GateError(phase, serial)
     x1, y1, x2, y2 = map(int, points.groups())
+    if x2 <= x1 or y2 <= y1:
+        raise GateError(phase, serial)
     args = ("shell", "input", "tap", str((x1+x2)//2), str((y1+y2)//2))
     if deadline is None:
         gated(serial, phase, lambda: adb(serial, *args))
@@ -556,9 +565,12 @@ def wait_ui(serial, label, deadline, contains=False, failure_phase="ui_action"):
     raise GateError(failure_phase, serial)
 
 
-def wait_action(serial, label, deadline, contains=False, failure_phase="ui_action"):
+def wait_action(serial, label, deadline, contains=False, failure_phase="ui_action",
+                observer=None, trace_started=None):
     while time.monotonic() < deadline:
-        target = select_action(nodes(serial, deadline), label, contains)
+        items = (scenario_nodes(serial, deadline, observer, trace_started)
+                 if trace_started is not None else nodes(serial, deadline, observer=observer))
+        target = select_action(items, label, contains)
         if target is not None:
             return target
         if not bounded_sleep(deadline, 0.4):
@@ -684,21 +696,97 @@ def is_editor(node):
             or node.get("editable") == "true")
 
 
-def message_bubble(items, message):
-    if select(items, "Send to the public room?") is not None:
-        return None
+def message_bubble_candidate(items, message):
+    """Classify an exact message semantic without returning private UI contents."""
     editors = [node for node in items if is_editor(node)]
+    editor_only = False
     for node in items:
-        if (node.get("package") != PACKAGE or is_editor(node)
-                or any(node_is_within(node, editor) or node_is_within(editor, node)
-                       for editor in editors)):
+        if node.get("package") != PACKAGE:
             continue
         text = node.get("text", "")
         description = node.get("content-desc", "")
         semantic_parts = [part.strip() for part in description.split(", ")]
-        if text == message or message in semantic_parts:
-            return node
+        if text != message and message not in semantic_parts:
+            continue
+        if (is_editor(node)
+                or any(node_is_within(node, editor) or node_is_within(editor, node)
+                       for editor in editors)):
+            editor_only = True
+            continue
+        return "exact", node
+    return ("editor_only", None) if editor_only else ("absent", None)
+
+
+def message_bubble(items, message):
+    if select(items, "Send to the public room?") is not None:
+        return None
+    state, candidate = message_bubble_candidate(items, message)
+    return candidate if state == "exact" else None
+
+
+def composer_state(items, message):
+    editors = [node for node in items
+               if node.get("package") == PACKAGE and is_editor(node)]
+    if len(editors) != 1:
+        return "ambiguous"
+    value = editors[0].get("text", "")
+    if value == message:
+        return "expected"
+    if value == "":
+        return "empty"
+    return "other"
+
+
+SEND_FEEDBACK_EVENTS = {
+    "The destination changed. Your text is kept.": "feedback_destination_changed",
+    "The draft changed. Read your text again.": "feedback_draft_changed",
+    "Local sending interrupted or unavailable. Your text is kept.":
+        "feedback_send_unavailable",
+    "Draft not saved on this phone. Do not close Wesh.":
+        "feedback_draft_unavailable",
+    "Turn Bluetooth on to write in the room.": "feedback_bluetooth_needed",
+}
+
+
+def send_feedback_event(items):
+    for message, event in SEND_FEEDBACK_EVENTS.items():
+        if any(node.get("package") == PACKAGE
+               and message in (node.get("text", ""), node.get("content-desc", ""))
+               for node in items):
+            return event
     return None
+
+
+def trace_state_change(observer, states, category, event, started, serial):
+    if states.get(category) == event:
+        return
+    states[category] = event
+    trace_scenario_progress(observer, event, started, serial)
+
+
+def trace_send_snapshot(observer, states, items, message, started, serial):
+    composer = composer_state(items, message)
+    trace_state_change(
+        observer, states, "composer", f"composer_{composer}", started, serial)
+    bubble, _candidate = message_bubble_candidate(items, message)
+    trace_state_change(
+        observer, states, "bubble", f"bubble_candidate_{bubble}", started, serial)
+    feedback = send_feedback_event(items)
+    if feedback is not None:
+        trace_state_change(observer, states, "feedback", feedback, started, serial)
+    else:
+        states["feedback"] = None
+    return composer, bubble, feedback
+
+
+def scenario_nodes(serial, deadline, observer, trace_started):
+    try:
+        return nodes(serial, deadline, observer=observer)
+    except GateError as failure:
+        if getattr(failure, "caller_deadline_reached", False):
+            trace_scenario_progress(
+                observer, "failure_caller_deadline_reached", trace_started, serial)
+        raise
 
 
 def confirmation_action(items):
@@ -729,8 +817,11 @@ def confirmation_action(items):
 
 def wait_message_bubble(serial, message, deadline, observer=None, trace_started=None,
                         remote=False):
+    states = {}
     while time.monotonic() < deadline:
-        if message_bubble(nodes(serial, deadline), message) is not None:
+        items = scenario_nodes(serial, deadline, observer, trace_started)
+        trace_send_snapshot(observer, states, items, message, trace_started, serial)
+        if message_bubble(items, message) is not None:
             trace_scenario_progress(
                 observer, "remote_received" if remote else "message_bubble",
                 trace_started, serial,
@@ -743,26 +834,67 @@ def wait_message_bubble(serial, message, deadline, observer=None, trace_started=
 
 def send(serial, message, deadline, observer=None, trace_started=None):
     target = wait_action(serial, "Public message — everyone around", deadline,
-                         failure_phase="message_composer")
+                         failure_phase="message_composer", observer=observer,
+                         trace_started=trace_started)
     tap(serial, target, "message_composer", deadline)
     deadline_adb(serial, "message_composer", deadline, "shell", "input", "text", message)
-    submit = wait_action(serial, "Send in public", deadline, failure_phase="message_submit")
+    states = {}
+    submit = None
+    saw_expected_draft = False
+    feedback_before_submit = None
+    while time.monotonic() < deadline:
+        items = scenario_nodes(serial, deadline, observer, trace_started)
+        composer, _bubble, feedback = trace_send_snapshot(
+            observer, states, items, message, trace_started, serial)
+        feedback_before_submit = feedback
+        saw_expected_draft = saw_expected_draft or composer == "expected"
+        if composer == "expected" and select(items, "Send to the public room?") is None:
+            candidates = [candidate for candidate in action_candidates(
+                items, "Send in public") if candidate.get("package") == PACKAGE]
+            if len(candidates) == 1:
+                submit = candidates[0]
+                break
+        if not bounded_sleep(deadline, 0.2):
+            break
+    if submit is None:
+        raise GateError("message_submit" if saw_expected_draft else "message_composer", serial)
     tap(serial, submit, "message_submit", deadline)
     trace_scenario_progress(observer, "send_requested", trace_started, serial)
-    confirmed = False
+    confirmation_requested = False
+    feedback_cleared_after_submit = False
     while time.monotonic() < deadline:
-        items = nodes(serial, deadline)
+        items = scenario_nodes(serial, deadline, observer, trace_started)
+        _composer, _bubble, feedback = trace_send_snapshot(
+            observer, states, items, message, trace_started, serial)
         state = public_send_state(items, message)
-        if state == "confirm" and not confirmed:
+        if state == "confirm" and not confirmation_requested:
+            trace_state_change(
+                observer, states, "confirmation", "confirmation_visible",
+                trace_started, serial)
             confirmation = confirmation_action(items)
             if confirmation is None:
                 raise GateError("message_confirmation", serial)
             tap(serial, confirmation, "message_confirmation", deadline)
-            confirmed = True
-            trace_scenario_progress(observer, "confirmation_tapped", trace_started, serial)
-        elif state == "submitted":
+            confirmation_requested = True
+            trace_state_change(
+                observer, states, "confirmation", "confirmation_tap_requested",
+                trace_started, serial)
+        elif state == "confirm":
+            trace_state_change(
+                observer, states, "confirmation", "confirmation_present_after_tap",
+                trace_started, serial)
+        elif confirmation_requested:
+            trace_state_change(
+                observer, states, "confirmation", "confirmation_dismissed",
+                trace_started, serial)
+
+        if state == "submitted":
             trace_scenario_progress(observer, "message_bubble", trace_started, serial)
             return
+        if feedback is None:
+            feedback_cleared_after_submit = True
+        elif feedback != feedback_before_submit or feedback_cleared_after_submit:
+            raise GateError("message_submit", serial)
         if not bounded_sleep(deadline, 0.2):
             break
     raise GateError("message_submit", serial)

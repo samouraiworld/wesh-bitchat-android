@@ -313,9 +313,11 @@ class EvidenceChecks(unittest.TestCase):
 
     def test_invalid_ui_bounds_never_tap(self):
         with patch("capture.adb") as command:
-            with self.assertRaises(capture.GateError) as failure:
-                capture.tap(capture.SERIALS[0], E.Element("node", {"bounds": "bad"}))
-            self.assertEqual(failure.exception.gate, "ui_action_a")
+            for bounds in ("bad", "[0,0][0,20]", "[20,0][10,20]", "[0,20][20,10]"):
+                with self.assertRaises(capture.GateError) as failure:
+                    capture.tap(
+                        capture.SERIALS[0], E.Element("node", {"bounds": bounds}))
+                self.assertEqual(failure.exception.gate, "ui_action_a")
             command.assert_not_called()
 
     def test_failure_gates_are_allowlisted_and_never_accept_arbitrary_text(self):
@@ -1198,6 +1200,21 @@ class EvidenceChecks(unittest.TestCase):
         })
         self.assertIsNone(capture.message_bubble([dialog, marker, message], "synthetic"))
 
+    def test_send_feedback_classification_is_fixed_and_never_exports_text(self):
+        for text, expected in capture.SEND_FEEDBACK_EVENTS.items():
+            item = E.Element("node", {"text": text, "package": capture.PACKAGE})
+            self.assertEqual(capture.send_feedback_event([item]), expected)
+            self.assertIn(expected, capture.ONBOARDING_TRACE_EVENTS)
+            self.assertNotIn(text, expected)
+        arbitrary = E.Element("node", {
+            "text": "private runtime text", "package": capture.PACKAGE,
+        })
+        foreign = E.Element("node", {
+            "text": next(iter(capture.SEND_FEEDBACK_EVENTS)),
+            "package": "com.android.systemui",
+        })
+        self.assertIsNone(capture.send_feedback_event([arbitrary, foreign]))
+
     def test_confirmation_action_is_scoped_to_dialog_without_editor(self):
         root = E.Element("node", {"package": capture.PACKAGE})
         editor = E.SubElement(root, "node", {
@@ -1249,6 +1266,15 @@ class EvidenceChecks(unittest.TestCase):
             "enabled": "true", "clickable": "true", "bounds": "[0,0][20,20]",
             "package": capture.PACKAGE,
         })
+        composer = E.Element("node", {"package": capture.PACKAGE})
+        E.SubElement(composer, "node", {
+            "class": "android.widget.EditText", "editable": "true",
+            "text": "synthetic", "package": capture.PACKAGE,
+        })
+        submit = E.SubElement(composer, "node", {
+            "text": "Send in public", "enabled": "true", "clickable": "true",
+            "bounds": "[0,0][20,20]", "package": capture.PACKAGE,
+        })
         dialog = E.Element("node", {"package": capture.PACKAGE})
         marker = E.SubElement(dialog, "node", {
             "text": "Send to the public room?", "enabled": "true",
@@ -1271,9 +1297,11 @@ class EvidenceChecks(unittest.TestCase):
             "content-desc": "You, fp, synthetic, now", "package": capture.PACKAGE,
         })
         observed = []
-        with patch("capture.wait_action", side_effect=[control, control]) as action, \
+        with patch("capture.wait_action", return_value=control) as action, \
              patch("capture.deadline_adb"), \
-             patch("capture.nodes", side_effect=[list(dialog.iter("node")), [bubble]]), \
+             patch("capture.nodes", side_effect=[
+                 list(composer.iter("node")), list(dialog.iter("node")), [bubble],
+             ]), \
              patch("capture.tap") as tap, \
              patch("capture.bounded_sleep", return_value=True), \
              patch("capture.time.monotonic", return_value=1.0):
@@ -1281,14 +1309,226 @@ class EvidenceChecks(unittest.TestCase):
                 capture.SERIALS[0], "synthetic", 10.0,
                 observer=lambda *values: observed.append(values), trace_started=0.0,
             )
-        self.assertEqual(action.call_count, 2)
+        self.assertEqual(action.call_count, 1)
         self.assertEqual([call.args[2] for call in tap.call_args_list], [
             "message_composer", "message_submit", "message_confirmation",
         ])
+        self.assertIs(tap.call_args_list[1].args[1], submit)
         self.assertIs(tap.call_args_list[-1].args[1], confirmation)
         self.assertEqual([entry[0] for entry in observed], [
-            "send_requested", "confirmation_tapped", "message_bubble",
+            "composer_expected", "bubble_candidate_editor_only", "send_requested",
+            "composer_ambiguous", "bubble_candidate_absent", "confirmation_visible",
+            "confirmation_tap_requested", "bubble_candidate_exact",
+            "confirmation_dismissed", "message_bubble",
         ])
+
+    def test_send_requires_exact_draft_in_one_canonical_editor_before_submit(self):
+        focus = E.Element("node", {
+            "enabled": "true", "clickable": "true", "bounds": "[0,0][20,20]",
+            "package": capture.PACKAGE,
+        })
+        root = E.Element("node", {"package": capture.PACKAGE})
+        E.SubElement(root, "node", {
+            "class": "android.widget.EditText", "editable": "true",
+            "text": "different", "package": capture.PACKAGE,
+        })
+        E.SubElement(root, "node", {
+            "text": "Send in public", "enabled": "true", "clickable": "true",
+            "bounds": "[0,0][20,20]", "package": capture.PACKAGE,
+        })
+        observed = []
+        with patch("capture.wait_action", return_value=focus), \
+             patch("capture.deadline_adb"), \
+             patch("capture.nodes", return_value=list(root.iter("node"))) as snapshot, \
+             patch("capture.tap") as tap, \
+             patch("capture.bounded_sleep", return_value=False), \
+             patch("capture.time.monotonic", return_value=1.0):
+            with self.assertRaises(capture.GateError) as failure:
+                capture.send(
+                    capture.SERIALS[0], "synthetic", 10.0,
+                    observer=lambda *values: observed.append(values), trace_started=0.0,
+                )
+        self.assertEqual(failure.exception.gate, "message_composer_a")
+        self.assertEqual(tap.call_count, 1)
+        self.assertIsNotNone(snapshot.call_args.kwargs["observer"])
+        self.assertEqual([entry[0] for entry in observed], [
+            "composer_other", "bubble_candidate_absent",
+        ])
+
+    def test_send_never_uses_foreign_submit_action_with_exact_app_draft(self):
+        focus = E.Element("node", {
+            "enabled": "true", "clickable": "true", "bounds": "[0,0][20,20]",
+            "package": capture.PACKAGE,
+        })
+        root = E.Element("node", {"package": capture.PACKAGE})
+        E.SubElement(root, "node", {
+            "class": "android.widget.EditText", "editable": "true",
+            "text": "synthetic", "package": capture.PACKAGE,
+        })
+        E.SubElement(root, "node", {
+            "text": "Send in public", "enabled": "true", "clickable": "true",
+            "bounds": "[0,0][20,20]", "package": "com.android.systemui",
+        })
+        with patch("capture.wait_action", return_value=focus), \
+             patch("capture.deadline_adb"), \
+             patch("capture.nodes", return_value=list(root.iter("node"))), \
+             patch("capture.tap") as tap, \
+             patch("capture.bounded_sleep", return_value=False), \
+             patch("capture.time.monotonic", return_value=1.0):
+            with self.assertRaises(capture.GateError) as failure:
+                capture.send(capture.SERIALS[0], "synthetic", 10.0)
+        self.assertEqual(failure.exception.gate, "message_submit_a")
+        self.assertEqual(tap.call_count, 1)
+
+    def test_send_observes_stale_feedback_without_blocking_exact_bubble(self):
+        focus = E.Element("node", {
+            "enabled": "true", "clickable": "true", "bounds": "[0,0][20,20]",
+            "package": capture.PACKAGE,
+        })
+        composer = E.Element("node", {"package": capture.PACKAGE})
+        E.SubElement(composer, "node", {
+            "class": "android.widget.EditText", "editable": "true",
+            "text": "synthetic", "package": capture.PACKAGE,
+        })
+        E.SubElement(composer, "node", {
+            "text": "Send in public", "enabled": "true", "clickable": "true",
+            "bounds": "[0,0][20,20]", "package": capture.PACKAGE,
+        })
+        E.SubElement(composer, "node", {
+            "text": "Local sending interrupted or unavailable. Your text is kept.",
+            "package": capture.PACKAGE,
+        })
+        bubble = E.Element("node", {
+            "content-desc": "You, fp, synthetic, now", "package": capture.PACKAGE,
+        })
+        observed = []
+        with patch("capture.wait_action", return_value=focus), \
+             patch("capture.deadline_adb"), \
+             patch("capture.nodes", side_effect=[list(composer.iter("node")), [bubble]]), \
+             patch("capture.tap"), \
+             patch("capture.bounded_sleep", return_value=True), \
+             patch("capture.time.monotonic", return_value=1.0):
+            capture.send(
+                capture.SERIALS[0], "synthetic", 10.0,
+                observer=lambda *values: observed.append(values), trace_started=0.0,
+            )
+        self.assertIn("feedback_send_unavailable", [entry[0] for entry in observed])
+        self.assertEqual(observed[-1][0], "message_bubble")
+
+    def test_send_fails_closed_on_new_allowlisted_feedback_after_request(self):
+        focus = E.Element("node", {
+            "enabled": "true", "clickable": "true", "bounds": "[0,0][20,20]",
+            "package": capture.PACKAGE,
+        })
+        composer = E.Element("node", {"package": capture.PACKAGE})
+        E.SubElement(composer, "node", {
+            "class": "android.widget.EditText", "editable": "true",
+            "text": "synthetic", "package": capture.PACKAGE,
+        })
+        E.SubElement(composer, "node", {
+            "text": "Send in public", "enabled": "true", "clickable": "true",
+            "bounds": "[0,0][20,20]", "package": capture.PACKAGE,
+        })
+        rejected = E.Element("node", {"package": capture.PACKAGE})
+        E.SubElement(rejected, "node", {
+            "text": "The destination changed. Your text is kept.",
+            "package": capture.PACKAGE,
+        })
+        observed = []
+        with patch("capture.wait_action", return_value=focus), \
+             patch("capture.deadline_adb"), \
+             patch("capture.nodes", side_effect=[
+                 list(composer.iter("node")), list(rejected.iter("node")),
+             ]), \
+             patch("capture.tap"), \
+             patch("capture.time.monotonic", return_value=1.0):
+            with self.assertRaises(capture.GateError) as failure:
+                capture.send(
+                    capture.SERIALS[0], "synthetic", 10.0,
+                    observer=lambda *values: observed.append(values), trace_started=0.0,
+                )
+        self.assertEqual(failure.exception.gate, "message_submit_a")
+        self.assertIn("feedback_destination_changed", [entry[0] for entry in observed])
+
+    def test_send_never_retaps_persistent_confirmation_and_traces_caller_deadline(self):
+        focus = E.Element("node", {
+            "enabled": "true", "clickable": "true", "bounds": "[0,0][20,20]",
+            "package": capture.PACKAGE,
+        })
+        composer = E.Element("node", {"package": capture.PACKAGE})
+        E.SubElement(composer, "node", {
+            "class": "android.widget.EditText", "editable": "true",
+            "text": "synthetic", "package": capture.PACKAGE,
+        })
+        E.SubElement(composer, "node", {
+            "text": "Send in public", "enabled": "true", "clickable": "true",
+            "bounds": "[0,0][20,20]", "package": capture.PACKAGE,
+        })
+        dialog = E.Element("node", {"package": capture.PACKAGE})
+        E.SubElement(dialog, "node", {
+            "text": "Send to the public room?", "enabled": "true",
+            "package": capture.PACKAGE,
+        })
+        E.SubElement(dialog, "node", {
+            "text": "Anyone around can read, relay and keep your message. "
+                    "A nickname does not prove an identity.",
+            "enabled": "true", "package": capture.PACKAGE,
+        })
+        E.SubElement(dialog, "node", {
+            "text": "Cancel", "enabled": "true", "clickable": "true",
+            "package": capture.PACKAGE,
+        })
+        E.SubElement(dialog, "node", {
+            "text": "Send in public", "enabled": "true", "clickable": "true",
+            "bounds": "[0,0][20,20]", "package": capture.PACKAGE,
+        })
+        timeout = capture.GateError("ui_dump_command_timeout", capture.SERIALS[0])
+        timeout.caller_deadline_reached = True
+        observed = []
+        with patch("capture.wait_action", return_value=focus), \
+             patch("capture.deadline_adb"), \
+             patch("capture.nodes", side_effect=[
+                 list(composer.iter("node")), list(dialog.iter("node")),
+                 list(dialog.iter("node")), timeout,
+             ]), \
+             patch("capture.tap") as tap, \
+             patch("capture.bounded_sleep", return_value=True), \
+             patch("capture.time.monotonic", return_value=1.0):
+            with self.assertRaises(capture.GateError) as failure:
+                capture.send(
+                    capture.SERIALS[0], "synthetic", 10.0,
+                    observer=lambda *values: observed.append(values), trace_started=0.0,
+                )
+        self.assertIs(failure.exception, timeout)
+        self.assertEqual([call.args[2] for call in tap.call_args_list], [
+            "message_composer", "message_submit", "message_confirmation",
+        ])
+        self.assertIn("confirmation_present_after_tap", [entry[0] for entry in observed])
+        self.assertEqual([entry[0] for entry in observed].count(
+            "confirmation_tap_requested"), 1)
+        self.assertEqual(observed[-1][0], "failure_caller_deadline_reached")
+
+    def test_remote_wait_observes_closed_bubble_candidates_and_preserves_early_ui_gate(self):
+        editor = E.Element("node", {
+            "class": "android.widget.EditText", "editable": "true",
+            "text": "synthetic", "package": capture.PACKAGE,
+        })
+        early = capture.GateError("ui_dump_command_timeout", capture.SERIALS[1])
+        early.caller_deadline_reached = False
+        observed = []
+        with patch("capture.nodes", side_effect=[[editor], early]) as snapshot, \
+             patch("capture.bounded_sleep", return_value=True), \
+             patch("capture.time.monotonic", return_value=1.0):
+            with self.assertRaises(capture.GateError) as failure:
+                capture.wait_message_bubble(
+                    capture.SERIALS[1], "synthetic", 10.0,
+                    observer=lambda *values: observed.append(values),
+                    trace_started=0.0, remote=True,
+                )
+        self.assertIs(failure.exception, early)
+        self.assertIsNotNone(snapshot.call_args_list[0].kwargs["observer"])
+        self.assertIn("bubble_candidate_editor_only", [entry[0] for entry in observed])
+        self.assertNotIn("failure_caller_deadline_reached", [entry[0] for entry in observed])
 
     def test_shared_product_scenario_requires_foreground_and_remote_bubbles(self):
         events = []

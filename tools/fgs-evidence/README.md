@@ -147,6 +147,25 @@ phase enums and finite timings; its 64-event bound preserves the first eight
 records plus a rolling tail of 56 so late post-peer timings remain diagnostic,
 while locked aggregate counters remain complete across both onboarding threads.
 
+The non-media run `40515608335` reached real onboarding, foreground service,
+peer discovery, both public rooms and the first confirmation action, then ended
+with the aggregate gate `ui_dump_command_timeout_a` before any exact local or
+remote message bubble was observed. Its total controller duration does not prove
+that the 165-second scenario deadline, rather than a narrower caller deadline,
+was reached. The controller now verifies the exact synthetic draft in one
+canonical-app editor before requesting Send, refuses empty or inverted action
+bounds, and distinguishes a confirmation tap request from subsequently observing
+the dialog still present or absent. Send and receive snapshots feed the same
+closed trace with fixed composer, confirmation, allowlisted feedback and exact
+bubble-candidate enums only. A `failure_caller_deadline_reached` event means only
+that the failing UI snapshot reported its own caller deadline reached; it neither
+renames the failure gate nor asserts that the global scenario budget expired.
+An allowlisted feedback already visible before Send remains diagnostic and does
+not block the request; only a newly observed feedback after the request can
+classify a refusal, and it never overrides an exact canonical message bubble.
+No UI text, message, bounds, node, XML or identifier is added to the trace, and
+success still requires exact canonical-app bubbles on both emulators.
+
 The first reviewed attempt, [40214942196](https://github.com/samouraiworld/wesh-bitchat-android/actions/runs/40214942196),
 failed during Java setup: `21.0.11+10` was not a matching Temurin setup selector.
 Canonical verification, signing, SDK/AVD setup, BLE and recording did not run;
