@@ -1,4 +1,4 @@
-name: FGS canonical 107 emulator evidence
+name: FGS canonical 108 emulator evidence
 
 on:
   pull_request:
@@ -80,7 +80,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: fgs-canonical107-simulated-ble
+          name: fgs-canonical108-simulated-ble
           path: ${{ runner.temp }}/fgs-evidence/evidence/*
           if-no-files-found: warn
           retention-days: 7
@@ -88,7 +88,7 @@ jobs:
         if: always() && !success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: fgs-canonical107-incomplete-attempt
+          name: fgs-canonical108-incomplete-attempt
           path: |
             ${{ runner.temp }}/fgs-evidence/evidence/attempt.json
             ${{ runner.temp }}/fgs-evidence/evidence/provenance.json

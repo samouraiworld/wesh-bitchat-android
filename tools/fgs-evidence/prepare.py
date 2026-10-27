@@ -11,23 +11,23 @@ import zipfile
 import shutil
 
 REPO = "samouraiworld/wesh-bitchat-android"
-SOURCE = "5008c95ae99933c180ee2ac6f767dd0e9c203a21"
-TAG = "v1.0.0-beta.3-android.107"
-RUN = 40197176611
-ARTIFACT = 12601010558
-ZIP_HASH = "56757fb9aaca3169b344a96b08fb756881db8054b8eb5b5647fe1172c7240440"
+SOURCE = "753769a07fa9e62c87afead88ea10ef42b823788"
+TAG = "v1.0.0-beta.3-android.108"
+RUN = 40469284584
+ARTIFACT = 12718483430
+ZIP_HASH = "24b0145856ec8b05941f790e610adce4aec2a5292b8fd0112064fa05f2e01171"
 APK = "bitchat-android-x86_64-unsigned.apk"
 FILES = {
-    "BUILDINFO.json": "3b621d41b21f3e3c1b84deeb6badafb5081c8062cd7e2e3bb02cb14b6af61118",
+    "BUILDINFO.json": "c7ed007f8b4f7add43c241e458140a3efc52fac7b55f2dcad5c81274c0668ad1",
     "NATIVE-SYMBOLS-BUILDINFO.json": "f193d1da01292a2360668c558e2dcd5a8d2c6b9e99ed42239b297a56a250aaa5",
     "NATIVE-SYMBOLS-SHA256SUMS": "a4719ef687ec75244d8b5ec9069434abce71a3c9914e9b8e73cb5c676aef9a7f",
-    "SHA256SUMS.unsigned": "bd5a49cd0d50b742bc1f690d65d2cd2fb8c3ce08dd87912d2e5585df751b6b4d",
-    "bitchat-android-arm64-unsigned.apk": "fef781869ca00786163b1ff03b72a187f0536e0b017860167767c19959c09553",
-    "bitchat-android-armv7-unsigned.apk": "ef9ae696eed8481f1eaa2acbdcf09891e843aa0a8bd97562635dc68aea8881a1",
-    "bitchat-android-release-unsigned.aab": "0db93ec973abcb704e05a6d82e4df86c38f0330204ac47d385e6f2c169e02b0c",
-    "bitchat-android-universal-unsigned.apk": "f80b004f9571771153dc1b1518cace5c88683eaba8c9e85151793561706cb3de",
-    "bitchat-android-x86-unsigned.apk": "d76a59149a0e197b70435e4423e29ed4b3772cc62b9016dfd3bfe16dc4224ea7",
-    APK: "414be95a1dbb72bc528ad35fe78849dfd39c17b2aef74ce90d69ee1deb11c500",
+    "SHA256SUMS.unsigned": "1352b029bc574c309c26c38b8599c92c4c382f17462dddeb081889be635b7031",
+    "bitchat-android-arm64-unsigned.apk": "ce5dc4a97441bd8d56b0f39b2c5f3bb1b7312a7b63aee8f9172307fcd47c3877",
+    "bitchat-android-armv7-unsigned.apk": "368ad573a6ae607e1fcdcf899ecd0fc8a05d46850fff2d5576022147ae472ddb",
+    "bitchat-android-release-unsigned.aab": "bebedfa2482da03d30a6fccf3b169369d962e97547477efc0f2a1bb8204139b0",
+    "bitchat-android-universal-unsigned.apk": "bdbd6a7e0d0ff3781dd7ac88a4fd9041591cd5b2cf711feeeead5a172f25cde0",
+    "bitchat-android-x86-unsigned.apk": "9bcaa7e986ecb276740b0a3d569c3029231d21dea10f2e9ee83643ae5b107334",
+    APK: "77fba4f4429517bb94906b5bd26cd23b541c183e49599779ae930ad426896dd0",
     "wesh-android-native-debug-symbols.zip": "bdcb64e04c3cc92f65eab91af2758e6a8c87b411d354b5f1658f76cfe14a9410",
 }
 
@@ -110,7 +110,7 @@ def main(root):
     run("keytool", "-genkeypair", "-keystore", str(key), "-storetype", "PKCS12",
         "-alias", "synthetic-test", "-keyalg", "RSA", "-keysize", "2048", "-validity", "2",
         "-dname", "CN=Synthetic emulator test", "-storepass:env", "FGS_TEST_PASSWORD", env=env)
-    signed = root / "wesh107-test-signed.apk"
+    signed = root / "wesh108-test-signed.apk"
     run(str(tools / "apksigner"), "sign", "--ks", str(key), "--ks-pass", "env:FGS_TEST_PASSWORD",
         "--v1-signing-enabled", "false", "--v4-signing-enabled", "false", "--out", str(signed),
         str(canonical / APK), env=env)

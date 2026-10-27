@@ -5,7 +5,7 @@ set -euo pipefail
 fail() { printf 'FGS prerequisite failed: %s\n' "$1" >&2; exit 1; }
 [[ "${GITHUB_ACTIONS:-}" == true && "$(uname -s)" == Linux ]] || fail runner_context
 root="${1:?disposable evidence directory required}"
-[[ "$root" == "$RUNNER_TEMP/fgs-evidence" && -f "$root/wesh107-test-signed.apk" ]] || fail verified_test_apk
+[[ "$root" == "$RUNNER_TEMP/fgs-evidence" && -f "$root/wesh108-test-signed.apk" ]] || fail verified_test_apk
 export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
 export ANDROID_AVD_HOME="$root/avd"
 export ANDROID_USER_HOME="$root/android-user"

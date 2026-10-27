@@ -21,8 +21,11 @@ SCREEN_HEIGHT = 1280
 FOOTER_HEIGHT = 80
 OUTPUT_HEIGHT = SCREEN_HEIGHT + FOOTER_HEIGHT
 CAPTION_LINES = (
-    "Wesh 107 - two emulators - simulated BLE netsim",
+    "Wesh 108 - two emulators - simulated BLE netsim",
     "Canonical APK payload - disposable test signature",
+)
+CAPTION_RECEIPT = (
+    "Two emulators; simulated BLE netsim; canonical108 payload; disposable test signature"
 )
 ATTEMPT_FIELDS = frozenset({
     "result", "failureGate", "preflightEvents", "events", "environment", "emulator",
@@ -275,7 +278,7 @@ def assemble(evidence, output, source_head, ffmpeg, ffprobe, font):
             "inputMedia": input_media, "outputMedia": output_media,
             "outputDurationSeconds": output_duration, "outputSHA256": digest(temporary),
             "physicalEvidence": False, "googleApproved": False, "visualReviewCompleted": False,
-            "caption": "Two emulators; simulated BLE netsim; canonical107 payload; disposable test signature",
+            "caption": CAPTION_RECEIPT,
         }
         # No replacement of an existing local video; only qualified duration/assembly gets a final name.
         with tempfile.NamedTemporaryFile(

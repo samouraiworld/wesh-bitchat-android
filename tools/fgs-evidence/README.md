@@ -1,10 +1,10 @@
-# Canonical Android 107 FGS video attempt
+# Canonical Android 108 FGS video attempt
 
 This is a disposable, synthetic **emulator demonstration**, not physical Mesh Lab
 qualification and not a claim of Google Play approval. No application, transport,
 runtime data, production key or release build configuration is changed.
 
-The `FGS canonical 107 emulator evidence` workflow validates the scripts on PRs.
+The `FGS canonical 108 emulator evidence` workflow validates the scripts on PRs.
 Its expensive job runs only when a reviewer deliberately adds
 `fgs-emulator-reviewed` to this repository's PR after reviewing its exact head.
 Do not remove/re-add the label or rerun automatically. A further attempt requires
@@ -13,6 +13,11 @@ review of the specific failed gate and its exact corrected head. The job has a
 scenario budget. On success both host physical-display recordings finish their
 180-second limit, preserving a short final post-roll; failure never exports a passing recording.
 Any missing real state aborts; there is no fake-peer fallback.
+
+The six attempts documented below are retained as **historical canonical 107**
+diagnostics. Each one-attempt approval was consumed by its named run. The current
+tooling is rebound to canonical 108 and has no inherited approval: rebasing,
+validation or review does not authorize a label, capture, recording or upload.
 
 The first reviewed attempt, [40214942196](https://github.com/samouraiworld/wesh-bitchat-android/actions/runs/40214942196),
 failed during Java setup: `21.0.11+10` was not a matching Temurin setup selector.
@@ -115,7 +120,8 @@ paths, stderr and exception text never enter evidence. The workflow uploads an
 exact receipt allowlist and always destroys the disposable AVD directory, so a
 deferred remote file cannot become an artifact.
 
-Canonical 107 also applies Android `FLAG_SECURE` to the real `MainActivity`.
+Canonical 108, like the historical canonical 107 build, applies Android
+`FLAG_SECURE` to the real `MainActivity`.
 Guest-side `adb shell screenrecord` is therefore not an acceptable capture path:
 it can complete while masking the product pixels. The controller now has no
 guest-recorder fallback. It requires the official Android Emulator console
@@ -131,9 +137,12 @@ ambiguous field aborts with `ime_visibility_unknown`, without navigating Welcome
 blindly. The raw state stays in memory; no preference, identity or keyboard
 configuration is seeded or forced.
 
-The fixed canonical artifact is `12601010558` from release run `40197176611`,
-source `5008c95ae99933c180ee2ac6f767dd0e9c203a21`, tag
-`v1.0.0-beta.3-android.107` (annotated, **not Git-signed**). Its ZIP and all eleven
+The fixed canonical artifact is `12718483430` from release run `40469284584`,
+source `753769a07fa9e62c87afead88ea10ef42b823788`, tag
+`v1.0.0-beta.3-android.108` (annotated, **not Git-signed**). Its artifact ZIP
+SHA-256 is
+`24b0145856ec8b05941f790e610adce4aec2a5292b8fd0112064fa05f2e01171`.
+Its ZIP and all eleven
 file hashes are pinned, its eleven provenance attestations require the exact
 repository/workflow/source/ref and reject self-hosted builders. The x86_64 APK is
 signed with a disposable test key without rebuilding; every ZIP entry must remain
@@ -171,11 +180,11 @@ of background receipt. Finally the real **Quit Wesh** action must again stop the
 service and remove its notification. The scenario budget is 165 seconds; both OS
 recorders retain their fixed 180-second limit for strict coverage and post-roll.
 
-With that specific approval, only after the genuine scenario and both host
+With a future specific approval for canonical 108, only after the genuine scenario and both host
 recorders succeed may CI export `recording-a.webm` and `recording-b.webm`,
 provenance, an allowlisted event receipt
-and checksums as a seven-day Actions artifact. Separate one-attempt approvals for
-source `e2162cf8bff50b8cc065be83c1528e378620ff9c` and source
+and checksums as a seven-day Actions artifact. Historical canonical 107
+one-attempt approvals for source `e2162cf8bff50b8cc065be83c1528e378620ff9c` and source
 `90647c126a2f88f0e4b8be57e094bc60c55f6c85` were consumed respectively by failed
 runs 40456733798 and 40458661485. Neither authorizes another label, run, capture
 or upload.
@@ -211,7 +220,7 @@ clock started before either recorder command. The current CLI keeps the explicit
 a deterministic footer PNG outside the product-screen pixels; `ffmpeg` fully
 decodes and combines the two actual screens, overlays that PNG, and strips
 metadata. The footer explicitly identifies two emulators, simulated BLE netsim,
-canonical107 payload and disposable test signing.
+canonical108 payload and disposable test signing.
 The assembled duration is checked again before giving the output its final name.
 The local receipt remains `DURATION_AND_ASSEMBLY_PASS_AWAIT_VISUAL_REVIEW`;
 the Lead must inspect actual footage before any Play use. Tool/font paths are

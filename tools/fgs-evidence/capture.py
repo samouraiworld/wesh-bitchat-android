@@ -17,9 +17,9 @@ SERIALS = ("emulator-5554", "emulator-5556")
 SIDES = {SERIALS[0]: "a", SERIALS[1]: "b"}
 PACKAGE = "org.samouraiworld.wesh.android"
 COMPONENT = f"{PACKAGE}/com.bitchat.android.MainActivity"
-MESSAGE_A = "FGS-public-A-107"
-MESSAGE_B = "FGS-public-B-107"
-MESSAGE_BACKGROUND = "FGS-background-107"
+MESSAGE_A = "FGS-public-A-108"
+MESSAGE_B = "FGS-public-B-108"
+MESSAGE_BACKGROUND = "FGS-background-108"
 SCENARIO_RESULT = "SCENARIO_PASS_RECORDINGS_AWAIT_LOCAL_VALIDATION"
 CAPTURE_SOURCE = "ANDROID_EMULATOR_HOST_PHYSICAL_DISPLAY_WEBM"
 RECORDING_LIMIT_SECONDS = 180
@@ -668,7 +668,7 @@ def main(root):
 
     try:
         with ThreadPoolExecutor(2) as pool:
-            futures = [pool.submit(boot_and_install, serial, root / "wesh107-test-signed.apk") for serial in SERIALS]
+            futures = [pool.submit(boot_and_install, serial, root / "wesh108-test-signed.apk") for serial in SERIALS]
             for future in futures:
                 future.result()
         preflight_event("boot_install_bluetooth_ready")
