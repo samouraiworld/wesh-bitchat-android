@@ -1,10 +1,10 @@
-# Canonical Android 108 FGS video attempt
+# Canonical Android 109 FGS video attempt
 
 This is a disposable, synthetic **emulator demonstration**, not physical Mesh Lab
 qualification and not a claim of Google Play approval. No application, transport,
 runtime data, production key or release build configuration is changed.
 
-The `FGS canonical 108 emulator evidence` workflow validates the scripts on PRs.
+The `FGS canonical 109 emulator evidence` workflow validates the scripts on PRs.
 Its expensive job runs only when a reviewer deliberately adds
 `fgs-emulator-reviewed` to this repository's PR after reviewing its exact head.
 Do not remove/re-add the label or rerun automatically. A further attempt requires
@@ -16,14 +16,16 @@ Any missing real state aborts; there is no fake-peer fallback.
 
 The six attempts documented below are retained as **historical canonical 107**
 diagnostics. Each one-attempt approval was consumed by its named run. The current
-tooling is rebound to canonical 108 and has no inherited approval: rebasing,
+tooling is rebound to canonical 109 and has no inherited approval: rebasing,
 validation or review does not authorize a label, capture, recording or upload.
+The canonical 108 attempts documented below are historical as well; their
+one-attempt approvals are consumed and do not carry over to Android 109.
 
 ## Separate non-media onboarding check
 
 The exact label `fgs-onboarding-reviewed` enables a separate 25-minute job only
 after its exact PR head passes the static validation job. It checks out that head,
-reuses `prepare.py` to verify canonical Android 108, all eleven attestations,
+reuses `prepare.py` to verify canonical Android 109, all eleven attestations,
 the unchanged APK payload and a disposable test signature, then starts one pinned
 API 35 Google APIs x86_64 revision 9 AVD. The existing real UI controller installs
 that test-signed canonical APK, preserves its generated synthetic nickname, taps
@@ -44,7 +46,7 @@ distinct label names by exact equality. Adding `fgs-onboarding-reviewed` cannot
 activate any other job; tests enforce that separation.
 
 `fgs-scenario-reviewed` is a fourth exact, manually applied label for a separate
-two-AVD non-media check. It verifies the same canonical Android 108 APK and runs
+two-AVD non-media check. It verifies the same canonical Android 109 APK and runs
 the shared real product flow—first onboarding, foreground services, real peer
 discovery, bidirectional public messages, background notification, background
 delivery, resume and Quit—inside the unchanged 165-second scenario budget. Its
@@ -332,8 +334,10 @@ runtime cause. The same welcome strings and controller routine had completed
 both onboardings in historical run 40458661485. This attempt's approval is
 consumed and does not authorize a retry.
 
-Canonical 108, like the historical canonical 107 build, applies Android
-`FLAG_SECURE` to the real `MainActivity`.
+Canonical 109 retains the Android `FLAG_SECURE` source policy of the historical
+canonical 108 and 107 builds for the real `MainActivity`. The release-boundary
+receipt verifies that source policy is unchanged; its runtime behavior has not
+yet been exercised on canonical 109.
 Guest-side `adb shell screenrecord` is therefore not an acceptable capture path:
 it can complete while masking the product pixels. The controller now has no
 guest-recorder fallback. It requires the official Android Emulator console
@@ -357,16 +361,21 @@ Failure receipts add only `failureElapsedSeconds`, a finite nonnegative attempt
 clock; successful receipts require it to be null. No UI contents or raw error
 details accompany it.
 
-The fixed canonical artifact is `12718483430` from release run `40469284584`,
-source `753769a07fa9e62c87afead88ea10ef42b823788`, tag
-`v1.0.0-beta.3-android.108` (annotated, **not Git-signed**). Its artifact ZIP
+The fixed canonical artifact is `12749229098` from release run `40536454475`,
+source `e2855f8c79827dd4693b2d9e6ab8c603400d045b`, tag
+`v1.0.0-beta.3-android.109` (annotated, **not Git-signed**). Its artifact ZIP
 SHA-256 is
-`24b0145856ec8b05941f790e610adce4aec2a5292b8fd0112064fa05f2e01171`.
+`ddc85f6ab4b5cb03c88bfb2b4a324c06c1e84951c8d5169322767ba4adc2ce97`.
 Its ZIP and all eleven
 file hashes are pinned, its eleven provenance attestations require the exact
 repository/workflow/source/ref and reject self-hosted builders. The x86_64 APK is
 signed with a disposable test key without rebuilding; every ZIP entry must remain
 byte-identical. This is explicitly not the Play signing identity.
+The x86_64 release manifest reports package `org.samouraiworld.wesh.android`,
+version `1.0.0` code `109` and the `connectedDevice` foreground-service type;
+all five release APKs exclude capture fixtures. The four native libraries are
+byte-identical to canonical 108 and match the packaged source. These are release
+binding facts, not physical-device, runtime-FGS or video qualification.
 
 Use the public Ubuntu 24.04 x64 hosted runner class with KVM: 4 vCPU, 16 GB RAM,
 14 GB disk. A preflight requires 12 GiB free before download, then 11 GiB before
@@ -428,7 +437,7 @@ review of its exact helper. A pass is a prerequisite for considering another
 video attempt, not authorization for one. Any new GitHub media capture/export
 still requires fresh explicit approval tied to the exact reviewed source head.
 
-With a future specific approval for canonical 108, only after the genuine scenario and both host
+With a future specific approval for canonical 109, only after the genuine scenario and both host
 recorders succeed may CI export `recording-a.webm` and `recording-b.webm`,
 provenance, an allowlisted event receipt
 and checksums as a seven-day Actions artifact. Historical canonical 107
@@ -468,7 +477,7 @@ clock started before either recorder command. The current CLI keeps the explicit
 a deterministic footer PNG outside the product-screen pixels; `ffmpeg` fully
 decodes and combines the two actual screens, overlays that PNG, and strips
 metadata. The footer explicitly identifies two emulators, simulated BLE netsim,
-canonical108 payload and disposable test signing.
+canonical109 payload and disposable test signing.
 The assembled duration is checked again before giving the output its final name.
 The local receipt remains `DURATION_AND_ASSEMBLY_PASS_AWAIT_VISUAL_REVIEW`;
 the Lead must inspect actual footage before any Play use. Tool/font paths are

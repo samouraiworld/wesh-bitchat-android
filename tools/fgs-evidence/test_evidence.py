@@ -62,41 +62,51 @@ class EvidenceChecks(unittest.TestCase):
                 archive.writestr(key, content)
         return path
 
-    def test_canonical108_provenance_and_synthetic_names_are_exact(self):
-        self.assertEqual(prepare.SOURCE, "753769a07fa9e62c87afead88ea10ef42b823788")
-        self.assertEqual(prepare.TAG, "v1.0.0-beta.3-android.108")
-        self.assertEqual(prepare.RUN, 40469284584)
-        self.assertEqual(prepare.ARTIFACT, 12718483430)
+    def test_canonical109_provenance_and_synthetic_names_are_exact(self):
+        self.assertEqual(prepare.SOURCE, "e2855f8c79827dd4693b2d9e6ab8c603400d045b")
+        self.assertEqual(prepare.TAG, "v1.0.0-beta.3-android.109")
+        self.assertEqual(prepare.RUN, 40536454475)
+        self.assertEqual(prepare.ARTIFACT, 12749229098)
         self.assertEqual(
             prepare.ZIP_HASH,
-            "24b0145856ec8b05941f790e610adce4aec2a5292b8fd0112064fa05f2e01171",
+            "ddc85f6ab4b5cb03c88bfb2b4a324c06c1e84951c8d5169322767ba4adc2ce97",
         )
         self.assertEqual(prepare.FILES, {
-            "BUILDINFO.json": "c7ed007f8b4f7add43c241e458140a3efc52fac7b55f2dcad5c81274c0668ad1",
+            "BUILDINFO.json": "3b28ae49b720a08f183ad9db11f0f2ba81a32d0a033d29f051bb8301775055c2",
             "NATIVE-SYMBOLS-BUILDINFO.json": "f193d1da01292a2360668c558e2dcd5a8d2c6b9e99ed42239b297a56a250aaa5",
             "NATIVE-SYMBOLS-SHA256SUMS": "a4719ef687ec75244d8b5ec9069434abce71a3c9914e9b8e73cb5c676aef9a7f",
-            "SHA256SUMS.unsigned": "1352b029bc574c309c26c38b8599c92c4c382f17462dddeb081889be635b7031",
-            "bitchat-android-arm64-unsigned.apk": "ce5dc4a97441bd8d56b0f39b2c5f3bb1b7312a7b63aee8f9172307fcd47c3877",
-            "bitchat-android-armv7-unsigned.apk": "368ad573a6ae607e1fcdcf899ecd0fc8a05d46850fff2d5576022147ae472ddb",
-            "bitchat-android-release-unsigned.aab": "bebedfa2482da03d30a6fccf3b169369d962e97547477efc0f2a1bb8204139b0",
-            "bitchat-android-universal-unsigned.apk": "bdbd6a7e0d0ff3781dd7ac88a4fd9041591cd5b2cf711feeeead5a172f25cde0",
-            "bitchat-android-x86-unsigned.apk": "9bcaa7e986ecb276740b0a3d569c3029231d21dea10f2e9ee83643ae5b107334",
-            "bitchat-android-x86_64-unsigned.apk": "77fba4f4429517bb94906b5bd26cd23b541c183e49599779ae930ad426896dd0",
+            "SHA256SUMS.unsigned": "2be448211b8059a0730c7b8a61a93f795a2ce27e4078914db1e9523ac583c07b",
+            "bitchat-android-arm64-unsigned.apk": "3a45e56f42a9998cc9bf7734a8d83115c07dcc7f4f1b19c9b0a07de53f14fed7",
+            "bitchat-android-armv7-unsigned.apk": "10235e36962d3eaa48c5893f78dff668dd3bc592213c44b952b6e126c42c579e",
+            "bitchat-android-release-unsigned.aab": "f1350c10fd869dd99828d05c0a72660ef0f170fb9bb6a9649bfb0ef408d4946a",
+            "bitchat-android-universal-unsigned.apk": "00dedc0db660ed13d6d4ceeb3b809640b9ba9e49feea9ad5b140634c0e7baac0",
+            "bitchat-android-x86-unsigned.apk": "08b0093fd2c1ca90876999cca87018a3a3550933036dad24fda456e18fadf3b3",
+            "bitchat-android-x86_64-unsigned.apk": "70f996f28165860db3c0de385d9fbcf97588b22e30742356c07267d5c91baa67",
             "wesh-android-native-debug-symbols.zip": "bdcb64e04c3cc92f65eab91af2758e6a8c87b411d354b5f1658f76cfe14a9410",
         })
         self.assertEqual(
             (capture.MESSAGE_A, capture.MESSAGE_B, capture.MESSAGE_BACKGROUND),
-            ("FGS-public-A-108", "FGS-public-B-108", "FGS-background-108"),
+            ("FGS-public-A-109", "FGS-public-B-109", "FGS-background-109"),
         )
         root = Path(__file__).resolve().parents[2]
         workflow = (root / ".github/workflows/fgs-emulator-evidence.yml").read_text()
-        runner = (root / "tools/fgs-evidence/run.sh").read_text()
-        self.assertIn("name: FGS canonical 108 emulator evidence", workflow)
-        self.assertIn("name: fgs-canonical108-simulated-ble", workflow)
-        self.assertIn("name: fgs-canonical108-incomplete-attempt", workflow)
-        self.assertNotIn("canonical107", workflow)
-        self.assertIn("wesh108-test-signed.apk", runner)
-        self.assertNotIn("wesh107-test-signed.apk", runner)
+        current_paths = [
+            root / ".github/workflows/fgs-emulator-evidence.yml",
+            *(root / "tools/fgs-evidence" / name for name in (
+                "prepare.py", "capture.py", "localassemble.py", "onboarding_check.py",
+                "scenario_check.py", "run.sh", "run-onboarding.sh", "run-scenario.sh",
+            )),
+        ]
+        current_text = "\n".join(path.read_text() for path in current_paths)
+        self.assertIn("name: FGS canonical 109 emulator evidence", workflow)
+        self.assertIn("name: fgs-canonical109-simulated-ble", workflow)
+        self.assertIn("name: fgs-canonical109-incomplete-attempt", workflow)
+        self.assertIn("wesh109-test-signed.apk", current_text)
+        for stale in ("canonical108", "canonical107", "wesh108-test-signed.apk",
+                      "wesh107-test-signed.apk", "FGS-public-A-108",
+                      "FGS-background-108"):
+            with self.subTest(stale=stale):
+                self.assertNotIn(stale, current_text)
 
     def test_exact_canonical_inventory_and_hash(self):
         with tempfile.TemporaryDirectory() as directory:

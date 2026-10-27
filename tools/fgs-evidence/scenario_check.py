@@ -31,7 +31,7 @@ from onboarding_check import (
 )
 
 
-APK_NAME = "wesh108-test-signed.apk"
+APK_NAME = "wesh109-test-signed.apk"
 UI_READER_NAME = "wesh-ui-reader.jar"
 CONTROLLER_LIMIT_SECONDS = 650
 TRACE_PREFIX = "SCENARIO_TRACE "

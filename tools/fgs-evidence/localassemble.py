@@ -21,11 +21,11 @@ SCREEN_HEIGHT = 1280
 FOOTER_HEIGHT = 80
 OUTPUT_HEIGHT = SCREEN_HEIGHT + FOOTER_HEIGHT
 CAPTION_LINES = (
-    "Wesh 108 - two emulators - simulated BLE netsim",
+    "Wesh 109 - two emulators - simulated BLE netsim",
     "Canonical APK payload - disposable test signature",
 )
 CAPTION_RECEIPT = (
-    "Two emulators; simulated BLE netsim; canonical108 payload; disposable test signature"
+    "Two emulators; simulated BLE netsim; canonical109 payload; disposable test signature"
 )
 ATTEMPT_FIELDS = frozenset({
     "result", "failureGate", "preflightEvents", "events", "environment", "emulator",

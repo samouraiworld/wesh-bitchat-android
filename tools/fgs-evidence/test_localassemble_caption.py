@@ -18,17 +18,17 @@ PIL_AVAILABLE = importlib.util.find_spec("PIL") is not None
 
 
 class LocalAssembleCaptionTests(unittest.TestCase):
-    def test_footer_and_receipt_name_canonical108(self):
+    def test_footer_and_receipt_name_canonical109(self):
         self.assertEqual(
             localassemble.CAPTION_LINES,
             (
-                "Wesh 108 - two emulators - simulated BLE netsim",
+                "Wesh 109 - two emulators - simulated BLE netsim",
                 "Canonical APK payload - disposable test signature",
             ),
         )
         self.assertEqual(
             localassemble.CAPTION_RECEIPT,
-            "Two emulators; simulated BLE netsim; canonical108 payload; disposable test signature",
+            "Two emulators; simulated BLE netsim; canonical109 payload; disposable test signature",
         )
 
     def test_scenario_clock_starts_at_zero_then_advances_strictly(self):

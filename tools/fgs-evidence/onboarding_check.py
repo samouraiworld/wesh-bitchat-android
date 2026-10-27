@@ -22,7 +22,7 @@ from capture import (
 
 
 SERIAL = SERIALS[0]
-APK_NAME = "wesh108-test-signed.apk"
+APK_NAME = "wesh109-test-signed.apk"
 ONBOARDING_LIMIT_SECONDS = 120
 CONTROLLER_LIMIT_SECONDS = 390
 MAX_TRACE_EVENTS = 64

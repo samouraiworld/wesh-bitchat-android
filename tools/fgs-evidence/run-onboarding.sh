@@ -6,7 +6,7 @@ fail() { printf 'FAIL gate=%s elapsedSeconds=0.0\n' "$1" >&2; exit 1; }
 [[ "${GITHUB_ACTIONS:-}" == true && "$(uname -s)" == Linux ]] || fail runner_context
 [[ "$#" == 1 ]] || fail owned_root
 root="$1"
-[[ "$root" == "$RUNNER_TEMP/fgs-onboarding" && -f "$root/wesh108-test-signed.apk" ]] \
+[[ "$root" == "$RUNNER_TEMP/fgs-onboarding" && -f "$root/wesh109-test-signed.apk" ]] \
   || fail verified_test_apk
 sdk_root="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
 [[ -n "$sdk_root" && -d "$sdk_root" ]] || fail sdk_root
