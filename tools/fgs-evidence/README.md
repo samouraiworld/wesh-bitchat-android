@@ -143,6 +143,19 @@ or guest-side fallback. The approval for run 40478621327 was consumed. This code
 correction does not authorize another run: any new attempt requires fresh
 explicit approval for its exact reviewed source head.
 
+The next reviewed canonical 108 attempt,
+[40483231939](https://github.com/samouraiworld/wesh-bitchat-android/actions/runs/40483231939),
+used controller source `80ba457fea80a4d29f1498a4557da18bc91ab536`.
+Canonical preparation passed, both owned emulators reached
+`boot_install_bluetooth_ready` at 68.6 seconds and both host recording commands
+started. Side A then stopped at the old aggregate gate `onboarding_welcome_a`,
+before any later scenario event; no WebM was exported. The privacy-minimal
+receipt cannot distinguish a nickname-field action, shell input, keyboard
+dismissal, Start action or the welcome deadline, so it does not establish one
+runtime cause. The same welcome strings and controller routine had completed
+both onboardings in historical run 40458661485. This attempt's approval is
+consumed and does not authorize a retry.
+
 Canonical 108, like the historical canonical 107 build, applies Android
 `FLAG_SECURE` to the real `MainActivity`.
 Guest-side `adb shell screenrecord` is therefore not an acceptable capture path:
@@ -155,11 +168,18 @@ Whether emulator 37.2.12 actually includes
 the secure product pixels in this host recording remains an empirical gate; a
 black or masked frame is failure, never evidence.
 
-Nickname entry dismisses the keyboard only when the owned emulator's actual
-input-method state reports `mInputShown=true`. False sends no Back; a missing or
-ambiguous field aborts with `ime_visibility_unknown`, without navigating Welcome
-blindly. The raw state stays in memory; no preference, identity or keyboard
-configuration is seeded or forced.
+On a fresh Welcome screen the product itself generates a valid synthetic
+nickname and enables the real Start action. The controller therefore retains
+that product-generated nickname: it no longer focuses, clears or types into the
+field, queries input-method state or sends Back. It taps only the real enabled
+Start node. An action failure is reported as
+`onboarding_welcome_start_<side>` and remaining on Welcome until the caller's
+deadline as `onboarding_welcome_timeout_<side>`. This removes unnecessary input
+operations; it is not represented as the proven cause of run 40483231939. No
+preference, permission, identity or keyboard configuration is seeded or forced.
+Failure receipts add only `failureElapsedSeconds`, a finite nonnegative attempt
+clock; successful receipts require it to be null. No UI contents or raw error
+details accompany it.
 
 The fixed canonical artifact is `12718483430` from release run `40469284584`,
 source `753769a07fa9e62c87afead88ea10ef42b823788`, tag
@@ -190,8 +210,9 @@ the first app launch. The zero-clock event is therefore
 
 Actual first launch, product onboarding and permission dialogs are then operated
 in parallel through UIAutomator hierarchy plus scoped OS input, with a 90-second
-deadline clamped to the single 165-second recording clock. Synthetic nicknames
-and messages are typed normally. Completion of both onboardings, both real
+deadline clamped to the single 165-second recording clock. Product-generated
+synthetic nicknames are retained and synthetic messages are typed normally.
+Completion of both onboardings, both real
 foreground services and mutual netsim discovery are recorded at their real,
 positive times. No preference, permission, identity or peer is seeded. This
 captures the in-app setup and connection before interaction rather than
@@ -203,6 +224,24 @@ the other app is in background and visibility after resume, not the exact instan
 of background receipt. Finally the real **Quit Wesh** action must again stop the
 service and remove its notification. The scenario budget is 165 seconds; both OS
 recorders retain their fixed 180-second limit for strict coverage and post-roll.
+
+## Onboarding-only validation before any further recording
+
+A reviewed local non-capture validation uses one fresh isolated arm64 AVD and
+temporary user-data directory. It hash-checks and disposable-signs the canonical
+arm64 APK, verifies that signing did not change its payload and does not rebuild
+the app. It then exercises only the first-launch Start action and real permission
+flow. It starts no host or guest recorder. Its closed local result contains only
+the reviewed source identifier, an allowlisted gate and numeric timings; UI XML,
+logs, APK, key, AVD data and frames remain unexported and the temporary AVD is
+destroyed.
+
+That narrow run could validate the changed Welcome controller path, but not the
+CI image, netsim/BLE, foreground service, `FLAG_SECURE` visibility or final
+video. Local execution is covered by the autonomous validation mandate after
+review of its exact helper. A pass is a prerequisite for considering another
+video attempt, not authorization for one. Any new GitHub media capture/export
+still requires fresh explicit approval tied to the exact reviewed source head.
 
 With a future specific approval for canonical 108, only after the genuine scenario and both host
 recorders succeed may CI export `recording-a.webm` and `recording-b.webm`,

@@ -82,6 +82,20 @@ class LocalAssembleCaptionTests(unittest.TestCase):
                                                 "scenario_receipt_fields"):
                 localassemble.validate_attempt_shape(contaminated)
 
+    def test_failure_elapsed_clock_is_numeric_or_null_without_raw_detail(self):
+        attempt = {field: None for field in localassemble.ATTEMPT_FIELDS}
+        attempt["deferredUiDumpCleanupCountBySide"] = {"a": 0, "b": 0}
+        for value in (None, 0, 68.6):
+            with self.subTest(value=value):
+                attempt["failureElapsedSeconds"] = value
+                localassemble.validate_attempt_shape(attempt)
+        for value in (-0.1, False, "68.6", float("nan"), float("inf")):
+            with self.subTest(value=value), \
+                    self.assertRaisesRegex(localassemble.ValidationFailure,
+                                           "failure_elapsed_clock"):
+                attempt["failureElapsedSeconds"] = value
+                localassemble.validate_attempt_shape(attempt)
+
     @unittest.skipUnless(PIL_AVAILABLE, "Pillow is an explicit local-assembly dependency")
     def test_footer_png_is_deterministic_and_confined_to_footer_dimensions(self):
         from PIL import Image

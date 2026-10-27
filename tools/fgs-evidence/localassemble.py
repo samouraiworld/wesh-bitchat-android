@@ -30,7 +30,7 @@ CAPTION_RECEIPT = (
 ATTEMPT_FIELDS = frozenset({
     "result", "failureGate", "preflightEvents", "events", "environment", "emulator",
     "systemImageRevision", "evidenceSource", "captureSource", "notPhysicalEvidence",
-    "notPlaySigned", "recordingsExported", "finalVideoQualified",
+    "notPlaySigned", "recordingsExported", "finalVideoQualified", "failureElapsedSeconds",
     "deferredUiDumpCleanupCountBySide",
 })
 
@@ -84,6 +84,10 @@ def validate_attempt_shape(attempt):
     # from entering the locally published sidecar.
     require(isinstance(attempt, dict) and set(attempt) == ATTEMPT_FIELDS,
             "scenario_receipt_fields")
+    failure_elapsed = attempt.get("failureElapsedSeconds")
+    require(failure_elapsed is None or
+            (type(failure_elapsed) in (int, float) and math.isfinite(failure_elapsed) and
+             failure_elapsed >= 0), "failure_elapsed_clock")
     return validate_cleanup_diagnostics(attempt)
 
 
@@ -108,7 +112,8 @@ def validate_bundle(evidence, source_head):
     require(attempt["evidenceSource"] == source_head and attempt["result"] == SCENARIO_RESULT and
             attempt["recordingsExported"] is True and attempt["finalVideoQualified"] is False and
             attempt["notPhysicalEvidence"] is True and attempt["notPlaySigned"] is True and
-            attempt.get("failureGate") is None and attempt.get("captureSource") == CAPTURE_SOURCE,
+            attempt.get("failureGate") is None and attempt.get("failureElapsedSeconds") is None and
+            attempt.get("captureSource") == CAPTURE_SOURCE,
             "scenario_receipt")
     event_times(attempt, "preflightEvents", PREFLIGHT_EVENTS,
                 "preflight_event_sequence", "preflight_event_clock")

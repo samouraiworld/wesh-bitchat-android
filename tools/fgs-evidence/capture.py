@@ -35,8 +35,8 @@ SERIAL_PHASES = frozenset({
     "bluetooth_on_timeout", "install", "package_verify", "activity_launch",
     "activity_resume_timeout", "ui_dump_command_timeout", "ui_dump_command_error",
     "ui_dump_stale", "ui_dump_output_missing", "ui_dump_read", "ui_dump_parse",
-    "ui_dump_prepare_cleanup", "ui_action", "nickname_field",
-    "ime_visibility_unknown", "onboarding_welcome", "onboarding_bluetooth",
+    "ui_dump_prepare_cleanup", "ui_action",
+    "onboarding_welcome_start", "onboarding_welcome_timeout", "onboarding_bluetooth",
     "onboarding_notifications", "onboarding_permission", "onboarding_auxiliary",
     "onboarding_unknown", "fgs_timeout", "peer_discovery_timeout",
     "public_room_open", "message_composer", "message_submit",
@@ -79,11 +79,6 @@ class GateError(RuntimeError):
     def __init__(self, phase, serial=None):
         self.gate = gate_name(phase, serial)
         super().__init__(self.gate)
-
-
-class ImeVisibilityUnknown(GateError):
-    def __init__(self, serial):
-        super().__init__("ime_visibility_unknown", serial)
 
 
 def adb(serial, *args, timeout=12):
@@ -318,30 +313,6 @@ def wait_ui(serial, label, deadline, contains=False, failure_phase="ui_action"):
     raise GateError(failure_phase, serial)
 
 
-def parse_ime_visibility(dump):
-    states = re.findall(r"\bmInputShown=(true|false)\b", dump)
-    return states[0] == "true" if len(states) == 1 else None
-
-
-def hide_keyboard_if_shown(serial, deadline=None):
-    try:
-        if deadline is None:
-            dump = adb(serial, "shell", "dumpsys", "input_method")
-        else:
-            dump = deadline_adb(serial, "ime_visibility_unknown", deadline,
-                                "shell", "dumpsys", "input_method")
-        shown = parse_ime_visibility(dump)
-    except (RuntimeError, subprocess.TimeoutExpired):
-        raise ImeVisibilityUnknown(serial) from None
-    if shown is None:
-        raise ImeVisibilityUnknown(serial)
-    if shown:
-        if deadline is None:
-            gated(serial, "onboarding_welcome", lambda: adb(serial, "shell", "input", "keyevent", "4"))
-        else:
-            deadline_adb(serial, "onboarding_welcome", deadline, "shell", "input", "keyevent", "4")
-
-
 def activity_resumed(serial, timeout=8):
     state = adb(serial, "shell", "dumpsys", "activity", "activities", timeout=timeout)
     return any(PACKAGE in line and ("mResumedActivity" in line or "topResumedActivity" in line)
@@ -363,10 +334,9 @@ def wait_activity_resumed(serial, deadline):
     raise GateError("activity_resume_timeout", serial)
 
 
-def onboarding(serial, nickname, deadline):
+def onboarding(serial, deadline):
     deadline_adb(serial, "activity_launch", deadline, "shell", "am", "start", "-n", COMPONENT)
     wait_activity_resumed(serial, min(deadline, time.monotonic() + 20))
-    named = False
     last_phase = "onboarding_unknown"
     while time.monotonic() < deadline:
         items = nodes(serial, deadline)
@@ -374,23 +344,13 @@ def onboarding(serial, nickname, deadline):
             return
         nickname_label = select(items, "Your nickname")
         if nickname_label is not None:
-            last_phase = "onboarding_welcome"
-            if not named:
-                field = next((n for n in items if n.get("class") == "android.widget.EditText"), None)
-                if field is None:
-                    raise GateError("nickname_field", serial)
-                tap(serial, field, "onboarding_welcome", deadline)
-                deadline_adb(serial, "onboarding_welcome", deadline, "shell", "input", "keyevent", "123")
-                deadline_adb(serial, "onboarding_welcome", deadline, "shell", "input", "keyevent", *("67",) * 40)
-                deadline_adb(serial, "onboarding_welcome", deadline, "shell", "input", "text", nickname)
-                hide_keyboard_if_shown(serial, deadline)
-                named = True
-                continue
+            last_phase = "onboarding_welcome_timeout"
             start = select(items, "Start")
             if start is not None:
-                tap(serial, start, "onboarding_welcome", deadline)
-                bounded_sleep(deadline, 0.4)
-                continue
+                tap(serial, start, "onboarding_welcome_start", deadline)
+            if not bounded_sleep(deadline, 0.4):
+                break
+            continue
 
         actions = (
             ("Allow notifications", "onboarding_notifications"),
@@ -584,7 +544,7 @@ def wait_host_recordings(recordings, last_recorder_start):
             raise GateError("host_recording_file", serial)
 
 
-def export_host_recordings(root, recordings, receipt):
+def export_host_recordings(root, recordings, receipt, failure_elapsed_seconds=None):
     evidence = root / "evidence"
     staging = root / "evidence-ready"
     backup = root / "evidence-failure-receipts"
@@ -638,6 +598,7 @@ def export_host_recordings(root, recordings, receipt):
             receipt["result"] = "NOT_COMPLETED"
             receipt["recordingsExported"] = False
             receipt["failureGate"] = gate_name("evidence_export")
+            receipt["failureElapsedSeconds"] = failure_elapsed_seconds
             (evidence / "attempt.json").write_text(json.dumps(receipt, indent=2)+"\n")
         except OSError:
             pass
@@ -655,6 +616,7 @@ def main(root):
         "emulator": "37.2.12", "systemImageRevision": 9, "evidenceSource": os.environ["EVIDENCE_HEAD"],
         "captureSource": CAPTURE_SOURCE,
         "notPhysicalEvidence": True, "notPlaySigned": True,
+        "failureElapsedSeconds": None,
         "deferredUiDumpCleanupCountBySide": {"a": 0, "b": 0},
         "recordingsExported": False, "finalVideoQualified": False,
     }
@@ -694,8 +656,7 @@ def main(root):
         # all real actions inside the two host recordings, before the declared device interaction.
         onboarding_deadline = min(deadline, time.monotonic() + 90)
         with ThreadPoolExecutor(2) as pool:
-            futures = [pool.submit(onboarding, serial, nickname, onboarding_deadline)
-                       for serial, nickname in zip(SERIALS, ("FGS-A", "FGS-B"))]
+            futures = [pool.submit(onboarding, serial, onboarding_deadline) for serial in SERIALS]
             for future in futures:
                 future.result()
         event("actual_onboarding_permissions_completed")
@@ -747,8 +708,10 @@ def main(root):
         receipt["result"] = SCENARIO_RESULT
     except GateError as error:
         receipt["failureGate"] = error.gate
+        receipt["failureElapsedSeconds"] = round(time.monotonic()-attempt_start, 1)
     except Exception:
         receipt["failureGate"] = gate_name("unclassified_controller_failure")
+        receipt["failureElapsedSeconds"] = round(time.monotonic()-attempt_start, 1)
     finally:
         if receipt["result"] == SCENARIO_RESULT:
             try:
@@ -756,6 +719,7 @@ def main(root):
             except GateError as error:
                 receipt["result"] = "NOT_COMPLETED"
                 receipt["failureGate"] = error.gate
+                receipt["failureElapsedSeconds"] = round(time.monotonic()-attempt_start, 1)
         sweep_deferred_ui_dumps(time.monotonic() + 2 * UI_POST_CLEANUP_SECONDS)
         receipt["deferredUiDumpCleanupCountBySide"] = deferred_ui_dump_counts()
         (root / "evidence/attempt.json").write_text(json.dumps(receipt, indent=2)+"\n")
@@ -763,7 +727,10 @@ def main(root):
     if receipt["result"] != SCENARIO_RESULT:
         raise RuntimeError("Allowlisted failure gate was written to the receipt")
 
-    export_host_recordings(root, recordings, receipt)
+    export_host_recordings(
+        root, recordings, receipt,
+        failure_elapsed_seconds=round(time.monotonic()-attempt_start, 1),
+    )
 
 
 if __name__ == "__main__":

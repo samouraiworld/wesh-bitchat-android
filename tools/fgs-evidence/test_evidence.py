@@ -552,7 +552,7 @@ class EvidenceChecks(unittest.TestCase):
                 path.write_bytes(b"synthetic unit bytes")
                 recordings.append(path)
             receipt = {"result": capture.SCENARIO_RESULT, "recordingsExported": False,
-                       "failureGate": None}
+                       "failureGate": None, "failureElapsedSeconds": None}
             original_rename = Path.rename
 
             def fail_second(path, destination):
@@ -562,7 +562,8 @@ class EvidenceChecks(unittest.TestCase):
 
             with patch.object(Path, "rename", new=fail_second):
                 with self.assertRaises(capture.GateError) as failure:
-                    capture.export_host_recordings(root, recordings, receipt)
+                    capture.export_host_recordings(
+                        root, recordings, receipt, failure_elapsed_seconds=12.3)
             self.assertEqual(failure.exception.gate, "evidence_export")
             self.assertFalse(any((root/"evidence").glob("*.webm")))
             self.assertTrue(all(not path.exists() for path in recordings))
@@ -570,6 +571,7 @@ class EvidenceChecks(unittest.TestCase):
             self.assertEqual(failed["result"], "NOT_COMPLETED")
             self.assertFalse(failed["recordingsExported"])
             self.assertEqual(failed["failureGate"], "evidence_export")
+            self.assertEqual(failed["failureElapsedSeconds"], 12.3)
 
     def test_export_atomically_replaces_receipts_with_complete_manifest(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -584,7 +586,7 @@ class EvidenceChecks(unittest.TestCase):
                 path.write_bytes(b"synthetic unit bytes")
                 recordings.append(path)
             receipt = {"result": capture.SCENARIO_RESULT, "recordingsExported": False,
-                       "failureGate": None}
+                       "failureGate": None, "failureElapsedSeconds": None}
             capture.export_host_recordings(root, recordings, receipt)
             self.assertEqual({path.name for path in (root/"evidence").iterdir()}, {
                 "recording-a.webm", "recording-b.webm", "provenance.json",
@@ -594,6 +596,7 @@ class EvidenceChecks(unittest.TestCase):
             complete = json.loads((root/"evidence"/"attempt.json").read_text())
             self.assertTrue(complete["recordingsExported"])
             self.assertIsNone(complete["failureGate"])
+            self.assertIsNone(complete["failureElapsedSeconds"])
 
     def test_activity_guard_requires_resumed_marker_and_package_on_same_line(self):
         misleading = f"mResumedActivity: other.package/.Main\nRecent task: {capture.PACKAGE}"
@@ -656,6 +659,58 @@ class EvidenceChecks(unittest.TestCase):
                     receipt, "actual_onboarding_permissions_completed", video_start=100.0)
         self.assertEqual(failure.exception.gate, "scenario_budget")
 
+    def test_onboarding_uses_product_generated_nickname_and_taps_real_start(self):
+        welcome = [
+            E.Element("node", {"text": "Your nickname", "enabled": "true"}),
+            E.Element("node", {
+                "text": "Start", "enabled": "true", "bounds": "[0,0][20,20]",
+            }),
+        ]
+        home = [E.Element("node", {"text": "Public room", "enabled": "true"})]
+        with patch("capture.deadline_adb") as command, \
+             patch("capture.wait_activity_resumed"), \
+             patch("capture.nodes", side_effect=[welcome, home]), \
+             patch("capture.tap") as tap, \
+             patch("capture.bounded_sleep", return_value=True):
+            capture.onboarding(capture.SERIALS[0], capture.time.monotonic()+2)
+
+        self.assertEqual(command.call_count, 1)
+        self.assertEqual(command.call_args.args[3:6], ("shell", "am", "start"))
+        tap.assert_called_once_with(
+            capture.SERIALS[0], welcome[1], "onboarding_welcome_start", command.call_args.args[2])
+        onboarding_source = Path(capture.__file__).read_text().split(
+            "def onboarding", 1)[1].split("def send", 1)[0]
+        self.assertNotIn('"input"', onboarding_source)
+        self.assertNotIn("EditText", onboarding_source)
+        self.assertNotIn("keyboard", onboarding_source.casefold())
+
+    def test_onboarding_welcome_start_failure_is_precise(self):
+        welcome = [
+            E.Element("node", {"text": "Your nickname", "enabled": "true"}),
+            E.Element("node", {
+                "text": "Start", "enabled": "true", "bounds": "[0,0][20,20]",
+            }),
+        ]
+        failure = capture.GateError("onboarding_welcome_start", capture.SERIALS[0])
+        with patch("capture.deadline_adb"), patch("capture.wait_activity_resumed"), \
+             patch("capture.nodes", return_value=welcome), \
+             patch("capture.tap", side_effect=failure):
+            with self.assertRaises(capture.GateError) as raised:
+                capture.onboarding(capture.SERIALS[0], capture.time.monotonic()+2)
+        self.assertEqual(raised.exception.gate, "onboarding_welcome_start_a")
+
+    def test_onboarding_welcome_without_enabled_start_has_timeout_gate(self):
+        welcome = [
+            E.Element("node", {"text": "Your nickname", "enabled": "true"}),
+            E.Element("node", {"text": "Start", "enabled": "false"}),
+        ]
+        with patch("capture.deadline_adb"), patch("capture.wait_activity_resumed"), \
+             patch("capture.nodes", return_value=welcome), \
+             patch("capture.bounded_sleep", return_value=False):
+            with self.assertRaises(capture.GateError) as raised:
+                capture.onboarding(capture.SERIALS[1], capture.time.monotonic()+2)
+        self.assertEqual(raised.exception.gate, "onboarding_welcome_timeout_b")
+
     def test_main_records_first_launch_setup_and_interaction_under_one_clock(self):
         clock = [0.0]
         calls = []
@@ -681,7 +736,7 @@ class EvidenceChecks(unittest.TestCase):
             scenario_deadlines.append(deadline)
             advance(1)
 
-        def onboard(serial, _nickname, deadline):
+        def onboard(serial, deadline):
             calls.append(("onboarding", serial))
             scenario_deadlines.append(deadline)
             advance(10)
@@ -712,7 +767,7 @@ class EvidenceChecks(unittest.TestCase):
             scenario_deadlines.append(deadline)
             advance(1)
 
-        def export(_root, _recordings, receipt):
+        def export(_root, _recordings, receipt, **_kwargs):
             exported.update(json.loads(json.dumps(receipt)))
 
         capture.defer_ui_dump_cleanup(
@@ -754,6 +809,7 @@ class EvidenceChecks(unittest.TestCase):
         self.assertEqual([event["step"] for event in exported["events"]],
                          list(capture.SCENARIO_STEPS))
         self.assertEqual(exported["deferredUiDumpCleanupCountBySide"], {"a": 1, "b": 0})
+        self.assertIsNone(exported["failureElapsedSeconds"])
         self.assertNotIn("private", json.dumps(exported))
         times = [event["elapsedSeconds"] for event in exported["events"]]
         self.assertEqual(times[0], 0.0)
@@ -789,6 +845,8 @@ class EvidenceChecks(unittest.TestCase):
         export.assert_not_called()
         self.assertEqual(attempt["events"], [])
         self.assertEqual(attempt["failureGate"], "host_recorder_start_b")
+        self.assertIsInstance(attempt["failureElapsedSeconds"], float)
+        self.assertGreaterEqual(attempt["failureElapsedSeconds"], 0)
 
     def test_real_first_public_disclosure_requires_confirmation(self):
         title = E.Element("node", {"text": "Send to the public room?", "enabled": "true"})
@@ -820,46 +878,6 @@ class EvidenceChecks(unittest.TestCase):
 
     def test_diagnostic_missing_package_has_no_path_output(self):
         self.assertIsNone(diagnose.installed_revision(Path("synthetic-missing-package.xml")))
-
-    def test_input_method_visibility_parses_actual_boolean_fields(self):
-        self.assertIs(capture.parse_ime_visibility("  mInputShown=true\n  mShowRequested=true\n"), True)
-        self.assertIs(capture.parse_ime_visibility("  mInputShown=false\n  mShowRequested=false\n"), False)
-
-    def test_missing_or_ambiguous_input_method_visibility_is_unknown(self):
-        self.assertIsNone(capture.parse_ime_visibility("  mShowRequested=true\n"))
-        self.assertIsNone(capture.parse_ime_visibility("mInputShown=true\nmInputShown=false\n"))
-
-    def test_back_is_sent_only_for_confirmed_visible_keyboard(self):
-        with patch("capture.adb", return_value="  mInputShown=true\n") as command:
-            capture.hide_keyboard_if_shown(capture.SERIALS[0])
-            self.assertEqual(command.call_args_list[-1].args,
-                             (capture.SERIALS[0], "shell", "input", "keyevent", "4"))
-            self.assertEqual(command.call_count, 2)
-
-    def test_no_back_when_keyboard_is_not_visible(self):
-        with patch("capture.adb", return_value="  mInputShown=false\n") as command:
-            capture.hide_keyboard_if_shown(capture.SERIALS[0])
-            self.assertEqual(command.call_count, 1)
-
-    def test_unknown_keyboard_state_aborts_without_back(self):
-        with patch("capture.adb", return_value="  mShowRequested=true\n") as command:
-            with self.assertRaises(capture.ImeVisibilityUnknown):
-                capture.hide_keyboard_if_shown(capture.SERIALS[0])
-            self.assertEqual(command.call_count, 1)
-
-    def test_keyboard_query_scopes_each_owned_emulator(self):
-        result = subprocess.CompletedProcess([], 0, b"  mInputShown=false\n", b"")
-        with patch("capture.subprocess.run", return_value=result) as command:
-            for serial in capture.SERIALS:
-                capture.hide_keyboard_if_shown(serial)
-            self.assertEqual([call.args[0] for call in command.call_args_list], [
-                ["adb", "-s", serial, "shell", "dumpsys", "input_method"] for serial in capture.SERIALS])
-
-    def test_keyboard_query_rejects_every_other_target_before_execution(self):
-        with patch("capture.subprocess.run") as command:
-            with self.assertRaises(ValueError):
-                capture.hide_keyboard_if_shown("emulator-5558")
-            command.assert_not_called()
 
     def test_ci_scenario_result_does_not_claim_video_validation(self):
         self.assertEqual(capture.SCENARIO_RESULT, "SCENARIO_PASS_RECORDINGS_AWAIT_LOCAL_VALIDATION")
@@ -897,6 +915,7 @@ class EvidenceChecks(unittest.TestCase):
                    "emulator": "37.2.12", "systemImageRevision": 9,
                    "recordingsExported": True, "finalVideoQualified": False,
                    "notPhysicalEvidence": True, "notPlaySigned": True, "failureGate": None,
+                   "failureElapsedSeconds": None,
                    "deferredUiDumpCleanupCountBySide": {"a": 0, "b": 0},
                    "preflightEvents": [{"step": step, "elapsedSeconds": number+1}
                                        for number, step in enumerate(capture.PREFLIGHT_STEPS)],
@@ -928,6 +947,16 @@ class EvidenceChecks(unittest.TestCase):
             root = self.local_bundle(directory)
             (root/"recording-a.webm").write_bytes(b"changed unit bytes")
             with self.assertRaises(localassemble.ValidationFailure):
+                localassemble.validate_inputs(root, "1"*40)
+
+    def test_local_metadata_gate_requires_null_failure_clock_for_success(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.local_bundle(directory)
+            attempt = json.loads((root/"attempt.json").read_text())
+            attempt["failureElapsedSeconds"] = 68.6
+            (root/"attempt.json").write_text(json.dumps(attempt))
+            self.rehash_bundle(root)
+            with self.assertRaisesRegex(localassemble.ValidationFailure, "scenario_receipt"):
                 localassemble.validate_inputs(root, "1"*40)
 
     def test_local_metadata_gate_rejects_missing_or_wrong_preflight(self):
