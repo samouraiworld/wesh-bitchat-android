@@ -18,7 +18,15 @@ cleanup() {
   done
   # Only processes launched by this script, never another runner/device or a shared adb server.
   for pid in "${avd_a_pid:-}" "${avd_b_pid:-}"; do
-    if [[ "$pid" =~ ^[0-9]+$ ]]; then kill "$pid" 2>/dev/null || true; fi
+    if [[ "$pid" =~ ^[0-9]+$ ]]; then
+      kill "$pid" 2>/dev/null || true
+      for _ in {1..20}; do
+        kill -0 "$pid" 2>/dev/null || break
+        sleep 0.25
+      done
+      kill -9 "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+    fi
   done
 }
 trap cleanup EXIT
@@ -66,4 +74,4 @@ emulator -avd wesh-fgs-b -port 5556 -no-window -no-audio -no-snapshot -no-boot-a
   -gpu software -memory 2048 -cores 2 -partition-size 1024 \
   -packet-streamer-endpoint default >"$root/avd-b.log" 2>&1 &
 avd_b_pid=$!
-timeout 600 python3 tools/fgs-evidence/capture.py "$root"
+timeout --signal=TERM --kill-after=15 720 python3 tools/fgs-evidence/capture.py "$root" || fail capture_attempt

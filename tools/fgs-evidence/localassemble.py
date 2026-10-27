@@ -9,16 +9,20 @@ import re
 import subprocess
 import tempfile
 
-from capture import SCENARIO_RESULT
+from capture import CAPTURE_SOURCE, PREFLIGHT_STEPS, SCENARIO_RESULT, SCENARIO_STEPS
 from prepare import APK, FILES, SOURCE, digest
 
-RECORDINGS = ("recording-a.mp4", "recording-b.mp4")
+RECORDINGS = ("recording-a.webm", "recording-b.webm")
 HASHED_INPUTS = {"provenance.json", "attempt.json", *RECORDINGS}
-EVENTS = (
-    "actual_onboarding_permissions_completed", "both_apps_display_real_peer",
-    "public_messages_received_in_both_directions", "background_connected_device_notification_visible",
-    "public_message_sent_while_other_app_in_background", "public_message_visible_after_resume_via_fgs_notification",
-    "quit_action_stopped_service_and_removed_notification",
+PREFLIGHT_EVENTS = PREFLIGHT_STEPS
+EVENTS = SCENARIO_STEPS
+OUTPUT_WIDTH = 1440
+SCREEN_HEIGHT = 1280
+FOOTER_HEIGHT = 80
+OUTPUT_HEIGHT = SCREEN_HEIGHT + FOOTER_HEIGHT
+CAPTION_LINES = (
+    "Wesh 107 - two emulators - simulated BLE netsim",
+    "Canonical APK payload - disposable test signature",
 )
 
 
@@ -41,6 +45,19 @@ def unique_json(path):
     return json.loads(path.read_text(), object_pairs_hook=unique)
 
 
+def event_times(receipt, key, expected, sequence_gate, clock_gate, *, starts_at_zero=False):
+    events = receipt.get(key)
+    require(isinstance(events, list) and len(events) == len(expected) and
+            all(isinstance(event, dict) and set(event) == {"step", "elapsedSeconds"}
+                for event in events), sequence_gate)
+    require([event["step"] for event in events] == list(expected), sequence_gate)
+    times = [event["elapsedSeconds"] for event in events]
+    require(all(type(value) in (int, float) and math.isfinite(value) and value >= 0
+                for value in times) and times == sorted(times) and
+            (not starts_at_zero or times[0] == 0), clock_gate)
+    return times
+
+
 def validate_inputs(evidence, source_head):
     require(re.fullmatch(r"[0-9a-f]{40}", source_head) is not None, "controller_source_invalid")
     require({p.name for p in evidence.iterdir()} == HASHED_INPUTS | {"SHA256SUMS"}, "recording_inventory")
@@ -60,12 +77,14 @@ def validate_inputs(evidence, source_head):
             "canonical_provenance")
     require(attempt["evidenceSource"] == source_head and attempt["result"] == SCENARIO_RESULT and
             attempt["recordingsExported"] is True and attempt["finalVideoQualified"] is False and
-            attempt["notPhysicalEvidence"] is True and attempt["notPlaySigned"] is True,
+            attempt["notPhysicalEvidence"] is True and attempt["notPlaySigned"] is True and
+            attempt.get("failureGate") is None and attempt.get("captureSource") == CAPTURE_SOURCE,
             "scenario_receipt")
-    require([event["step"] for event in attempt["events"]] == list(EVENTS), "scenario_event_sequence")
-    times = [event["elapsedSeconds"] for event in attempt["events"]]
-    require(all(type(value) in (int, float) and math.isfinite(value) and 0 <= value < 165
-                for value in times) and times == sorted(times), "scenario_event_clock")
+    event_times(attempt, "preflightEvents", PREFLIGHT_EVENTS,
+                "preflight_event_sequence", "preflight_event_clock")
+    times = event_times(attempt, "events", EVENTS,
+                        "scenario_event_sequence", "scenario_event_clock", starts_at_zero=True)
+    require(all(value < 165 for value in times), "scenario_event_clock")
     return times[-1], checksums
 
 
@@ -80,6 +99,98 @@ def probe_duration(ffprobe, path):
     duration = float(json.loads(output)["format"]["duration"])
     require(math.isfinite(duration) and duration > 0, "recording_duration_invalid")
     return duration
+
+
+def probe_video(ffprobe, path, *, assembled=False):
+    output = run_tool(
+        ffprobe, "-v", "error", "-count_frames", "-show_entries",
+        "stream=codec_type,codec_name,width,height,pix_fmt,nb_read_frames:"
+        "format=format_name,duration",
+        "-of", "json", str(path),
+    )
+    metadata = json.loads(output)
+    streams = metadata.get("streams")
+    require(isinstance(streams, list) and len(streams) == 1, "video_stream_inventory")
+    video = streams[0]
+    allowed_codecs = {"h264"} if assembled else {"vp8", "vp9"}
+    require(video.get("codec_type") == "video" and video.get("codec_name") in allowed_codecs,
+            "video_codec_invalid")
+    width, height = video.get("width"), video.get("height")
+    require(type(width) is int and type(height) is int and width > 0 and height > 0,
+            "video_dimensions_invalid")
+    decoded_frames = video.get("nb_read_frames")
+    require(isinstance(decoded_frames, str) and decoded_frames.isdigit() and
+            int(decoded_frames) > 0, "decoded_frame_inventory_invalid")
+    format_name = metadata.get("format", {}).get("format_name")
+    require(isinstance(format_name, str) and
+            ((assembled and "mp4" in format_name.split(",")) or
+             (not assembled and "webm" in format_name.split(","))),
+            "video_container_invalid")
+    if assembled:
+        require((width, height) == (OUTPUT_WIDTH, OUTPUT_HEIGHT) and
+                video.get("pix_fmt") == "yuv420p", "assembled_video_format_invalid")
+    duration = float(metadata.get("format", {}).get("duration", "nan"))
+    require(math.isfinite(duration) and duration > 0, "recording_duration_invalid")
+    return {
+        "codec": video["codec_name"],
+        "container": format_name,
+        "pixelFormat": video.get("pix_fmt"),
+        "width": width,
+        "height": height,
+        "decodedFrames": int(decoded_frames),
+        "durationSeconds": duration,
+    }
+
+
+def fully_decode(ffmpeg, path):
+    run_tool(ffmpeg, "-v", "error", "-xerror", "-i", str(path),
+             "-map", "0:v:0", "-f", "null", "-", timeout=240)
+
+
+def render_footer(path, font_path):
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+    except ImportError as error:
+        raise ValidationFailure("local_pillow_unavailable") from error
+    try:
+        font = ImageFont.truetype(str(font_path), 24)
+    except OSError as error:
+        raise ValidationFailure("font_not_supported") from error
+    image = Image.new("RGB", (OUTPUT_WIDTH, FOOTER_HEIGHT), "black")
+    draw = ImageDraw.Draw(image)
+    positions = ((12, 4), (12, 42))
+    for text, position in zip(CAPTION_LINES, positions):
+        bounds = draw.textbbox(position, text, font=font)
+        require(bounds[0] >= 0 and bounds[1] >= 0 and
+                bounds[2] <= OUTPUT_WIDTH and bounds[3] <= FOOTER_HEIGHT,
+                "footer_text_does_not_fit")
+        draw.text(position, text, fill="white", font=font)
+    image.save(path, format="PNG", optimize=False, compress_level=9)
+
+
+def composition_filter():
+    # The footer occupies only the new 80-pixel band below the two product screens.
+    return (
+        f"[0:v]setpts=PTS-STARTPTS,scale=720:{SCREEN_HEIGHT}:"
+        f"force_original_aspect_ratio=decrease,pad=720:{SCREEN_HEIGHT}:"
+        "(ow-iw)/2:(oh-ih)/2:black,setsar=1[a];"
+        f"[1:v]setpts=PTS-STARTPTS,scale=720:{SCREEN_HEIGHT}:"
+        f"force_original_aspect_ratio=decrease,pad=720:{SCREEN_HEIGHT}:"
+        "(ow-iw)/2:(oh-ih)/2:black,setsar=1[b];"
+        f"[a][b]hstack=shortest=1,pad={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}:0:0:black[base];"
+        f"[2:v]format=rgba[footer];"
+        f"[base][footer]overlay=0:{SCREEN_HEIGHT}:eof_action=repeat:shortest=1[out]"
+    )
+
+
+def publish_output(temporary, output, receipt_temporary, sidecar):
+    os.link(temporary, output)
+    try:
+        os.link(receipt_temporary, sidecar)
+    except Exception:
+        # This process created the output link. A concurrently created sidecar is never removed.
+        output.unlink()
+        raise
 
 
 def require_coverage(durations, last_quit):
@@ -97,45 +208,52 @@ def assemble(evidence, output, source_head, ffmpeg, ffprobe, font):
     require(font.is_file() and re.fullmatch(r"[A-Za-z0-9_ /.-]+", str(font)) is not None,
             "font_path_not_supported")
     last_quit, inputs = validate_inputs(evidence, source_head)
-    durations = [probe_duration(ffprobe, evidence/name) for name in RECORDINGS]
+    input_media = [probe_video(ffprobe, evidence/name) for name in RECORDINGS]
+    durations = [media["durationSeconds"] for media in input_media]
     # The clock began before either OS recorder command: retain that conservative strict check.
     require_coverage(durations, last_quit)
+    for name in RECORDINGS:
+        fully_decode(ffmpeg, evidence/name)
     with tempfile.NamedTemporaryFile(dir=output.parent, suffix=".mp4", delete=False) as stream:
         temporary = Path(stream.name)
+    with tempfile.NamedTemporaryFile(dir=output.parent, suffix=".png", delete=False) as stream:
+        footer = Path(stream.name)
+    receipt_temporary = None
     try:
-        overlay = ("[0:v]setpts=PTS-STARTPTS,scale=720:1280[a];"
-                   "[1:v]setpts=PTS-STARTPTS,scale=720:1280[b];"
-                   "[a][b]hstack=shortest=1,pad=1440:1360:0:0:black,"
-                   f"drawtext=fontfile='{font}':"
-                   "text='Wesh 107 - two emulators - simulated BLE netsim':fontcolor=white:fontsize=24:x=12:y=1290,"
-                   f"drawtext=fontfile='{font}':"
-                   "text='Canonical APK payload - disposable test signature':fontcolor=white:fontsize=24:x=12:y=1328")
+        render_footer(footer, font)
         run_tool(ffmpeg, "-v", "error", "-y", "-xerror", "-i", str(evidence/RECORDINGS[0]),
-                 "-i", str(evidence/RECORDINGS[1]), "-filter_complex", overlay,
-                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-an", "-map_metadata", "-1",
+                 "-i", str(evidence/RECORDINGS[1]), "-loop", "1", "-i", str(footer),
+                 "-filter_complex", composition_filter(), "-map", "[out]",
+                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
+                 "-an", "-map_metadata", "-1",
                  str(temporary), timeout=240)
-        output_duration = probe_duration(ffprobe, temporary)
+        fully_decode(ffmpeg, temporary)
+        output_media = probe_video(ffprobe, temporary, assembled=True)
+        output_duration = output_media["durationSeconds"]
         require(output_duration >= last_quit, "assembled_video_does_not_cover_quit")
         receipt = {
             "status": "DURATION_AND_ASSEMBLY_PASS_AWAIT_VISUAL_REVIEW",
-            "captureSource": source_head, "canonicalSource": SOURCE,
-            "inputsSHA256": inputs, "fontSHA256": digest(font),
+            "captureSource": CAPTURE_SOURCE, "controllerSource": source_head,
+            "canonicalSource": SOURCE,
+            "inputsSHA256": inputs, "fontSHA256": digest(font), "footerSHA256": digest(footer),
             "recordingDurationsSeconds": durations, "lastQuitElapsedSeconds": last_quit,
+            "inputMedia": input_media, "outputMedia": output_media,
             "outputDurationSeconds": output_duration, "outputSHA256": digest(temporary),
             "physicalEvidence": False, "googleApproved": False, "visualReviewCompleted": False,
             "caption": "Two emulators; simulated BLE netsim; canonical107 payload; disposable test signature",
         }
         # No replacement of an existing local video; only qualified duration/assembly gets a final name.
-        os.link(temporary, output)
-        try:
-            with sidecar.open("x") as stream:
-                json.dump(receipt, stream, indent=2)
-                stream.write("\n")
-        except Exception:
-            output.unlink()
-            raise
+        with tempfile.NamedTemporaryFile(
+                dir=output.parent, suffix=".json", mode="w", encoding="utf-8", delete=False) as stream:
+            receipt_temporary = Path(stream.name)
+            json.dump(receipt, stream, indent=2)
+            stream.write("\n")
+        publish_output(temporary, output, receipt_temporary, sidecar)
     finally:
         temporary.unlink(missing_ok=True)
+        footer.unlink(missing_ok=True)
+        if receipt_temporary is not None:
+            receipt_temporary.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

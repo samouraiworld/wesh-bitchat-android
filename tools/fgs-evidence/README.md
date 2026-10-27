@@ -10,8 +10,8 @@ Its expensive job runs only when a reviewer deliberately adds
 Do not remove/re-add the label or rerun automatically. A further attempt requires
 review of the specific failed gate and its exact corrected head. The job has a
 25-minute limit and the UI flow a 165-second
-scenario budget. On success both real OS recordings finish their 180-second
-limit, preserving a short final post-roll; on failure they stop immediately.
+scenario budget. On success both host physical-display recordings finish their
+180-second limit, preserving a short final post-roll; failure never exports a passing recording.
 Any missing real state aborts; there is no fake-peer fallback.
 
 The first reviewed attempt, [40214942196](https://github.com/samouraiworld/wesh-bitchat-android/actions/runs/40214942196),
@@ -52,8 +52,29 @@ failed at `ubuntu_ffmpeg_install`, before canonical preparation and AVD setup;
 no evidence artifact or BLE result was produced. The APT installation step has
 now been removed. CI requires no `ffmpeg`, `ffprobe`, media package installation
 or media parser. SDK/image pins, KVM handling and all real scenario assertions
-are unchanged. A fourth attempt requires review of the exact corrected head and
-a deliberate Lead label, with the same 25-minute job limit.
+are unchanged.
+
+The fourth attempt, [40218805154](https://github.com/samouraiworld/wesh-bitchat-android/actions/runs/40218805154),
+passed canonical preparation and entered the AVD/capture controller, then stopped
+before both onboardings completed. Its allowlisted receipt was `NOT_COMPLETED`
+with no events or recordings. The old controller intentionally erased raw AVD/UI
+logs but also collapsed every non-IME failure into one message, so the precise
+boot/install/UI sub-gate cannot be recovered and no BLE conclusion can be drawn.
+The corrected controller exports only named phase/side failures, retries transient
+UI dumps inside hard deadlines, waits for Bluetooth ON, installation, resumed
+activities, real home, FGS and real peer discovery. It never exports UI XML,
+logcat, host paths or exception text. One further attempt requires review of its
+exact head and a deliberate Lead label; no automatic rerun is permitted.
+
+Canonical 107 also applies Android `FLAG_SECURE` to the real `MainActivity`.
+Guest-side `adb shell screenrecord` is therefore not an acceptable capture path:
+it can complete while masking the product pixels. The controller now has no
+guest-recorder fallback. It requires the official Android Emulator console
+recorder (`adb -s <serial> emu screenrecord`), which Android documents as recording
+the emulated physical display directly from the host into WebM. Capability help
+and each `OK` response are fail-closed. Whether emulator 37.2.12 actually includes
+the secure product pixels in this host recording remains an empirical gate; a
+black or masked frame is failure, never evidence.
 
 Nickname entry dismisses the keyboard only when the owned emulator's actual
 input-method state reports `mInputShown=true`. False sends no Back; a missing or
@@ -79,21 +100,36 @@ All adb operations specify exactly one of the two created emulator serials.
 No GPS/location provider, real phone, account, camera, QR, logcat or private data
 is accessed. Internet mode remains at its product default OFF.
 
-Actual product onboarding and permission dialogs are operated through UIAutomator
-hierarchy plus scoped OS input. Synthetic nicknames/messages are typed normally.
-Both apps must display one real peer and each must receive the opposite app's
-public message. Then one app moves to background, its actual FGS notification is
-shown, another real message is sent, the notification opens the app, and the
-message must be visible. This demonstrates sending while the other app is in
-background and visibility after resume, not the exact time of background receipt.
-The real notification's **Quit Wesh** action must stop
-the service and remove its notification.
+Actual product onboarding and permission dialogs are operated in parallel through
+UIAutomator hierarchy plus scoped OS input, with a 90-second bounded deadline.
+Synthetic nicknames/messages are typed normally. The preflight must prove both
+real foreground services and mutual netsim discovery. It then invokes the real
+**Quit Wesh** notification action on both AVDs and verifies that both services and
+notifications are gone. No preference, permission, identity or peer is seeded.
 
-Only after the genuine scenario and both OS recorder processes succeed may CI
-export `recording-a.mp4` and `recording-b.mp4`, provenance, an allowlisted event
-receipt and checksums as a seven-day Actions artifact. This explicit permission
-covers only these two fresh, synthetic owned-AVD OS recordings. Its result is
+Only then do both host-side physical-display recordings start. The captured sequence shows a fresh launch
+of each real app, both services starting, and a new real peer discovery inside
+Wesh. This setup/connection segment precedes interaction so the footage does not
+present an already-connected state as evidence. Each app must then receive the
+opposite app's public message. One app moves to background, its actual connected
+device FGS notification is shown, another real message is sent, the notification
+opens the app, and the message must be visible. This demonstrates sending while
+the other app is in background and visibility after resume, not the exact instant
+of background receipt. Finally the real **Quit Wesh** action must again stop the
+service and remove its notification. The scenario budget is 165 seconds; both OS
+recorders retain their fixed 180-second limit for strict coverage and post-roll.
+
+With that specific approval, only after the genuine scenario and both host
+recorders succeed may CI export `recording-a.webm` and `recording-b.webm`,
+provenance, an allowlisted event receipt
+and checksums as a seven-day Actions artifact. **No human approval for this new
+host-display capture/export is recorded yet.** Before any label, run or upload, a
+human must explicitly approve this exact external capture of two fresh synthetic
+owned AVDs, its seven-day GitHub Actions retention and the reviewed source head.
+Approval of an earlier guest-side attempt does not carry over. Its result is
 `SCENARIO_PASS_RECORDINGS_AWAIT_LOCAL_VALIDATION`, never qualified-video PASS.
+The receipt identifies the path as
+`captureSource=ANDROID_EMULATOR_HOST_PHYSICAL_DISPLAY_WEBM`.
 Failure exports receipts only; emulator/SDK logs, UI XML, keys, APKs and AVD
 userdata are never uploaded. The raw recordings are not physical-device evidence
 or Google-approved footage. Missing files stop export; playback, truncation,
@@ -111,9 +147,12 @@ python3 tools/fgs-evidence/localassemble.py --evidence <verified-evidence-direct
 The assembler refuses CI execution, extra files/symlinks/duplicate JSON keys,
 wrong controller source, incomplete manifests or changed inputs. Both local
 `ffprobe` durations must strictly cover the last Quit event from the conservative
-clock started before either recorder command. `ffmpeg` fully decodes and combines
-the actual screens, strips metadata, and adds the explicit footer identifying
-two emulators, simulated BLE netsim, canonical107 payload and test signing.
+clock started before either recorder command. The current CLI keeps the explicit
+`--font` input and requires Pillow in the local Python environment. Pillow renders
+a deterministic footer PNG outside the product-screen pixels; `ffmpeg` fully
+decodes and combines the two actual screens, overlays that PNG, and strips
+metadata. The footer explicitly identifies two emulators, simulated BLE netsim,
+canonical107 payload and disposable test signing.
 The assembled duration is checked again before giving the output its final name.
 The local receipt remains `DURATION_AND_ASSEMBLY_PASS_AWAIT_VISUAL_REVIEW`;
 the Lead must inspect actual footage before any Play use. Tool/font paths are
@@ -128,6 +167,8 @@ in beacons, Compose fixtures, debug hooks or invented connection indicators.
 Primary references:
 
 - [Android emulator BLE support](https://developer.android.com/studio/run/emulator-networking)
+- [Android Emulator host screen recording](https://developer.android.com/studio/run/emulator-record-screen)
+- [Android Emulator console screenrecord command](https://developer.android.com/studio/run/emulator-console)
 - [Google Bumble: shared netsim radio controllers](https://google.github.io/bumble/platforms/android.html)
 - [GitHub hosted runner resources and Android acceleration](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)
 - [Official FGS declaration/video requirements](https://support.google.com/googleplay/android-developer/answer/13392821)

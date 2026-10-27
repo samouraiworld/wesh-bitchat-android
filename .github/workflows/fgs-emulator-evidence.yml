@@ -76,12 +76,22 @@ jobs:
         env:
           EVIDENCE_HEAD: ${{ github.event.pull_request.head.sha }}
         run: bash tools/fgs-evidence/run.sh "$RUNNER_TEMP/fgs-evidence"
-      - name: Upload synthetic OS recordings awaiting local validation and allowlisted receipts
-        if: always()
+      - name: Upload synthetic host recordings awaiting local validation and allowlisted receipts
+        if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: fgs-canonical107-simulated-ble
           path: ${{ runner.temp }}/fgs-evidence/evidence/*
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Preserve only allowlisted receipts after an incomplete attempt
+        if: always() && !success()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: fgs-canonical107-incomplete-attempt
+          path: |
+            ${{ runner.temp }}/fgs-evidence/evidence/attempt.json
+            ${{ runner.temp }}/fgs-evidence/evidence/provenance.json
           if-no-files-found: warn
           retention-days: 7
       - name: Remove disposable keys, AVDs, recordings and temporary data

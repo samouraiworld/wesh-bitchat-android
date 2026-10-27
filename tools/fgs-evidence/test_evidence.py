@@ -94,9 +94,203 @@ class EvidenceChecks(unittest.TestCase):
 
     def test_invalid_ui_bounds_never_tap(self):
         with patch("capture.adb") as command:
-            with self.assertRaises(ValueError):
+            with self.assertRaises(capture.GateError) as failure:
                 capture.tap(capture.SERIALS[0], E.Element("node", {"bounds": "bad"}))
+            self.assertEqual(failure.exception.gate, "ui_action_a")
             command.assert_not_called()
+
+    def test_failure_gates_are_allowlisted_and_never_accept_arbitrary_text(self):
+        self.assertEqual(capture.gate_name("install", capture.SERIALS[1]), "install_b")
+        self.assertEqual(capture.gate_name("scenario_budget"), "scenario_budget")
+        for phase, serial in (("private/path", capture.SERIALS[0]), ("install", "physical-device"),
+                              ("private/path", None)):
+            with self.assertRaises(ValueError):
+                capture.gate_name(phase, serial)
+
+    def test_ui_dump_retries_a_transient_failure_then_returns_real_nodes(self):
+        xml = '<hierarchy><node text="Public room" enabled="true" /></hierarchy>'
+        with patch("capture.adb", side_effect=[RuntimeError("transient"), "", xml]) as command, \
+             patch("capture.time.sleep"):
+            items = capture.nodes(capture.SERIALS[0], capture.time.monotonic()+1)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].get("text"), "Public room")
+        self.assertEqual(command.call_count, 3)
+
+    def test_ui_dump_caps_each_adb_call_to_remaining_deadline(self):
+        xml = '<hierarchy><node text="Public room" enabled="true" /></hierarchy>'
+        started = capture.time.monotonic()
+        with patch("capture.adb", side_effect=["", xml]) as command:
+            capture.nodes(capture.SERIALS[0], started+0.2)
+        self.assertEqual(command.call_count, 2)
+        self.assertTrue(all(0 < call.kwargs["timeout"] <= 0.2 for call in command.call_args_list))
+
+    def test_expired_ui_deadline_runs_no_adb_and_has_named_gate(self):
+        with patch("capture.adb") as command:
+            with self.assertRaises(capture.GateError) as failure:
+                capture.nodes(capture.SERIALS[0], capture.time.monotonic()-1)
+        self.assertEqual(failure.exception.gate, "ui_dump_a")
+        command.assert_not_called()
+
+    def test_expired_command_deadline_runs_no_adb(self):
+        with patch("capture.adb") as command:
+            with self.assertRaises(capture.GateError) as failure:
+                capture.deadline_adb(capture.SERIALS[0], "message_submit",
+                                     capture.time.monotonic()-1, "shell", "true")
+        self.assertEqual(failure.exception.gate, "message_submit_a")
+        command.assert_not_called()
+
+    def test_boot_timeout_cannot_fall_through_without_completed_property(self):
+        with patch("capture.time.monotonic", side_effect=[0.0, 241.0]), patch("capture.adb") as command:
+            with self.assertRaises(capture.GateError) as failure:
+                capture.boot_and_install(capture.SERIALS[0], Path("synthetic.apk"))
+        self.assertEqual(failure.exception.gate, "boot_timeout_a")
+        command.assert_not_called()
+
+    def test_host_recorder_capability_is_fail_closed(self):
+        with patch("capture.adb") as command:
+            with self.assertRaises(capture.GateError) as failure:
+                capture.require_host_recorder(capture.SERIALS[1], capture.time.monotonic()-1)
+        self.assertEqual(failure.exception.gate, "host_recorder_capability_b")
+        command.assert_not_called()
+
+    def test_host_recorder_requires_documented_help_contract(self):
+        for response in ("OK\n", "screenrecord mp4 OK\n", "screenrecord webm\n"):
+            with self.subTest(response=response), patch("capture.adb", return_value=response):
+                with self.assertRaises(capture.GateError) as failure:
+                    capture.require_host_recorder(capture.SERIALS[0], capture.time.monotonic()+1)
+                self.assertEqual(failure.exception.gate, "host_recorder_capability_a")
+
+    def test_host_recorder_start_is_console_scoped_and_webm_only(self):
+        output = Path("/tmp/wesh-fgs-a.avd/console_out/recording-a.webm")
+        with patch("capture.adb", return_value="OK\n") as command:
+            capture.start_host_recorder(capture.SERIALS[0], output, capture.time.monotonic()+1)
+        self.assertEqual(command.call_args.args[:6], (
+            capture.SERIALS[0], "emu", "screenrecord", "start", "--time-limit",
+            str(capture.RECORDING_LIMIT_SECONDS)))
+        self.assertEqual(command.call_args.args[6], output.name)
+        self.assertNotIn("shell", command.call_args.args)
+
+    def test_host_recorder_rejects_wrong_or_relative_output_before_adb(self):
+        with patch("capture.adb") as command:
+            for path in (Path("recording-a.webm"), Path("/tmp/recording-a.mp4"),
+                         Path("/tmp/recording-b.webm"),
+                         Path("/tmp/other.avd/console_out/recording-a.webm")):
+                with self.subTest(path=path), self.assertRaises(capture.GateError):
+                    capture.start_host_recorder(capture.SERIALS[0], path, capture.time.monotonic()+1)
+        command.assert_not_called()
+
+    def test_controller_has_no_guest_screenrecord_fallback(self):
+        source = Path(capture.__file__).read_text()
+        self.assertNotIn('"shell", "screenrecord"', source)
+        self.assertIn('"emu", "screenrecord"', source)
+
+    def test_host_recording_inventory_requires_both_nonempty_regular_webms(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            recordings = []
+            for side in ("a", "b"):
+                path = root/f"wesh-fgs-{side}.avd"/"console_out"/f"recording-{side}.webm"
+                path.parent.mkdir(parents=True)
+                path.write_bytes(b"synthetic unit bytes")
+                recordings.append(path)
+            capture.wait_host_recordings(recordings, capture.time.monotonic()-200)
+            recordings[0].unlink()
+            with self.assertRaises(capture.GateError) as failure:
+                capture.wait_host_recordings(recordings, capture.time.monotonic()-200)
+            self.assertEqual(failure.exception.gate, "host_recording_file_a")
+
+    def test_host_recording_wait_is_measured_from_last_start(self):
+        with tempfile.TemporaryDirectory() as directory:
+            recordings = []
+            for side in ("a", "b"):
+                path = Path(directory)/f"recording-{side}.webm"
+                path.write_bytes(b"synthetic unit bytes")
+                recordings.append(path)
+            with patch("capture.time.monotonic", return_value=100.0), \
+                 patch("capture.time.sleep") as sleep:
+                capture.wait_host_recordings(recordings, 50.0)
+            sleep.assert_called_once_with(140.0)
+
+    def test_export_rolls_back_both_webms_when_second_rename_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root/"evidence").mkdir()
+            (root/"evidence"/"provenance.json").write_text("{}")
+            (root/"evidence"/"attempt.json").write_text("{}")
+            recordings = []
+            for side in ("a", "b"):
+                path = root/"avd"/f"wesh-fgs-{side}.avd"/"console_out"/f"recording-{side}.webm"
+                path.parent.mkdir(parents=True)
+                path.write_bytes(b"synthetic unit bytes")
+                recordings.append(path)
+            receipt = {"result": capture.SCENARIO_RESULT, "recordingsExported": False,
+                       "failureGate": None}
+            original_rename = Path.rename
+
+            def fail_second(path, destination):
+                if path.name == "recording-b.webm":
+                    raise OSError("synthetic rename failure")
+                return original_rename(path, destination)
+
+            with patch.object(Path, "rename", new=fail_second):
+                with self.assertRaises(capture.GateError) as failure:
+                    capture.export_host_recordings(root, recordings, receipt)
+            self.assertEqual(failure.exception.gate, "evidence_export")
+            self.assertFalse(any((root/"evidence").glob("*.webm")))
+            self.assertTrue(all(not path.exists() for path in recordings))
+            failed = json.loads((root/"evidence"/"attempt.json").read_text())
+            self.assertEqual(failed["result"], "NOT_COMPLETED")
+            self.assertFalse(failed["recordingsExported"])
+            self.assertEqual(failed["failureGate"], "evidence_export")
+
+    def test_export_atomically_replaces_receipts_with_complete_manifest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root/"evidence").mkdir()
+            (root/"evidence"/"provenance.json").write_text('{"synthetic":true}')
+            (root/"evidence"/"attempt.json").write_text("{}")
+            recordings = []
+            for side in ("a", "b"):
+                path = root/"avd"/f"wesh-fgs-{side}.avd"/"console_out"/f"recording-{side}.webm"
+                path.parent.mkdir(parents=True)
+                path.write_bytes(b"synthetic unit bytes")
+                recordings.append(path)
+            receipt = {"result": capture.SCENARIO_RESULT, "recordingsExported": False,
+                       "failureGate": None}
+            capture.export_host_recordings(root, recordings, receipt)
+            self.assertEqual({path.name for path in (root/"evidence").iterdir()}, {
+                "recording-a.webm", "recording-b.webm", "provenance.json",
+                "attempt.json", "SHA256SUMS"})
+            self.assertFalse((root/"evidence-ready").exists())
+            self.assertFalse((root/"evidence-failure-receipts").exists())
+            complete = json.loads((root/"evidence"/"attempt.json").read_text())
+            self.assertTrue(complete["recordingsExported"])
+            self.assertIsNone(complete["failureGate"])
+
+    def test_activity_guard_requires_resumed_marker_and_package_on_same_line(self):
+        misleading = f"mResumedActivity: other.package/.Main\nRecent task: {capture.PACKAGE}"
+        with patch("capture.adb", return_value=misleading):
+            self.assertFalse(capture.activity_resumed(capture.SERIALS[0]))
+
+    def test_bluetooth_timeout_is_classified_per_owned_emulator(self):
+        with patch("capture.adb") as command:
+            with self.assertRaises(capture.GateError) as failure:
+                capture.wait_bluetooth_on(capture.SERIALS[1], capture.time.monotonic()-1)
+        self.assertEqual(failure.exception.gate, "bluetooth_on_timeout_b")
+        command.assert_not_called()
+
+    def test_fgs_timeout_is_classified_per_owned_emulator(self):
+        with patch("capture.fgs_active", return_value=False), patch("capture.time.sleep"):
+            with self.assertRaises(capture.GateError) as failure:
+                capture.wait_fgs_active(capture.SERIALS[0], capture.time.monotonic()+0.001)
+        self.assertEqual(failure.exception.gate, "fgs_timeout_a")
+
+    def test_recorded_relaunch_contract_preserves_real_setup_window(self):
+        self.assertEqual(capture.RECORDING_LIMIT_SECONDS, 180)
+        self.assertEqual(capture.SCENARIO_BUDGET_SECONDS, 165)
+        self.assertIn("services_stopped_for_recorded_relaunch", capture.PREFLIGHT_STEPS)
+        self.assertEqual(capture.SCENARIO_STEPS[:2], (
+            "actual_onboarding_permissions_completed", "both_apps_display_real_peer"))
 
     def test_real_first_public_disclosure_requires_confirmation(self):
         title = E.Element("node", {"text": "Send to the public room?", "enabled": "true"})
@@ -200,17 +394,24 @@ class EvidenceChecks(unittest.TestCase):
         provenance = {"source": prepare.SOURCE, "unsignedApkSHA256": prepare.FILES[prepare.APK],
                       "attestationsVerified": 11, "apkPayloadUnchanged": True}
         attempt = {"evidenceSource": source_head, "result": capture.SCENARIO_RESULT,
+                   "captureSource": capture.CAPTURE_SOURCE,
                    "recordingsExported": True, "finalVideoQualified": False,
-                   "notPhysicalEvidence": True, "notPlaySigned": True,
+                   "notPhysicalEvidence": True, "notPlaySigned": True, "failureGate": None,
+                   "preflightEvents": [{"step": step, "elapsedSeconds": number+1}
+                                       for number, step in enumerate(capture.PREFLIGHT_STEPS)],
                    "events": [{"step": step, "elapsedSeconds": number+1}
                               for number, step in enumerate(localassemble.EVENTS)]}
+        attempt["events"][0]["elapsedSeconds"] = 0.0
         (root/"provenance.json").write_text(json.dumps(provenance))
         (root/"attempt.json").write_text(json.dumps(attempt))
         for name in localassemble.RECORDINGS:
             (root/name).write_bytes(b"synthetic unit bytes, not an OS recording")
+        self.rehash_bundle(root)
+        return root
+
+    def rehash_bundle(self, root):
         (root/"SHA256SUMS").write_text("".join(
             f"{prepare.digest(root/name)}  {name}\n" for name in sorted(localassemble.HASHED_INPUTS)))
-        return root
 
     def test_local_metadata_gate_requires_exact_controller_and_complete_manifest(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -224,9 +425,37 @@ class EvidenceChecks(unittest.TestCase):
     def test_local_metadata_gate_rejects_modified_recording(self):
         with tempfile.TemporaryDirectory() as directory:
             root = self.local_bundle(directory)
-            (root/"recording-a.mp4").write_bytes(b"changed unit bytes")
+            (root/"recording-a.webm").write_bytes(b"changed unit bytes")
             with self.assertRaises(localassemble.ValidationFailure):
                 localassemble.validate_inputs(root, "1"*40)
+
+    def test_local_metadata_gate_rejects_missing_or_reordered_preflight(self):
+        for mutation in ("missing", "reordered"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                root = self.local_bundle(directory)
+                attempt = json.loads((root/"attempt.json").read_text())
+                if mutation == "missing":
+                    attempt["preflightEvents"].pop()
+                else:
+                    attempt["preflightEvents"][0], attempt["preflightEvents"][1] = (
+                        attempt["preflightEvents"][1], attempt["preflightEvents"][0])
+                (root/"attempt.json").write_text(json.dumps(attempt))
+                self.rehash_bundle(root)
+                with self.assertRaisesRegex(localassemble.ValidationFailure,
+                                            "preflight_event_sequence"):
+                    localassemble.validate_inputs(root, "1"*40)
+
+    def test_preflight_clock_is_distinct_from_zero_based_scenario_clock(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.local_bundle(directory)
+            attempt = json.loads((root/"attempt.json").read_text())
+            for number, event in enumerate(attempt["preflightEvents"]):
+                event["elapsedSeconds"] = 180 + number
+            self.assertEqual(attempt["events"][0]["elapsedSeconds"], 0.0)
+            (root/"attempt.json").write_text(json.dumps(attempt))
+            self.rehash_bundle(root)
+            last, _ = localassemble.validate_inputs(root, "1"*40)
+            self.assertEqual(last, 7)
 
     def test_local_metadata_gate_rejects_extra_file(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -238,8 +467,8 @@ class EvidenceChecks(unittest.TestCase):
     def test_local_metadata_gate_rejects_symlink(self):
         with tempfile.TemporaryDirectory() as directory:
             root = self.local_bundle(directory)
-            (root/"recording-b.mp4").unlink()
-            (root/"recording-b.mp4").symlink_to(root/"recording-a.mp4")
+            (root/"recording-b.webm").unlink()
+            (root/"recording-b.webm").symlink_to(root/"recording-a.webm")
             with self.assertRaises(localassemble.ValidationFailure):
                 localassemble.validate_inputs(root, "1"*40)
 

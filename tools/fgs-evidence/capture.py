@@ -13,16 +13,65 @@ import xml.etree.ElementTree as E
 from prepare import digest
 
 SERIALS = ("emulator-5554", "emulator-5556")
+SIDES = {SERIALS[0]: "a", SERIALS[1]: "b"}
 PACKAGE = "org.samouraiworld.wesh.android"
 COMPONENT = f"{PACKAGE}/com.bitchat.android.MainActivity"
 MESSAGE_A = "FGS-public-A-107"
 MESSAGE_B = "FGS-public-B-107"
 MESSAGE_BACKGROUND = "FGS-background-107"
 SCENARIO_RESULT = "SCENARIO_PASS_RECORDINGS_AWAIT_LOCAL_VALIDATION"
+CAPTURE_SOURCE = "ANDROID_EMULATOR_HOST_PHYSICAL_DISPLAY_WEBM"
+RECORDING_LIMIT_SECONDS = 180
+SCENARIO_BUDGET_SECONDS = 165
+
+SERIAL_PHASES = frozenset({
+    "boot_timeout", "emulator_identity", "api_image", "device_setup",
+    "bluetooth_on_timeout", "install", "package_verify", "activity_launch",
+    "activity_resume_timeout", "ui_dump", "ui_action", "nickname_field",
+    "ime_visibility_unknown", "onboarding_welcome", "onboarding_bluetooth",
+    "onboarding_notifications", "onboarding_permission", "onboarding_auxiliary",
+    "onboarding_unknown", "fgs_timeout", "peer_discovery_timeout",
+    "public_room_open", "message_composer", "message_submit",
+    "message_confirmation", "message_receive", "notification_expand",
+    "notification_visible", "notification_open", "quit_action", "quit_timeout",
+    "recorded_relaunch", "host_recorder_capability", "host_recorder_start",
+    "host_recording_file",
+})
+GLOBAL_GATES = frozenset({"unclassified_controller_failure", "scenario_budget", "evidence_export"})
+PREFLIGHT_STEPS = (
+    "boot_install_bluetooth_ready", "actual_onboarding_permissions_completed",
+    "foreground_services_active", "both_apps_display_real_peer",
+    "services_stopped_for_recorded_relaunch",
+)
+SCENARIO_STEPS = (
+    "actual_onboarding_permissions_completed", "both_apps_display_real_peer",
+    "public_messages_received_in_both_directions", "background_connected_device_notification_visible",
+    "public_message_sent_while_other_app_in_background", "public_message_visible_after_resume_via_fgs_notification",
+    "quit_action_stopped_service_and_removed_notification",
+)
 
 
-class ImeVisibilityUnknown(RuntimeError):
-    """A named collection gate; never include the raw input-method dump."""
+def gate_name(phase, serial=None):
+    if serial is None:
+        if phase not in GLOBAL_GATES:
+            raise ValueError("Unallowlisted global failure gate")
+        return phase
+    if serial not in SIDES or phase not in SERIAL_PHASES:
+        raise ValueError("Unallowlisted serial failure gate")
+    return f"{phase}_{SIDES[serial]}"
+
+
+class GateError(RuntimeError):
+    """A non-sensitive, allowlisted failure classification for the exported receipt."""
+
+    def __init__(self, phase, serial=None):
+        self.gate = gate_name(phase, serial)
+        super().__init__(self.gate)
+
+
+class ImeVisibilityUnknown(GateError):
+    def __init__(self, serial):
+        super().__init__("ime_visibility_unknown", serial)
 
 
 def adb(serial, *args, timeout=12):
@@ -34,10 +83,54 @@ def adb(serial, *args, timeout=12):
     return result.stdout.decode(errors="replace")
 
 
-def nodes(serial):
-    adb(serial, "shell", "uiautomator", "dump", "/sdcard/wesh-fgs-window.xml")
-    xml = adb(serial, "exec-out", "cat", "/sdcard/wesh-fgs-window.xml")
-    return list(E.fromstring(xml).iter("node"))
+def gated(serial, phase, operation):
+    try:
+        return operation()
+    except GateError:
+        raise
+    except (RuntimeError, ValueError, subprocess.TimeoutExpired, E.ParseError):
+        raise GateError(phase, serial) from None
+
+
+def bounded_timeout(deadline, cap):
+    remaining = deadline - time.monotonic()
+    return None if remaining <= 0 else max(0.1, min(cap, remaining))
+
+
+def deadline_adb(serial, phase, deadline, *args, cap=12):
+    timeout = bounded_timeout(deadline, cap)
+    if timeout is None:
+        raise GateError(phase, serial)
+    return gated(serial, phase, lambda: adb(serial, *args, timeout=timeout))
+
+
+def bounded_sleep(deadline, cap):
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        return False
+    time.sleep(min(cap, remaining))
+    return True
+
+
+def nodes(serial, deadline):
+    """Retry transient UIAutomator failures, but never beyond the caller's bounded deadline."""
+    retry_deadline = min(deadline, time.monotonic() + 6)
+    while time.monotonic() < retry_deadline:
+        try:
+            timeout = bounded_timeout(retry_deadline, 6)
+            if timeout is None:
+                break
+            adb(serial, "shell", "uiautomator", "dump", "/sdcard/wesh-fgs-window.xml", timeout=timeout)
+            timeout = bounded_timeout(retry_deadline, 6)
+            if timeout is None:
+                break
+            xml = adb(serial, "exec-out", "cat", "/sdcard/wesh-fgs-window.xml", timeout=timeout)
+            return list(E.fromstring(xml).iter("node"))
+        except (RuntimeError, subprocess.TimeoutExpired, E.ParseError):
+            remaining = retry_deadline - time.monotonic()
+            if remaining > 0:
+                time.sleep(min(0.25, remaining))
+    raise GateError("ui_dump", serial)
 
 
 def labels(items):
@@ -51,21 +144,26 @@ def select(items, label, contains=False):
                  any(matches(n.get(key, "")) for key in ("text", "content-desc"))), None)
 
 
-def tap(serial, node):
+def tap(serial, node, phase="ui_action", deadline=None):
     points = re.fullmatch(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", node.get("bounds", ""))
     if not points:
-        raise ValueError("Missing UI target bounds")
+        raise GateError(phase, serial)
     x1, y1, x2, y2 = map(int, points.groups())
-    adb(serial, "shell", "input", "tap", str((x1+x2)//2), str((y1+y2)//2))
+    args = ("shell", "input", "tap", str((x1+x2)//2), str((y1+y2)//2))
+    if deadline is None:
+        gated(serial, phase, lambda: adb(serial, *args))
+    else:
+        deadline_adb(serial, phase, deadline, *args)
 
 
-def wait_ui(serial, label, deadline, contains=False):
+def wait_ui(serial, label, deadline, contains=False, failure_phase="ui_action"):
     while time.monotonic() < deadline:
-        target = select(nodes(serial), label, contains)
+        target = select(nodes(serial, deadline), label, contains)
         if target is not None:
             return target
-        time.sleep(0.5)
-    raise RuntimeError("Expected real UI state was not reached")
+        if not bounded_sleep(deadline, 0.4):
+            break
+    raise GateError(failure_phase, serial)
 
 
 def parse_ime_visibility(dump):
@@ -73,67 +171,120 @@ def parse_ime_visibility(dump):
     return states[0] == "true" if len(states) == 1 else None
 
 
-def hide_keyboard_if_shown(serial):
-    # This raw synthetic-emulator state is read only in memory and never exported.
-    shown = parse_ime_visibility(adb(serial, "shell", "dumpsys", "input_method"))
+def hide_keyboard_if_shown(serial, deadline=None):
+    try:
+        if deadline is None:
+            dump = adb(serial, "shell", "dumpsys", "input_method")
+        else:
+            dump = deadline_adb(serial, "ime_visibility_unknown", deadline,
+                                "shell", "dumpsys", "input_method")
+        shown = parse_ime_visibility(dump)
+    except (RuntimeError, subprocess.TimeoutExpired):
+        raise ImeVisibilityUnknown(serial) from None
     if shown is None:
-        raise ImeVisibilityUnknown()
+        raise ImeVisibilityUnknown(serial)
     if shown:
-        adb(serial, "shell", "input", "keyevent", "4")
+        if deadline is None:
+            gated(serial, "onboarding_welcome", lambda: adb(serial, "shell", "input", "keyevent", "4"))
+        else:
+            deadline_adb(serial, "onboarding_welcome", deadline, "shell", "input", "keyevent", "4")
+
+
+def activity_resumed(serial, timeout=8):
+    state = adb(serial, "shell", "dumpsys", "activity", "activities", timeout=timeout)
+    return any(PACKAGE in line and ("mResumedActivity" in line or "topResumedActivity" in line)
+               for line in state.splitlines())
+
+
+def wait_activity_resumed(serial, deadline):
+    while time.monotonic() < deadline:
+        try:
+            timeout = bounded_timeout(deadline, 8)
+            if timeout is None:
+                break
+            if activity_resumed(serial, timeout):
+                return
+        except (RuntimeError, subprocess.TimeoutExpired):
+            pass
+        if not bounded_sleep(deadline, 0.4):
+            break
+    raise GateError("activity_resume_timeout", serial)
 
 
 def onboarding(serial, nickname, deadline):
-    adb(serial, "shell", "am", "start", "-n", COMPONENT)
+    deadline_adb(serial, "activity_launch", deadline, "shell", "am", "start", "-n", COMPONENT)
+    wait_activity_resumed(serial, min(deadline, time.monotonic() + 20))
     named = False
+    last_phase = "onboarding_unknown"
     while time.monotonic() < deadline:
-        items = nodes(serial)
+        items = nodes(serial, deadline)
         if select(items, "Public room") is not None:
             return
-        nickname_field = select(items, "Your nickname")
-        if nickname_field is not None and not named:
-            # A normal text-field edit, never an identity/database/preferences fixture.
-            field = next((n for n in items if n.get("class") == "android.widget.EditText"), None)
-            if field is None:
-                raise RuntimeError("Nickname text field unavailable")
-            tap(serial, field)
-            adb(serial, "shell", "input", "keyevent", "123")
-            adb(serial, "shell", "input", "keyevent", *(["67"] * 40))
-            adb(serial, "shell", "input", "text", nickname)
-            hide_keyboard_if_shown(serial)
-            named = True
-            continue
-        # Only actual product actions and Android permission buttons; no arbitrary dialog dismissal.
-        for label in ("Start", "Continue", "Allow notifications", "Allow", "While using the app",
-                      "Skip for Now", "Turn on Bluetooth"):
+        nickname_label = select(items, "Your nickname")
+        if nickname_label is not None:
+            last_phase = "onboarding_welcome"
+            if not named:
+                field = next((n for n in items if n.get("class") == "android.widget.EditText"), None)
+                if field is None:
+                    raise GateError("nickname_field", serial)
+                tap(serial, field, "onboarding_welcome", deadline)
+                deadline_adb(serial, "onboarding_welcome", deadline, "shell", "input", "keyevent", "123")
+                deadline_adb(serial, "onboarding_welcome", deadline, "shell", "input", "keyevent", *("67",) * 40)
+                deadline_adb(serial, "onboarding_welcome", deadline, "shell", "input", "text", nickname)
+                hide_keyboard_if_shown(serial, deadline)
+                named = True
+                continue
+            start = select(items, "Start")
+            if start is not None:
+                tap(serial, start, "onboarding_welcome", deadline)
+                bounded_sleep(deadline, 0.4)
+                continue
+
+        actions = (
+            ("Allow notifications", "onboarding_notifications"),
+            ("While using the app", "onboarding_permission"),
+            ("Allow", "onboarding_permission"),
+            ("Continue", "onboarding_bluetooth"),
+            ("Turn on Bluetooth", "onboarding_bluetooth"),
+            ("Skip for Now", "onboarding_auxiliary"),
+        )
+        acted = False
+        for label, phase in actions:
             target = select(items, label)
             if target is not None:
-                tap(serial, target)
+                last_phase = phase
+                tap(serial, target, phase, deadline)
+                acted = True
                 break
-        time.sleep(0.5)
-    raise RuntimeError("Onboarding did not complete within the bounded attempt")
+        if not acted:
+            last_phase = "onboarding_unknown"
+        if not bounded_sleep(deadline, 0.4):
+            break
+    raise GateError(last_phase, serial)
 
 
 def send(serial, message, deadline):
-    # Assertions later inspect the opposite app, not this local outgoing bubble.
-    target = wait_ui(serial, "Public message — everyone around", deadline)
-    tap(serial, target)
-    adb(serial, "shell", "input", "text", message)
-    tap(serial, wait_ui(serial, "Send in public", deadline))
+    target = wait_ui(serial, "Public message — everyone around", deadline,
+                     failure_phase="message_composer")
+    tap(serial, target, "message_composer", deadline)
+    deadline_adb(serial, "message_composer", deadline, "shell", "input", "text", message)
+    submit = wait_ui(serial, "Send in public", deadline, failure_phase="message_submit")
+    tap(serial, submit, "message_submit", deadline)
     confirmed = False
     while time.monotonic() < deadline:
-        items = nodes(serial)
+        items = nodes(serial, deadline)
         state = public_send_state(items, message)
         if state == "confirm" and not confirmed:
             confirmation = select(items, "Send in public")
             if confirmation is None:
-                raise RuntimeError("Public disclosure confirmation action is unavailable")
-            tap(serial, confirmation)
+                raise GateError("message_confirmation", serial)
+            tap(serial, confirmation, "message_confirmation", deadline)
             confirmed = True
         elif state == "submitted":
-            # Actual draft clear plus local bubble, followed by opposite-device receipt in main().
             return
-        time.sleep(0.2)
-    raise RuntimeError("Real public send/disclosure did not complete")
+        if not bounded_sleep(deadline, 0.2):
+            break
+    raise GateError("message_submit", serial)
 
 
 def public_send_state(items, message):
@@ -145,165 +296,353 @@ def public_send_state(items, message):
     return "pending"
 
 
-def fgs_active(serial):
+def fgs_active(serial, timeout=12):
     state = adb(serial, "shell", "dumpsys", "activity", "services",
-                f"{PACKAGE}/com.bitchat.android.service.MeshForegroundService")
+                f"{PACKAGE}/com.bitchat.android.service.MeshForegroundService", timeout=timeout)
     return "MeshForegroundService" in state and "isForeground=true" in state
 
 
-def boot_and_install(serial, apk):
-    deadline = time.monotonic() + 210
+def wait_fgs_active(serial, deadline):
     while time.monotonic() < deadline:
         try:
-            if adb(serial, "shell", "getprop", "sys.boot_completed", timeout=5).strip() == "1":
+            timeout = bounded_timeout(deadline, 8)
+            if timeout is None:
+                break
+            if fgs_active(serial, timeout):
+                return
+        except (RuntimeError, subprocess.TimeoutExpired):
+            pass
+        if not bounded_sleep(deadline, 0.5):
+            break
+    raise GateError("fgs_timeout", serial)
+
+
+def wait_bluetooth_on(serial, deadline):
+    while time.monotonic() < deadline:
+        try:
+            timeout = bounded_timeout(deadline, 5)
+            if timeout is None:
+                break
+            if adb(serial, "shell", "settings", "get", "global", "bluetooth_on", timeout=timeout).strip() == "1":
+                return
+        except (RuntimeError, subprocess.TimeoutExpired):
+            pass
+        if not bounded_sleep(deadline, 0.5):
+            break
+    raise GateError("bluetooth_on_timeout", serial)
+
+
+def boot_and_install(serial, apk):
+    deadline = time.monotonic() + 240
+    booted = False
+    while time.monotonic() < deadline:
+        try:
+            timeout = bounded_timeout(deadline, 5)
+            if timeout is None:
+                break
+            if adb(serial, "shell", "getprop", "sys.boot_completed", timeout=timeout).strip() == "1":
+                booted = True
                 break
         except (RuntimeError, subprocess.TimeoutExpired):
             pass
-        time.sleep(2)
-    else:
-        raise RuntimeError("Emulator boot timeout")
-    if adb(serial, "shell", "getprop", "ro.kernel.qemu").strip() != "1":
-        raise RuntimeError("Target is not an emulator")
-    if adb(serial, "shell", "getprop", "ro.build.version.sdk").strip() != "35":
-        raise RuntimeError("Unexpected API image")
-    adb(serial, "shell", "input", "keyevent", "82")
-    adb(serial, "shell", "settings", "put", "system", "screen_off_timeout", "600000")
-    # The emulator locale is English; no location providers or coordinates are accessed.
-    adb(serial, "shell", "svc", "bluetooth", "enable")
-    adb(serial, "install", "--no-streaming", str(apk), timeout=50)
+        if not bounded_sleep(deadline, 2):
+            break
+    if not booted:
+        raise GateError("boot_timeout", serial)
+    if gated(serial, "emulator_identity", lambda: adb(serial, "shell", "getprop", "ro.kernel.qemu")).strip() != "1":
+        raise GateError("emulator_identity", serial)
+    if gated(serial, "api_image", lambda: adb(serial, "shell", "getprop", "ro.build.version.sdk")).strip() != "35":
+        raise GateError("api_image", serial)
+    gated(serial, "device_setup", lambda: adb(serial, "shell", "input", "keyevent", "82"))
+    gated(serial, "device_setup", lambda: adb(serial, "shell", "settings", "put", "system", "screen_off_timeout", "600000"))
+    gated(serial, "device_setup", lambda: adb(serial, "shell", "svc", "bluetooth", "enable"))
+    wait_bluetooth_on(serial, min(deadline, time.monotonic() + 30))
+    gated(serial, "install", lambda: adb(serial, "install", "--no-streaming", str(apk), timeout=60))
+    package_path = gated(serial, "package_verify", lambda: adb(serial, "shell", "pm", "path", PACKAGE))
+    if not package_path.strip().startswith("package:"):
+        raise GateError("package_verify", serial)
+
+
+def quit_via_notification(serial, deadline):
+    deadline_adb(serial, "notification_expand", deadline, "shell", "input", "keyevent", "3")
+    timeout = bounded_timeout(deadline, 8)
+    if timeout is None or not fgs_active(serial, timeout):
+        raise GateError("fgs_timeout", serial)
+    deadline_adb(serial, "notification_expand", deadline,
+                 "shell", "cmd", "statusbar", "expand-notifications")
+    items = nodes(serial, deadline)
+    quit_action = select(items, "Quit Wesh")
+    if quit_action is None:
+        expand = select(items, "Expand")
+        if expand is not None:
+            tap(serial, expand, "notification_expand", deadline)
+        quit_action = wait_ui(serial, "Quit Wesh", deadline, failure_phase="quit_action")
+    tap(serial, quit_action, "quit_action", deadline)
+    service_stopped = False
+    while time.monotonic() < deadline:
+        try:
+            timeout = bounded_timeout(deadline, 8)
+            if timeout is None or not fgs_active(serial, timeout):
+                service_stopped = timeout is not None
+                break
+        except (RuntimeError, subprocess.TimeoutExpired):
+            pass
+        if not bounded_sleep(deadline, 0.5):
+            break
+    if not service_stopped:
+        raise GateError("quit_timeout", serial)
+    if select(nodes(serial, deadline), "Mesh running", contains=True) is not None:
+        raise GateError("quit_timeout", serial)
+
+
+def require_host_recorder(serial, deadline):
+    help_text = deadline_adb(serial, "host_recorder_capability", deadline,
+                             "emu", "help", "screenrecord")
+    normalized = help_text.casefold()
+    if "screenrecord" not in normalized or "webm" not in normalized or "ok" not in normalized.split():
+        raise GateError("host_recorder_capability", serial)
+
+
+def start_host_recorder(serial, output, deadline):
+    expected = f"recording-{SIDES[serial]}.webm"
+    expected_avd = f"wesh-fgs-{SIDES[serial]}.avd"
+    if (not output.is_absolute() or output.name != expected or output.parent.name != "console_out" or
+            output.parent.parent.name != expected_avd):
+        raise GateError("host_recorder_start", serial)
+    response = deadline_adb(
+        serial, "host_recorder_start", deadline, "emu", "screenrecord", "start",
+        "--time-limit", str(RECORDING_LIMIT_SECONDS), output.name, cap=8,
+    )
+    if "ok" not in response.casefold().split():
+        raise GateError("host_recorder_start", serial)
+
+
+def wait_host_recordings(recordings, last_recorder_start):
+    remaining = last_recorder_start + RECORDING_LIMIT_SECONDS + 10 - time.monotonic()
+    if remaining > 0:
+        time.sleep(remaining)
+    for serial, path in zip(SERIALS, recordings):
+        if not path.is_file() or path.is_symlink() or path.stat().st_size == 0:
+            raise GateError("host_recording_file", serial)
+
+
+def export_host_recordings(root, recordings, receipt):
+    evidence = root / "evidence"
+    staging = root / "evidence-ready"
+    backup = root / "evidence-failure-receipts"
+    staged_recordings = [staging / path.name for path in recordings]
+    allowed_names = ("recording-a.webm", "recording-b.webm", "provenance.json",
+                     "attempt.json", "SHA256SUMS")
+    backup_moved = False
+
+    def remove_owned(directory):
+        for name in allowed_names:
+            try:
+                (directory / name).unlink(missing_ok=True)
+            except OSError:
+                pass
+        try:
+            directory.rmdir()
+        except OSError:
+            pass
+
+    try:
+        staging.mkdir()
+        for path, destination in zip(recordings, staged_recordings):
+            path.rename(destination)
+        (staging / "provenance.json").write_bytes((evidence / "provenance.json").read_bytes())
+        receipt["recordingsExported"] = True
+        receipt["failureGate"] = None
+        (staging / "attempt.json").write_text(json.dumps(receipt, indent=2)+"\n")
+        (staging / "SHA256SUMS").write_text("".join(
+            f"{digest(path)}  {path.name}\n"
+            for path in sorted(staging.iterdir()) if path.name != "SHA256SUMS"))
+        if {path.name for path in staging.iterdir()} != set(allowed_names):
+            raise OSError("Incomplete owned evidence staging")
+        evidence.rename(backup)
+        backup_moved = True
+        staging.rename(evidence)
+    except OSError:
+        # Raw WebMs remain outside evidence until one atomic directory swap makes the
+        # complete, checksummed manifest visible.
+        if backup_moved and not evidence.exists() and backup.exists():
+            try:
+                backup.rename(evidence)
+            except OSError:
+                pass
+        for path in recordings:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        remove_owned(staging)
+        try:
+            receipt["result"] = "NOT_COMPLETED"
+            receipt["recordingsExported"] = False
+            receipt["failureGate"] = gate_name("evidence_export")
+            (evidence / "attempt.json").write_text(json.dumps(receipt, indent=2)+"\n")
+        except OSError:
+            pass
+        raise GateError("evidence_export") from None
+    # Old failure receipts never enter the uploaded evidence directory and contain no WebM.
+    remove_owned(backup)
 
 
 def main(root):
     if os.environ.get("GITHUB_ACTIONS") != "true":
         raise RuntimeError("Disposable GitHub runner only")
-    receipt = {"result": "NOT_COMPLETED", "events": [], "environment": "Two API35 x86_64 AVDs; netsim simulated BLE",
-               "emulator": "37.2.12", "systemImageRevision": 9, "evidenceSource": os.environ["EVIDENCE_HEAD"],
-               "notPhysicalEvidence": True, "notPlaySigned": True,
-               "recordingsExported": False, "finalVideoQualified": False}
-    recorders = []
-    start = time.monotonic()
-    def event(name):
-        receipt["events"].append({"step": name, "elapsedSeconds": round(time.monotonic()-start, 1)})
+    receipt = {
+        "result": "NOT_COMPLETED", "failureGate": None, "preflightEvents": [], "events": [],
+        "environment": "Two API35 x86_64 AVDs; netsim simulated BLE",
+        "emulator": "37.2.12", "systemImageRevision": 9, "evidenceSource": os.environ["EVIDENCE_HEAD"],
+        "captureSource": CAPTURE_SOURCE,
+        "notPhysicalEvidence": True, "notPlaySigned": True,
+        "recordingsExported": False, "finalVideoQualified": False,
+    }
+    recordings = [root / "avd" / f"wesh-fgs-{side}.avd" / "console_out" /
+                  f"recording-{side}.webm" for side in ("a", "b")]
+    video_start = None
+    last_recorder_start = None
+    attempt_start = time.monotonic()
+
+    def preflight_event(name):
+        if name not in PREFLIGHT_STEPS:
+            raise ValueError("Unallowlisted preflight event")
+        receipt["preflightEvents"].append({"step": name, "elapsedSeconds": round(time.monotonic()-attempt_start, 1)})
+
+    def event(name, elapsed=None):
+        if name not in SCENARIO_STEPS:
+            raise ValueError("Unallowlisted scenario event")
+        value = time.monotonic()-video_start if elapsed is None else elapsed
+        receipt["events"].append({"step": name, "elapsedSeconds": round(value, 1)})
+
     try:
         with ThreadPoolExecutor(2) as pool:
-            list(pool.map(lambda serial: boot_and_install(serial, root / "wesh107-test-signed.apk"), SERIALS))
-        # Only a real scenario pass may export these two synthetic OS recordings for local validation.
-        # Raw UI XML and runtime/SDK logs always stay on the disposable runner.
-        # The scenario clock starts BEFORE either recorder command, never after readiness waits.
-        # Requiring both durations to cover this conservative origin cannot hide early truncation.
-        start = time.monotonic()
-        for serial in SERIALS:
-            recorders.append(subprocess.Popen(["adb", "-s", serial, "shell", "screenrecord",
-                "--time-limit", "180", "--bit-rate", "2000000", "/sdcard/wesh-fgs.mp4"],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
-        for serial in SERIALS:
-            recorder_ready = time.monotonic()+8
-            while time.monotonic() < recorder_ready:
-                try:
-                    if adb(serial, "shell", "pidof", "screenrecord").strip():
-                        break
-                except RuntimeError:
-                    pass
-                time.sleep(0.2)
-            else:
-                raise RuntimeError("OS screen recorder did not start")
-        deadline = start + 165
+            futures = [pool.submit(boot_and_install, serial, root / "wesh107-test-signed.apk") for serial in SERIALS]
+            for future in futures:
+                future.result()
+        preflight_event("boot_install_bluetooth_ready")
+
+        onboarding_deadline = time.monotonic() + 90
         with ThreadPoolExecutor(2) as pool:
-            futures = [pool.submit(onboarding, serial, nickname, start+50)
+            futures = [pool.submit(onboarding, serial, nickname, onboarding_deadline)
                        for serial, nickname in zip(SERIALS, ("FGS-A", "FGS-B"))]
             for future in futures:
                 future.result()
-        event("actual_onboarding_permissions_completed")
-        # Genuine reciprocal discovery is required before entering the public room.
+        preflight_event("actual_onboarding_permissions_completed")
+
+        service_deadline = time.monotonic() + 35
+        with ThreadPoolExecutor(2) as pool:
+            futures = [pool.submit(wait_fgs_active, serial, service_deadline) for serial in SERIALS]
+            for future in futures:
+                future.result()
+        preflight_event("foreground_services_active")
+
+        peer_deadline = time.monotonic() + 90
+        with ThreadPoolExecutor(2) as pool:
+            futures = [pool.submit(wait_ui, serial, "1 phone in range", peer_deadline, True,
+                                   "peer_discovery_timeout") for serial in SERIALS]
+            for future in futures:
+                future.result()
+        preflight_event("both_apps_display_real_peer")
+
+        # Establish compatibility first, then really stop both product services. The recording must
+        # show a fresh app launch and real rediscovery rather than presenting a pre-connected state.
+        stop_deadline = time.monotonic() + 35
+        with ThreadPoolExecutor(2) as pool:
+            futures = [pool.submit(quit_via_notification, serial, stop_deadline) for serial in SERIALS]
+            for future in futures:
+                future.result()
+        preflight_event("services_stopped_for_recorded_relaunch")
+
+        recorder_deadline = time.monotonic() + 20
         for serial in SERIALS:
-            wait_ui(serial, "1 phone in range", min(deadline, start+105), contains=True)
+            require_host_recorder(serial, recorder_deadline)
+        video_start = time.monotonic()
+        recorder_start_deadline = video_start + 12
+        for serial, path in zip(SERIALS, recordings):
+            start_host_recorder(serial, path, recorder_start_deadline)
+        last_recorder_start = time.monotonic()
+
+        # Onboarding is a genuine precondition completed immediately before recording. The video
+        # begins from stopped services and then shows a fresh launch and real peer rediscovery.
+        event("actual_onboarding_permissions_completed", 0.0)
+        deadline = video_start + SCENARIO_BUDGET_SECONDS
+
+        for serial in SERIALS:
+            deadline_adb(serial, "recorded_relaunch", deadline,
+                         "shell", "am", "start", "-n", COMPONENT)
+        with ThreadPoolExecutor(2) as pool:
+            futures = [pool.submit(wait_activity_resumed, serial, min(deadline, time.monotonic()+20))
+                       for serial in SERIALS]
+            for future in futures:
+                future.result()
+        with ThreadPoolExecutor(2) as pool:
+            futures = [pool.submit(wait_fgs_active, serial, min(deadline, time.monotonic()+35))
+                       for serial in SERIALS]
+            for future in futures:
+                future.result()
+        reconnect_deadline = min(deadline, time.monotonic() + 90)
+        with ThreadPoolExecutor(2) as pool:
+            futures = [pool.submit(wait_ui, serial, "1 phone in range", reconnect_deadline, True,
+                                   "peer_discovery_timeout") for serial in SERIALS]
+            for future in futures:
+                future.result()
         event("both_apps_display_real_peer")
+
         for serial in SERIALS:
-            tap(serial, wait_ui(serial, "Public room", deadline))
+            room = wait_ui(serial, "Public room", deadline, failure_phase="public_room_open")
+            tap(serial, room, "public_room_open", deadline)
         send(SERIALS[0], MESSAGE_A, deadline)
-        wait_ui(SERIALS[1], MESSAGE_A, deadline, contains=True)
+        wait_ui(SERIALS[1], MESSAGE_A, deadline, contains=True, failure_phase="message_receive")
         send(SERIALS[1], MESSAGE_B, deadline)
-        wait_ui(SERIALS[0], MESSAGE_B, deadline, contains=True)
+        wait_ui(SERIALS[0], MESSAGE_B, deadline, contains=True, failure_phase="message_receive")
         event("public_messages_received_in_both_directions")
-        adb(SERIALS[0], "shell", "input", "keyevent", "3")
-        if not fgs_active(SERIALS[0]):
-            raise RuntimeError("Actual foreground service is not active in background")
-        adb(SERIALS[0], "shell", "cmd", "statusbar", "expand-notifications")
-        notification = wait_ui(SERIALS[0], "Mesh running", deadline, contains=True)
+
+        deadline_adb(SERIALS[0], "notification_expand", deadline,
+                     "shell", "input", "keyevent", "3")
+        wait_fgs_active(SERIALS[0], min(deadline, time.monotonic() + 8))
+        deadline_adb(SERIALS[0], "notification_expand", deadline,
+                     "shell", "cmd", "statusbar", "expand-notifications")
+        wait_ui(SERIALS[0], "Mesh running", deadline, contains=True, failure_phase="notification_visible")
         event("background_connected_device_notification_visible")
+
         send(SERIALS[1], MESSAGE_BACKGROUND, deadline)
         event("public_message_sent_while_other_app_in_background")
-        # Re-read current bounds: a new notification could have moved the persistent FGS row.
-        notification = wait_ui(SERIALS[0], "Mesh running", deadline, contains=True)
-        tap(SERIALS[0], notification)
-        wait_ui(SERIALS[0], MESSAGE_BACKGROUND, deadline, contains=True)
-        # This proves visibility after resume, not the exact instant of background receipt.
+        notification = wait_ui(SERIALS[0], "Mesh running", deadline, contains=True,
+                               failure_phase="notification_visible")
+        tap(SERIALS[0], notification, "notification_open", deadline)
+        wait_ui(SERIALS[0], MESSAGE_BACKGROUND, deadline, contains=True, failure_phase="message_receive")
         event("public_message_visible_after_resume_via_fgs_notification")
-        adb(SERIALS[0], "shell", "input", "keyevent", "3")
-        adb(SERIALS[0], "shell", "cmd", "statusbar", "expand-notifications")
-        items = nodes(SERIALS[0])
-        quit_action = select(items, "Quit Wesh")
-        if quit_action is None:
-            expand = select(items, "Expand")
-            if expand is not None:
-                tap(SERIALS[0], expand)
-            quit_action = wait_ui(SERIALS[0], "Quit Wesh", deadline)
-        tap(SERIALS[0], quit_action)
-        while fgs_active(SERIALS[0]) and time.monotonic() < deadline:
-            time.sleep(0.5)
-        if fgs_active(SERIALS[0]) or select(nodes(SERIALS[0]), "Mesh running", contains=True) is not None:
-            raise RuntimeError("Quit did not remove the foreground service/notification")
+
+        quit_via_notification(SERIALS[0], deadline)
         event("quit_action_stopped_service_and_removed_notification")
         if time.monotonic() >= deadline:
-            raise RuntimeError("Scenario exceeded recording budget")
+            raise GateError("scenario_budget")
         receipt["result"] = SCENARIO_RESULT
-    except ImeVisibilityUnknown:
-        receipt["failureGate"] = "ime_visibility_unknown"
-        raise
+    except GateError as error:
+        receipt["failureGate"] = error.gate
+    except Exception:
+        receipt["failureGate"] = gate_name("unclassified_controller_failure")
     finally:
-        # On success, preserve real post-roll until the OS recorder's fixed 180-second limit.
-        # This covers startup latency without weakening the conservative duration assertion.
-        if receipt["result"] != SCENARIO_RESULT:
-            for serial in SERIALS:
-                try:
-                    pids = adb(serial, "shell", "pidof", "screenrecord").strip().split()
-                    if pids and all(pid.isdigit() for pid in pids):
-                        adb(serial, "shell", "kill", "-2", *pids)
-                except (RuntimeError, subprocess.TimeoutExpired):
-                    pass
-        for recorder in recorders:
+        if receipt["result"] == SCENARIO_RESULT:
             try:
-                remaining = max(0.1, start + 190 - time.monotonic())
-                status = recorder.wait(timeout=remaining if receipt["result"] == SCENARIO_RESULT else 8)
-                if status != 0:
-                    receipt["result"] = "RECORDING_FAILED"
-            except subprocess.TimeoutExpired:
-                recorder.terminate()
-                receipt["result"] = "RECORDING_FAILED"
+                wait_host_recordings(recordings, last_recorder_start)
+            except GateError as error:
+                receipt["result"] = "NOT_COMPLETED"
+                receipt["failureGate"] = error.gate
         (root / "evidence/attempt.json").write_text(json.dumps(receipt, indent=2)+"\n")
-    # No recording is exported when any scenario or OS-recorder assertion above failed.
+
     if receipt["result"] != SCENARIO_RESULT:
-        raise RuntimeError("Recorders did not complete within their fixed limit")
-    recordings = ("recording-a.mp4", "recording-b.mp4")
-    for serial, name in zip(SERIALS, recordings):
-        adb(serial, "pull", "/sdcard/wesh-fgs.mp4", str(root / name), timeout=30)
-    for name in recordings:
-        path = root / name
-        if not path.is_file() or path.stat().st_size == 0:
-            raise RuntimeError("A required owned-emulator recording is missing")
-    for name in recordings:
-        (root / name).rename(root / "evidence" / name)
-    receipt["recordingsExported"] = True
-    # Duration, decoding, composition and visual inspection are explicitly still local gates.
-    (root / "evidence/attempt.json").write_text(json.dumps(receipt, indent=2)+"\n")
-    (root / "evidence/SHA256SUMS").write_text("".join(
-        f"{digest(path)}  {path.name}\n" for path in sorted((root/"evidence").iterdir()) if path.is_file()))
+        raise RuntimeError("Allowlisted failure gate was written to the receipt")
+
+    export_host_recordings(root, recordings, receipt)
 
 
 if __name__ == "__main__":
     try:
         main(Path(sys.argv[1]))
-    except ImeVisibilityUnknown:
-        sys.exit("FGS UI gate failed: ime_visibility_unknown; no Back or passing video exported")
+    except GateError:
+        sys.exit("Real emulator attempt did not complete; see allowlisted receipt gate; no passing video is exported.")
     except Exception:
         sys.exit("Real emulator attempt did not complete; no passing video is exported.")
