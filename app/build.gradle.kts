@@ -41,7 +41,7 @@ android {
         // uses this to weaken the secure-window policy; the capture activity lives exclusively
         // in src/storeScreenshot and is absent from release artifacts.
         buildConfigField("boolean", "STORE_SCREENSHOT_MODE", "false")
-        versionCode = 107
+        versionCode = 108
         versionName = "1.0.0"
         buildConfigField(
             "String",

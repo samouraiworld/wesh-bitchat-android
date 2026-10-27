@@ -12,6 +12,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.map
@@ -162,7 +163,29 @@ internal class NostrRelayControl(private val context: Context) : WeshRelayContro
     override fun clearOnPanic() = manager.clearAllOnPanic()
 }
 
-/** Emits on every default-network callback: true when a network with Internet capability is up. */
+/** A candidate Internet route. Tor readiness remains the end-to-end connectivity signal. */
+internal fun hasInternetRoute(capabilities: NetworkCapabilities?): Boolean =
+    capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
+
+/** Keeps late callbacks for the previous default network from overriding the new one. */
+internal class DefaultNetworkAvailability<N>(initialDefault: N?, val initiallyAvailable: Boolean) {
+    private var currentDefault: N? = initialDefault
+
+    fun onAvailable(network: N) {
+        currentDefault = network
+    }
+
+    fun onCapabilitiesChanged(network: N, available: Boolean): Boolean? =
+        available.takeIf { network == currentDefault }
+
+    fun onLost(network: N): Boolean? {
+        if (network != currentDefault) return null
+        currentDefault = null
+        return false
+    }
+}
+
+/** Emits whether the current default network advertises a candidate Internet route. */
 internal fun defaultNetworkFlow(context: Context): Flow<Boolean> = callbackFlow {
     val connectivity = context.getSystemService(ConnectivityManager::class.java)
     if (connectivity == null) {
@@ -170,17 +193,29 @@ internal fun defaultNetworkFlow(context: Context): Flow<Boolean> = callbackFlow 
         awaitClose { }
         return@callbackFlow
     }
-    fun hasInternet(): Boolean = runCatching {
-        connectivity.getNetworkCapabilities(connectivity.activeNetwork)
-            ?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
+    val initialDefault = runCatching { connectivity.activeNetwork }.getOrNull()
+    val initiallyAvailable = runCatching {
+        hasInternetRoute(connectivity.getNetworkCapabilities(initialDefault))
     }.getOrDefault(false)
+    val availability = DefaultNetworkAvailability(initialDefault, initiallyAvailable)
     val callback = object : ConnectivityManager.NetworkCallback() {
-        override fun onAvailable(network: Network) { trySend(true) }
-        override fun onLost(network: Network) { trySend(hasInternet()) }
+        override fun onAvailable(network: Network) {
+            // Android publishes ordered capabilities next. They describe whether this new default
+            // is a candidate route; Tor readiness remains the end-to-end signal.
+            availability.onAvailable(network)
+        }
+
+        override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
+            availability.onCapabilitiesChanged(network, hasInternetRoute(capabilities))?.let(::trySend)
+        }
+
+        override fun onLost(network: Network) {
+            availability.onLost(network)?.let(::trySend)
+        }
     }
-    trySend(hasInternet())
+    trySend(availability.initiallyAvailable)
     connectivity.registerDefaultNetworkCallback(callback)
     awaitClose { runCatching { connectivity.unregisterNetworkCallback(callback) } }
-}
+}.distinctUntilChanged()
 
 internal fun wipeNostrKeys(context: Context): Boolean = NostrIdentityBridge.panicClearKeys(context)

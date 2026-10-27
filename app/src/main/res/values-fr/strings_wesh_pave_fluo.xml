@@ -7,5 +7,5 @@
         <item quantity="other">téléphones à portée</item>
     </plurals>
     <string name="wesh_pave_fluo_bluetooth_on">Bluetooth actif</string>
-    <string name="wesh_pave_fluo_bluetooth_off">Bluetooth coupé</string>
+    <string name="wesh_pave_fluo_bluetooth_off">Bluetooth indisponible</string>
 </resources>

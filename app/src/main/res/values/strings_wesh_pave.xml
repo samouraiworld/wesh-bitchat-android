@@ -7,7 +7,7 @@
     </plurals>
     <string name="wesh_pave_status_in_range_short">%d in range</string>
     <string name="wesh_pave_status_nobody">No phone in range</string>
-    <string name="wesh_pave_status_bluetooth_off">Bluetooth off</string>
+    <string name="wesh_pave_status_bluetooth_off">Bluetooth unavailable</string>
     <string name="wesh_pave_status_internet">Via Internet · %d in range</string>
     <string name="wesh_pave_status_open">Open Connection</string>
 

@@ -8,7 +8,7 @@
     </plurals>
     <string name="wesh_pave_status_in_range_short">%d à portée</string>
     <string name="wesh_pave_status_nobody">Aucun téléphone à portée</string>
-    <string name="wesh_pave_status_bluetooth_off">Bluetooth coupé</string>
+    <string name="wesh_pave_status_bluetooth_off">Bluetooth indisponible</string>
     <string name="wesh_pave_status_internet">Via Internet · %d à portée</string>
     <string name="wesh_pave_status_open">Ouvrir Connexion</string>
 
