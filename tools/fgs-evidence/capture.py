@@ -42,7 +42,7 @@ SERIAL_PHASES = frozenset({
     "public_room_open", "message_composer", "message_submit",
     "message_confirmation", "message_receive", "notification_expand",
     "notification_visible", "notification_open", "quit_action", "quit_timeout",
-    "host_recorder_capability", "host_recorder_start",
+    "host_recorder_help_transport", "host_recorder_help_contract", "host_recorder_start",
     "host_recording_file",
 })
 GLOBAL_GATES = frozenset({
@@ -548,11 +548,17 @@ def quit_via_notification(serial, deadline):
 
 
 def require_host_recorder(serial, deadline):
-    help_text = deadline_adb(serial, "host_recorder_capability", deadline,
-                             "emu", "help", "screenrecord")
-    normalized = help_text.casefold()
-    if "screenrecord" not in normalized or "webm" not in normalized or "ok" not in normalized.split():
-        raise GateError("host_recorder_capability", serial)
+    help_text = deadline_adb(serial, "host_recorder_help_transport", deadline,
+                             "emu", "help-verbose")
+    if (not console_response_ok(help_text) or
+            re.search(r"(?im)^\s*screenrecord(?:\s|$)", help_text) is None):
+        raise GateError("host_recorder_help_contract", serial)
+
+
+def console_response_ok(response):
+    lines = [line.strip() for line in response.splitlines() if line.strip()]
+    return (bool(lines) and lines[-1].casefold() == "ok" and
+            not any(re.match(r"(?i)^ko(?:\s|:|$)", line) for line in lines))
 
 
 def start_host_recorder(serial, output, deadline):
@@ -565,7 +571,7 @@ def start_host_recorder(serial, output, deadline):
         serial, "host_recorder_start", deadline, "emu", "screenrecord", "start",
         "--time-limit", str(RECORDING_LIMIT_SECONDS), output.name, cap=8,
     )
-    if "ok" not in response.casefold().split():
+    if not console_response_ok(response):
         raise GateError("host_recorder_start", serial)
 
 

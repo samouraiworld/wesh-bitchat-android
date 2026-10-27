@@ -441,29 +441,62 @@ class EvidenceChecks(unittest.TestCase):
         self.assertEqual(failure.exception.gate, "boot_timeout_a")
         command.assert_not_called()
 
-    def test_host_recorder_capability_is_fail_closed(self):
+    def test_host_recorder_help_transport_is_fail_closed(self):
         with patch("capture.adb") as command:
             with self.assertRaises(capture.GateError) as failure:
                 capture.require_host_recorder(capture.SERIALS[1], capture.time.monotonic()-1)
-        self.assertEqual(failure.exception.gate, "host_recorder_capability_b")
+        self.assertEqual(failure.exception.gate, "host_recorder_help_transport_b")
         command.assert_not_called()
 
-    def test_host_recorder_requires_documented_help_contract(self):
-        for response in ("OK\n", "screenrecord mp4 OK\n", "screenrecord webm\n"):
-            with self.subTest(response=response), patch("capture.adb", return_value=response):
+        with patch("capture.adb", side_effect=RuntimeError("synthetic transport failure")):
+            with self.assertRaises(capture.GateError) as failure:
+                capture.require_host_recorder(capture.SERIALS[0], capture.time.monotonic()+1)
+        self.assertEqual(failure.exception.gate, "host_recorder_help_transport_a")
+
+    def test_host_recorder_accepts_documented_verbose_help_contract(self):
+        response = "    screenrecord    Records the emulator display\nOK\n"
+        with patch("capture.adb", return_value=response) as command:
+            capture.require_host_recorder(capture.SERIALS[0], capture.time.monotonic()+1)
+        self.assertEqual(command.call_args.args, (capture.SERIALS[0], "emu", "help-verbose"))
+
+    def test_host_recorder_rejects_incomplete_or_stale_help_contract(self):
+        cases = {
+            "missing_command": "    network    Network controls\nOK\n",
+            "false_subword": "    notscreenrecord    Not the command\nOK\n",
+            "missing_ok": "    screenrecord    Records display\n",
+            "ok_not_terminal": "    screenrecord    Records display\nOK\ntruncated body\n",
+            "ko_despite_ok": "    screenrecord    Records display\nKO: denied\nOK\n",
+            "stale_parent_help": "screenrecord webm OK\n",
+        }
+        for name, response in cases.items():
+            with self.subTest(name=name), patch("capture.adb", return_value=response):
                 with self.assertRaises(capture.GateError) as failure:
                     capture.require_host_recorder(capture.SERIALS[0], capture.time.monotonic()+1)
-                self.assertEqual(failure.exception.gate, "host_recorder_capability_a")
+                self.assertEqual(failure.exception.gate, "host_recorder_help_contract_a")
 
     def test_host_recorder_start_is_console_scoped_and_webm_only(self):
         output = Path("/tmp/wesh-fgs-a.avd/console_out/recording-a.webm")
         with patch("capture.adb", return_value="OK\n") as command:
             capture.start_host_recorder(capture.SERIALS[0], output, capture.time.monotonic()+1)
+        self.assertEqual(capture.RECORDING_LIMIT_SECONDS, 180)
         self.assertEqual(command.call_args.args[:6], (
             capture.SERIALS[0], "emu", "screenrecord", "start", "--time-limit",
             str(capture.RECORDING_LIMIT_SECONDS)))
         self.assertEqual(command.call_args.args[6], output.name)
         self.assertNotIn("shell", command.call_args.args)
+
+    def test_host_recorder_start_requires_terminal_ok_without_ko(self):
+        output = Path("/tmp/wesh-fgs-a.avd/console_out/recording-a.webm")
+        for name, response in {
+                "ko_despite_ok": "KO: recorder unavailable\nOK\n",
+                "ok_not_terminal": "OK\ntruncated body\n",
+                "missing_ok": "recording started\n",
+        }.items():
+            with self.subTest(name=name), patch("capture.adb", return_value=response):
+                with self.assertRaises(capture.GateError) as failure:
+                    capture.start_host_recorder(
+                        capture.SERIALS[0], output, capture.time.monotonic()+1)
+                self.assertEqual(failure.exception.gate, "host_recorder_start_a")
 
     def test_host_recorder_rejects_wrong_or_relative_output_before_adb(self):
         with patch("capture.adb") as command:

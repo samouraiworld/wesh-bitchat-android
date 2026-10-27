@@ -120,14 +120,38 @@ paths, stderr and exception text never enter evidence. The workflow uploads an
 exact receipt allowlist and always destroys the disposable AVD directory, so a
 deferred remote file cannot become an artifact.
 
+The first reviewed canonical 108 attempt,
+[40478621327](https://github.com/samouraiworld/wesh-bitchat-android/actions/runs/40478621327),
+used controller source `60eb972a0c3e7fbd358f77e9c5bff18bb72c8323`.
+Canonical preparation passed and both owned emulators reached
+`boot_install_bluetooth_ready` at 48.2 seconds. The controller then stopped at
+`host_recorder_capability_a`, before first launch, onboarding or any scenario
+event; no WebM was exported. Its privacy-minimal receipt cannot distinguish a
+console transport failure from a help-contract rejection. Offline inspection of
+the pinned emulator package found the documented host recorder, so this result
+does not establish an unsupported runner. It did reveal a controller mismatch:
+the old check asked parent-command help for a WebM detail documented on the
+`screenrecord start` subcommand.
+
+The corrected preflight asks the documented `help-verbose` command and separates
+an adb/timeout failure (`host_recorder_help_transport_<side>`) from a malformed,
+missing-command, `KO` or non-terminal-`OK` response
+(`host_recorder_help_contract_<side>`), without exporting console text. The real
+recording command remains `screenrecord start --time-limit 180 <owned>.webm` and
+still requires a terminal `OK` with no `KO` line; there is no alternate recorder
+or guest-side fallback. The approval for run 40478621327 was consumed. This code
+correction does not authorize another run: any new attempt requires fresh
+explicit approval for its exact reviewed source head.
+
 Canonical 108, like the historical canonical 107 build, applies Android
 `FLAG_SECURE` to the real `MainActivity`.
 Guest-side `adb shell screenrecord` is therefore not an acceptable capture path:
 it can complete while masking the product pixels. The controller now has no
 guest-recorder fallback. It requires the official Android Emulator console
 recorder (`adb -s <serial> emu screenrecord`), which Android documents as recording
-the emulated physical display directly from the host into WebM. Capability help
-and each `OK` response are fail-closed. Whether emulator 37.2.12 actually includes
+the emulated physical display directly from the host into WebM. Verbose-help
+transport, help structure and each recording `OK` response are fail-closed.
+Whether emulator 37.2.12 actually includes
 the secure product pixels in this host recording remains an empirical gate; a
 black or masked frame is failure, never evidence.
 
