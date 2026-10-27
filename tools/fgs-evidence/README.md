@@ -656,10 +656,19 @@ real product events at positive monotone times below 270 seconds. Deferred UI
 cleanup diagnostics must contain exactly nonnegative integer counts for sides
 `a` and `b`, never paths or XML. Both local
 `ffprobe` durations must strictly cover the last Quit event from the conservative
-clock started before either recorder command. The current CLI keeps the explicit
+clock started before either recorder command. Each raw WebM must contain exactly
+one VP8/VP9 video stream and may contain at most one Vorbis audio stream produced
+by the host recorder; multiple videos, other audio codecs, data, subtitle or any
+additional stream fail closed. Every accepted source stream is fully decoded
+with `-xerror`. Composition explicitly maps only the two video streams and uses
+`-an`, so the final MP4 must probe as exactly one H.264 stream with no audio. The
+local receipt records, per input, the count and fixed type of every discarded
+source stream (`audio/vorbis` when present).
+
+The current CLI keeps the explicit
 `--font` input and requires Pillow in the local Python environment. Pillow renders
 a deterministic footer PNG outside the product-screen pixels; `ffmpeg` fully
-decodes and combines the two actual screens, overlays that PNG, and strips
+combines the two actual screens, overlays that PNG, strips audio and removes
 metadata. The footer explicitly identifies two emulators, simulated BLE netsim,
 canonical109 payload and disposable test signing.
 The assembled duration is checked again before giving the output its final name.

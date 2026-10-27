@@ -172,8 +172,17 @@ def probe_video(ffprobe, path, *, assembled=False):
     )
     metadata = json.loads(output)
     streams = metadata.get("streams")
-    require(isinstance(streams, list) and len(streams) == 1, "video_stream_inventory")
-    video = streams[0]
+    require(isinstance(streams, list), "video_stream_inventory")
+    videos = [stream for stream in streams if stream.get("codec_type") == "video"]
+    require(len(videos) == 1, "video_stream_inventory")
+    video = videos[0]
+    discarded_streams = [stream for stream in streams if stream is not video]
+    if assembled:
+        require(not discarded_streams, "video_stream_inventory")
+    else:
+        require(len(discarded_streams) <= 1 and all(
+            stream.get("codec_type") == "audio" and stream.get("codec_name") == "vorbis"
+            for stream in discarded_streams), "video_stream_inventory")
     allowed_codecs = {"h264"} if assembled else {"vp8", "vp9"}
     require(video.get("codec_type") == "video" and video.get("codec_name") in allowed_codecs,
             "video_codec_invalid")
@@ -201,12 +210,17 @@ def probe_video(ffprobe, path, *, assembled=False):
         "height": height,
         "decodedFrames": int(decoded_frames),
         "durationSeconds": duration,
+        "discardedSourceStreamCount": len(discarded_streams),
+        "discardedSourceStreamTypes": [
+            f'{stream["codec_type"]}/{stream["codec_name"]}'
+            for stream in discarded_streams
+        ],
     }
 
 
 def fully_decode(ffmpeg, path):
     run_tool(ffmpeg, "-v", "error", "-xerror", "-i", str(path),
-             "-map", "0:v:0", "-f", "null", "-",
+             "-map", "0", "-f", "null", "-",
              timeout=LOCAL_MEDIA_TIMEOUT_SECONDS)
 
 

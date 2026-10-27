@@ -225,6 +225,8 @@ class LocalAssembleCaptionTests(unittest.TestCase):
             media = localassemble.probe_video("trusted-ffprobe", Path("assembled.mp4"), assembled=True)
         self.assertEqual(media["codec"], "h264")
         self.assertEqual(media["decodedFrames"], 5400)
+        self.assertEqual(media["discardedSourceStreamCount"], 0)
+        self.assertEqual(media["discardedSourceStreamTypes"], [])
         self.assertEqual(
             media["durationSeconds"], float(localassemble.RECORDING_LIMIT_SECONDS))
 
@@ -238,6 +240,21 @@ class LocalAssembleCaptionTests(unittest.TestCase):
             with self.assertRaisesRegex(localassemble.ValidationFailure, "video_codec_invalid"):
                 localassemble.probe_video("trusted-ffprobe", Path("assembled.mp4"), assembled=True)
 
+        assembled_with_audio = json.dumps({
+            "streams": [
+                {"codec_type": "video", "codec_name": "h264", "width": 1440,
+                 "height": 1360, "pix_fmt": "yuv420p", "nb_read_frames": "5400"},
+                {"codec_type": "audio", "codec_name": "aac"},
+            ],
+            "format": {"format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+                       "duration": str(localassemble.RECORDING_LIMIT_SECONDS)},
+        })
+        with patch("localassemble.run_tool", return_value=assembled_with_audio):
+            with self.assertRaisesRegex(localassemble.ValidationFailure,
+                                        "video_stream_inventory"):
+                localassemble.probe_video(
+                    "trusted-ffprobe", Path("assembled.mp4"), assembled=True)
+
     def test_raw_recordings_require_vp8_or_vp9_in_webm(self):
         for codec in ("vp8", "vp9"):
             valid = json.dumps({
@@ -250,6 +267,8 @@ class LocalAssembleCaptionTests(unittest.TestCase):
                 media = localassemble.probe_video("trusted-ffprobe", Path("recording.webm"))
             self.assertEqual(media["codec"], codec)
             self.assertEqual(media["container"], "matroska,webm")
+            self.assertEqual(media["discardedSourceStreamCount"], 0)
+            self.assertEqual(media["discardedSourceStreamTypes"], [])
 
         wrong_container = json.dumps({
             "streams": [{"codec_type": "video", "codec_name": "vp8", "width": 720,
@@ -261,12 +280,55 @@ class LocalAssembleCaptionTests(unittest.TestCase):
             with self.assertRaisesRegex(localassemble.ValidationFailure, "video_container_invalid"):
                 localassemble.probe_video("trusted-ffprobe", Path("recording.webm"))
 
-    def test_full_decode_uses_video_stream_and_null_sink(self):
+    def test_raw_recording_accepts_one_vorbis_stream_and_reports_its_discard(self):
+        actual_shape = json.dumps({
+            "streams": [
+                {"codec_type": "video", "codec_name": "vp9", "width": 1080,
+                 "height": 1920, "pix_fmt": "yuv420p", "nb_read_frames": "9000"},
+                {"codec_type": "audio", "codec_name": "vorbis"},
+            ],
+            "format": {"format_name": "matroska,webm", "duration": "299.989"},
+        })
+        with patch("localassemble.run_tool", return_value=actual_shape):
+            media = localassemble.probe_video(
+                "trusted-ffprobe", Path("recording-a.webm"))
+        self.assertEqual(media["codec"], "vp9")
+        self.assertEqual(media["discardedSourceStreamCount"], 1)
+        self.assertEqual(media["discardedSourceStreamTypes"], ["audio/vorbis"])
+        self.assertEqual(media["durationSeconds"], 299.989)
+
+    def test_raw_recording_rejects_multivideo_unknown_audio_data_and_extra_streams(self):
+        video = {"codec_type": "video", "codec_name": "vp9", "width": 1080,
+                 "height": 1920, "pix_fmt": "yuv420p", "nb_read_frames": "9000"}
+        cases = {
+            "multiple_video": [video, dict(video)],
+            "unknown_audio": [video, {"codec_type": "audio", "codec_name": "opus"}],
+            "data": [video, {"codec_type": "data", "codec_name": "bin_data"}],
+            "extra_audio": [video,
+                            {"codec_type": "audio", "codec_name": "vorbis"},
+                            {"codec_type": "audio", "codec_name": "vorbis"}],
+            "mixed_extra": [video,
+                            {"codec_type": "audio", "codec_name": "vorbis"},
+                            {"codec_type": "subtitle", "codec_name": "webvtt"}],
+        }
+        for name, streams in cases.items():
+            metadata = json.dumps({
+                "streams": streams,
+                "format": {"format_name": "matroska,webm", "duration": "299.994"},
+            })
+            with self.subTest(name=name), \
+                    patch("localassemble.run_tool", return_value=metadata), \
+                    self.assertRaisesRegex(localassemble.ValidationFailure,
+                                           "video_stream_inventory"):
+                localassemble.probe_video(
+                    "trusted-ffprobe", Path("recording.webm"))
+
+    def test_full_decode_checks_every_source_stream_with_null_sink(self):
         with patch("localassemble.run_tool") as run:
             localassemble.fully_decode("trusted-ffmpeg", Path("recording.mp4"))
         self.assertEqual(run.call_args.args[:5],
                          ("trusted-ffmpeg", "-v", "error", "-xerror", "-i"))
-        self.assertEqual(run.call_args.args[-5:], ("-map", "0:v:0", "-f", "null", "-"))
+        self.assertEqual(run.call_args.args[-5:], ("-map", "0", "-f", "null", "-"))
         self.assertEqual(run.call_args.kwargs, {
             "timeout": localassemble.LOCAL_MEDIA_TIMEOUT_SECONDS,
         })
