@@ -39,7 +39,10 @@ import com.bitchat.android.ui.ChatViewModel
 import com.bitchat.android.ui.OrientationAwareActivity
 import com.bitchat.android.ui.theme.BitchatTheme
 import com.bitchat.android.services.VerificationService
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 
 class MainActivity : OrientationAwareActivity() {
@@ -55,6 +58,7 @@ class MainActivity : OrientationAwareActivity() {
     private lateinit var unifiedMeshService: MeshService
     private val mainViewModel: MainViewModel by viewModels()
     private var pendingMeshForegroundServiceStart = false
+    private var initializationJob: Job? = null
     private var runtimeAttached by mutableStateOf(false)
     private val routeGate = com.bitchat.android.startup.StartupRouteGate()
     private val chatViewModel: ChatViewModel by viewModels { 
@@ -203,12 +207,34 @@ class MainActivity : OrientationAwareActivity() {
         unifiedMeshService = com.bitchat.android.service.MeshServiceHolder.getUnifiedOrCreate(applicationContext)
         runtimeAttached = true
         startMeshForegroundServiceBestEffort()
-        if (mainViewModel.onboardingState.value == OnboardingState.CHECKING) checkOnboardingStatus()
-        if (mainViewModel.onboardingState.value == OnboardingState.COMPLETE) {
-            unifiedMeshService.delegate = chatViewModel
-            dispatchPendingRoute()
-            // A recreated activity skips initialization; making the key is idempotent.
-            ensureWeshNostrKey()
+        resumeOnboardingAfterRuntimeAttachment()
+    }
+
+    private fun resumeOnboardingAfterRuntimeAttachment() {
+        when (val state = mainViewModel.onboardingState.value) {
+            OnboardingState.CHECKING -> checkOnboardingStatus()
+            OnboardingState.INITIALIZING, OnboardingState.PERMISSION_REQUESTING -> {
+                if (!permissionManager.areRequiredPermissionsGranted()) {
+                    mainViewModel.updateOnboardingState(OnboardingState.PERMISSION_EXPLANATION)
+                } else if (!permissionManager.isFirstTimeLaunch()) {
+                    if (state == OnboardingState.INITIALIZING) {
+                        initializeApp()
+                    } else {
+                        handleOnboardingComplete()
+                    }
+                } else if (state == OnboardingState.INITIALIZING) {
+                    mainViewModel.updateOnboardingState(OnboardingState.PERMISSION_EXPLANATION)
+                }
+                // An unfinished system prompt still belongs to ActivityResultRegistry;
+                // do not mark first-time completion or skip the welcome on its behalf.
+            }
+            OnboardingState.COMPLETE -> {
+                unifiedMeshService.delegate = chatViewModel
+                dispatchPendingRoute()
+                // A recreated activity skips initialization; making the key is idempotent.
+                ensureWeshNostrKey()
+            }
+            else -> Unit
         }
     }
 
@@ -620,6 +646,14 @@ class MainActivity : OrientationAwareActivity() {
     } catch (_: SecurityException) { false }
     
     private fun handleOnboardingComplete() {
+        val state = mainViewModel.onboardingState.value
+        if (state == OnboardingState.COMPLETE || state == OnboardingState.ERROR) return
+        if (initializationJob?.isActive == true) {
+            if (state == OnboardingState.INITIALIZING) return
+            // A permission flow superseded that job. Its eventual completion must not
+            // swallow this callback or overwrite the newer phase.
+            initializationJob?.cancel()
+        }
         // After permissions are granted, re-check Bluetooth, Location, and Battery Optimization status
         val currentBluetoothStatus = bluetoothStatusManager.checkBluetoothStatus()
         val currentLocationStatus = if (requiresSystemLocationForMesh()) locationStatusManager.checkLocationStatus() else null
@@ -763,11 +797,19 @@ class MainActivity : OrientationAwareActivity() {
     }
     
     private fun initializeApp() {
-        lifecycleScope.launch {
+        val previousJob = initializationJob
+        if (mainViewModel.onboardingState.value != OnboardingState.INITIALIZING ||
+            previousJob?.isActive == true
+        ) return
+        initializationJob = lifecycleScope.launch {
             try {
+                // A replaced permission flow cancels its old job before entering here.
+                // Wait for that job to finish before attaching the same runtime again.
+                previousJob?.join()
                 // Initialize the app with a proper delay to ensure Bluetooth stack is ready
                 // This solves the issue where app needs restart to work on first install
                 delay(1000) // Give the system time to process permission grants
+                if (mainViewModel.onboardingState.value != OnboardingState.INITIALIZING) return@launch
 
                 // Ensure all permissions are still granted (user might have revoked in settings)
                 if (!permissionManager.areAllPermissionsGranted()) {
@@ -788,12 +830,19 @@ class MainActivity : OrientationAwareActivity() {
 
                 // Small delay to ensure mesh service is fully initialized
                 delay(500)
+                if (mainViewModel.onboardingState.value != OnboardingState.INITIALIZING) return@launch
                 Log.i("MainActivity", "App initialization complete")
                 // Before any screen can show my QR. Covers phones onboarded before keys were made here.
                 if (BuildConfig.WESH_POLICY) com.bitchat.android.services.WeshQrIdentity.ensureKey(applicationContext)
+                ensureActive()
+                if (mainViewModel.onboardingState.value != OnboardingState.INITIALIZING) return@launch
                 mainViewModel.updateOnboardingState(OnboardingState.COMPLETE)
                 dispatchPendingRoute()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
             } catch (e: Exception) {
+                ensureActive()
+                if (mainViewModel.onboardingState.value != OnboardingState.INITIALIZING) return@launch
                 Log.e("MainActivity", "Failed to initialize app", e)
                 handleOnboardingFailed(getString(R.string.wesh_pave_fluo_init_failed))
             }

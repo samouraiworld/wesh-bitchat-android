@@ -8,8 +8,6 @@ import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.lifecycle.lifecycleScope
-import kotlinx.coroutines.launch
 
 /**
  * Coordinates the complete onboarding flow including permission explanation,
@@ -173,11 +171,9 @@ class OnboardingCoordinator(
         // Log final permission status
         permissionManager.logPermissionStatus()
         
-        // Notify completion with a small delay to ensure everything is ready
-        activity.lifecycleScope.launch {
-            kotlinx.coroutines.delay(100) // Small delay for UI state to settle
-            onOnboardingComplete()
-        }
+        // Keep recording and notification in the same main-thread callback. A delay owned
+        // by the Activity could be cancelled after persistence but before initialization.
+        onOnboardingComplete()
     }
 
     /**

@@ -75,6 +75,7 @@ class OnboardingActivityCallbackTest {
     @Config(sdk = [30])
     fun `Android 11 checks the BLE scan switch without gating Settings or Internet`() {
         val fixture = fixture(location = LocationStatus.DISABLED)
+        fixture.model.updateOnboardingState(OnboardingState.PERMISSION_REQUESTING)
 
         fixture.onboardingComplete()
 
