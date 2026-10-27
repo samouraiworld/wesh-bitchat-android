@@ -163,6 +163,28 @@ class EvidenceChecks(unittest.TestCase):
         node = E.Element("node", {"content-desc": "PUBLIC ROOM", "enabled": "true"})
         self.assertIs(capture.select([node], "Public room"), node)
 
+    def test_select_action_ignores_heading_and_returns_actionable_ancestor(self):
+        heading = E.Element("node", {
+            "text": "Turn on Bluetooth", "enabled": "true", "clickable": "false",
+            "bounds": "[20,20][180,60]", "class": "android.widget.TextView",
+        })
+        button = E.Element("node", {
+            "text": "Turn on Bluetooth", "enabled": "true", "clickable": "true",
+            "bounds": "[0,80][200,160]", "class": "android.widget.Button",
+        })
+        self.assertIs(capture.select_action([heading, button], "Turn on Bluetooth"), button)
+
+        action = E.Element("node", {
+            "enabled": "true", "clickable": "true", "bounds": "[0,0][200,80]",
+            "class": "android.view.View",
+        })
+        nested_heading = E.SubElement(action, "node", {
+            "text": "Turn on Bluetooth", "enabled": "true", "clickable": "false",
+            "bounds": "[20,20][180,60]", "class": "android.widget.TextView",
+        })
+        self.assertIs(capture.select_action([action, nested_heading], "Turn on Bluetooth"), action)
+        self.assertIsNone(capture.select_action([heading], "Turn on Bluetooth"))
+
     def test_invalid_ui_bounds_never_tap(self):
         with patch("capture.adb") as command:
             with self.assertRaises(capture.GateError) as failure:
@@ -219,6 +241,35 @@ class EvidenceChecks(unittest.TestCase):
         self.assertEqual(clock[0], 109.0)
         self.assertTrue(all(0 < timeout <= capture.UI_DUMP_COMMAND_SECONDS
                             for _, _, timeout in calls))
+
+    def test_ui_dump_observer_reports_only_closed_phases_and_timings(self):
+        xml = '<hierarchy><node text="Private payload" enabled="true" /></hierarchy>'
+        observed = []
+
+        def command(_serial, *args, timeout):
+            if args[0:2] == ("exec-out", "cat"):
+                return xml
+            return ""
+
+        with patch("capture.time.monotonic", return_value=100.0), \
+             patch("capture.adb", side_effect=command):
+            capture.nodes(
+                capture.SERIALS[0], 120.0,
+                observer=lambda *values: observed.append(values),
+            )
+        self.assertEqual([event[0] for event in observed], [
+            "ui_prepare", "ui_stale", "ui_command", "ui_output", "ui_read",
+            "ui_parse", "ui_complete",
+        ])
+        for event, attempt, allocated, elapsed in observed:
+            self.assertIn(event, capture.ONBOARDING_TRACE_EVENTS)
+            self.assertEqual(attempt, 1)
+            self.assertGreaterEqual(allocated, 0)
+            self.assertGreaterEqual(elapsed, 0)
+        serialized = json.dumps(observed)
+        self.assertNotIn("Private payload", serialized)
+        self.assertNotIn("/data/local/tmp", serialized)
+        self.assertNotIn("emulator-5554", serialized)
 
     def test_ui_dump_caps_calls_to_snapshot_and_caller_deadlines(self):
         xml = '<hierarchy><node text="Public room" enabled="true" /></hierarchy>'
@@ -663,7 +714,8 @@ class EvidenceChecks(unittest.TestCase):
         welcome = [
             E.Element("node", {"text": "Your nickname", "enabled": "true"}),
             E.Element("node", {
-                "text": "Start", "enabled": "true", "bounds": "[0,0][20,20]",
+                "text": "Start", "enabled": "true", "clickable": "true",
+                "bounds": "[0,0][20,20]",
             }),
         ]
         home = [E.Element("node", {"text": "Public room", "enabled": "true"})]
@@ -688,7 +740,8 @@ class EvidenceChecks(unittest.TestCase):
         welcome = [
             E.Element("node", {"text": "Your nickname", "enabled": "true"}),
             E.Element("node", {
-                "text": "Start", "enabled": "true", "bounds": "[0,0][20,20]",
+                "text": "Start", "enabled": "true", "clickable": "true",
+                "bounds": "[0,0][20,20]",
             }),
         ]
         failure = capture.GateError("onboarding_welcome_start", capture.SERIALS[0])
@@ -710,6 +763,130 @@ class EvidenceChecks(unittest.TestCase):
             with self.assertRaises(capture.GateError) as raised:
                 capture.onboarding(capture.SERIALS[1], capture.time.monotonic()+2)
         self.assertEqual(raised.exception.gate, "onboarding_welcome_timeout_b")
+
+    def test_onboarding_preserves_last_phase_only_at_caller_deadline(self):
+        clock = [0.0]
+        observed = []
+
+        def deadline_timeout(*_args, **_kwargs):
+            clock[0] = 10.0
+            kwargs = _kwargs
+            kwargs["observer"]("ui_command", 1, 0.1, 0.1)
+            failure = capture.GateError("ui_dump_command_timeout", capture.SERIALS[0])
+            failure.caller_deadline_reached = True
+            raise failure
+
+        with patch("capture.time.monotonic", side_effect=lambda: clock[0]), \
+             patch("capture.deadline_adb"), patch("capture.wait_activity_resumed"), \
+             patch("capture.nodes", side_effect=deadline_timeout):
+            with self.assertRaises(capture.GateError) as raised:
+                capture.onboarding(
+                    capture.SERIALS[0], 10.0,
+                    observer=lambda *values: observed.append(values),
+                )
+        self.assertEqual(raised.exception.gate, "onboarding_unknown_a")
+        self.assertEqual([event[0] for event in observed], ["activity_resumed", "ui_command"])
+
+        clock[0] = 0.0
+        early = capture.GateError("ui_dump_command_timeout", capture.SERIALS[0])
+        with patch("capture.time.monotonic", side_effect=lambda: clock[0]), \
+             patch("capture.deadline_adb"), patch("capture.wait_activity_resumed"), \
+             patch("capture.nodes", side_effect=early):
+            with self.assertRaises(capture.GateError) as raised:
+                capture.onboarding(capture.SERIALS[0], 10.0)
+        self.assertEqual(raised.exception.gate, "ui_dump_command_timeout_a")
+
+    def test_onboarding_does_not_remap_early_timeout_after_retry_sleep_crosses_deadline(self):
+        clock = [0.0]
+
+        def early_timeout(*_args, **_kwargs):
+            clock[0] = 13.0
+            raise capture.GateError("ui_dump_command_timeout", capture.SERIALS[0])
+
+        def cross_deadline(_deadline, _seconds):
+            clock[0] = 13.1
+            return False
+
+        with patch("capture.time.monotonic", side_effect=lambda: clock[0]), \
+             patch("capture.deadline_adb"), patch("capture.wait_activity_resumed"), \
+             patch("capture.ui_dump_attempt", side_effect=early_timeout), \
+             patch("capture.bounded_sleep", side_effect=cross_deadline):
+            with self.assertRaises(capture.GateError) as raised:
+                capture.onboarding(capture.SERIALS[0], 13.1)
+        self.assertEqual(raised.exception.gate, "ui_dump_command_timeout_a")
+        self.assertFalse(raised.exception.caller_deadline_reached)
+
+    def test_onboarding_observer_none_emits_no_trace(self):
+        welcome = [
+            E.Element("node", {"text": "Your nickname", "enabled": "true"}),
+            E.Element("node", {
+                "text": "Start", "enabled": "true", "clickable": "true",
+                "bounds": "[0,0][20,20]",
+            }),
+        ]
+        home = [E.Element("node", {"text": "Public room", "enabled": "true"})]
+        with patch("capture.deadline_adb"), patch("capture.wait_activity_resumed"), \
+             patch("capture.nodes", side_effect=[welcome, home]), patch("capture.tap"), \
+             patch("capture.bounded_sleep", return_value=True), \
+             patch("capture.emit_onboarding_trace") as emit:
+            capture.onboarding(capture.SERIALS[0], capture.time.monotonic() + 2)
+        emit.assert_not_called()
+
+    def test_onboarding_rejects_premature_home_until_welcome_start_home(self):
+        home = [E.Element("node", {"text": "Public room", "enabled": "true"})]
+        welcome = [
+            E.Element("node", {"text": "Your nickname", "enabled": "true"}),
+            E.Element("node", {
+                "text": "Start", "enabled": "true", "clickable": "true",
+                "bounds": "[0,0][20,20]",
+            }),
+        ]
+        with patch("capture.deadline_adb"), patch("capture.wait_activity_resumed"), \
+             patch("capture.nodes", side_effect=[home, welcome, welcome, home]), \
+             patch("capture.tap") as tap, \
+             patch("capture.bounded_sleep", return_value=True):
+            capture.onboarding(capture.SERIALS[0], capture.time.monotonic() + 2)
+        tap.assert_called_once()
+
+    def test_onboarding_home_without_start_never_passes(self):
+        home = [E.Element("node", {"text": "Public room", "enabled": "true"})]
+        welcome_without_start = [
+            E.Element("node", {"text": "Your nickname", "enabled": "true"}),
+        ]
+        with patch("capture.deadline_adb"), patch("capture.wait_activity_resumed"), \
+             patch("capture.nodes", side_effect=[home, welcome_without_start, home]), \
+             patch("capture.tap") as tap, \
+             patch("capture.bounded_sleep", side_effect=[True, True, False]):
+            with self.assertRaises(capture.GateError) as raised:
+                capture.onboarding(capture.SERIALS[0], capture.time.monotonic() + 2)
+        self.assertEqual(raised.exception.gate, "onboarding_welcome_timeout_a")
+        tap.assert_not_called()
+
+    def test_onboarding_observer_receives_only_allowlisted_progress(self):
+        welcome = [
+            E.Element("node", {"text": "Your nickname", "enabled": "true"}),
+            E.Element("node", {
+                "text": "Start", "enabled": "true", "clickable": "true",
+                "bounds": "[0,0][20,20]",
+            }),
+        ]
+        home = [E.Element("node", {"text": "Public room", "enabled": "true"})]
+        observed = []
+
+        with patch("capture.deadline_adb"), patch("capture.wait_activity_resumed"), \
+             patch("capture.nodes", side_effect=[welcome, home]), \
+             patch("capture.tap"), patch("capture.bounded_sleep", return_value=True):
+            capture.onboarding(
+                capture.SERIALS[0], capture.time.monotonic() + 2,
+                observer=lambda *values: observed.append(values),
+            )
+        self.assertEqual([event[0] for event in observed], [
+            "activity_resumed", "welcome_seen", "start_tapped", "home",
+        ])
+        serialized = json.dumps(observed)
+        for forbidden in ("Your nickname", "Public room", "<?xml", "/data/local/tmp",
+                          "emulator-5554"):
+            self.assertNotIn(forbidden, serialized)
 
     def test_main_records_first_launch_setup_and_interaction_under_one_clock(self):
         clock = [0.0]

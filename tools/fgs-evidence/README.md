@@ -43,6 +43,30 @@ The onboarding, read-only diagnostic and video jobs compare three distinct label
 names by exact equality. Adding `fgs-onboarding-reviewed` cannot activate either
 `fgs-emulator-diagnose` or `fgs-emulator-reviewed`; tests enforce that separation.
 
+The first non-media run, `40496918526`, verified canonical preparation and then
+ended after 168.1 seconds at `ui_dump_command_timeout_a`. Cleanup passed, the
+other two jobs were skipped and the run produced no artifact. The elapsed time
+is consistent with the onboarding caller reaching its full 120-second deadline;
+the aggregate gate does not establish which product screen was visible or that
+UIAutomator's normal 13-second command cap was itself insufficient. This run
+therefore does not qualify onboarding and does not justify raising timeouts.
+
+For a separately reviewed future non-media run, the controller now emits a
+second bounded `ONBOARDING_TRACE` line after its existing status line. It contains
+at most 64 events from a fixed enum, aggregate counters and only non-negative
+finite allocated/elapsed timings. Progress enums distinguish activity resume,
+Welcome observation, Start action, permission categories and home; UI enums
+distinguish the dump phases. No UI label, node, XML, path, emulator serial or raw
+command output reaches the trace. The video path passes no observer and gains no
+trace or receipt fields. Both paths now require the ordered real Welcome, Start
+and home observations before onboarding can pass, so a transient home shell is
+not accepted; Start and permission actions must also resolve to an actionable
+button/node rather than an enabled heading. If a dump command expires only
+because the onboarding caller deadline was already reached when that failure
+was observed, the controller preserves its last onboarding phase; an earlier
+dump timeout remains a strict dump failure even if retry delay later crosses the
+caller deadline.
+
 The first reviewed attempt, [40214942196](https://github.com/samouraiworld/wesh-bitchat-android/actions/runs/40214942196),
 failed during Java setup: `21.0.11+10` was not a matching Temurin setup selector.
 Canonical verification, signing, SDK/AVD setup, BLE and recording did not run;

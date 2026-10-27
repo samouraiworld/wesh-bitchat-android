@@ -1,6 +1,7 @@
 import contextlib
 import importlib.util
 import io
+import json
 import os
 from pathlib import Path
 import tempfile
@@ -21,14 +22,27 @@ class OnboardingCheckTests(unittest.TestCase):
         (root / onboarding_check.APK_NAME).write_bytes(b"synthetic canonical fixture")
         return root
 
+    def output_lines(self, output):
+        lines = output.getvalue().splitlines()
+        self.assertEqual(len(lines), 2)
+        self.assertTrue(lines[1].startswith(onboarding_check.TRACE_PREFIX))
+        trace = json.loads(lines[1][len(onboarding_check.TRACE_PREFIX):])
+        return lines[0], trace
+
     def test_pass_uses_one_avd_real_onboarding_and_one_closed_status_line(self):
         with tempfile.TemporaryDirectory() as directory:
             root = self.owned_root(directory)
             output = io.StringIO()
+            def observed_onboarding(_serial, _deadline, observer):
+                observer("activity_resumed", 0, 0.0, 0.5)
+                observer("ui_command", 1, 13.0, 10.2)
+                observer("home", 0, 0.0, 11.0)
+
             with mock.patch.dict(os.environ, {
                     "GITHUB_ACTIONS": "true", "EVIDENCE_HEAD": "a" * 40}, clear=True), \
                     mock.patch.object(onboarding_check, "boot_and_install") as boot, \
-                    mock.patch.object(onboarding_check, "onboarding") as onboarding, \
+                    mock.patch.object(onboarding_check, "onboarding",
+                                      side_effect=observed_onboarding) as onboarding, \
                     mock.patch.object(onboarding_check, "sweep_deferred_ui_dumps") as sweep, \
                     mock.patch.object(onboarding_check, "deferred_ui_dump_counts",
                                       return_value={"a": 0, "b": 0}), \
@@ -40,8 +54,15 @@ class OnboardingCheckTests(unittest.TestCase):
         boot.assert_called_once_with(onboarding_check.SERIAL, root / onboarding_check.APK_NAME)
         onboarding.assert_called_once()
         self.assertEqual(onboarding.call_args.args[0], "emulator-5554")
+        self.assertIsInstance(onboarding.call_args.kwargs["observer"],
+                              onboarding_check.ClosedOnboardingTrace)
         sweep.assert_called_once()
-        self.assertEqual(output.getvalue(), "PASS gate=none elapsedSeconds=3.0\n")
+        status_line, trace = self.output_lines(output)
+        self.assertEqual(status_line, "PASS gate=none elapsedSeconds=3.0")
+        self.assertEqual(trace["counts"]["activity_resumed"], 1)
+        self.assertEqual(trace["counts"]["ui_command"], 1)
+        self.assertEqual(trace["counts"]["home"], 1)
+        self.assertEqual(trace["droppedEvents"], 0)
 
     def test_allowlisted_failure_and_cleanup_failure_remain_redacted(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -59,8 +80,10 @@ class OnboardingCheckTests(unittest.TestCase):
                     contextlib.redirect_stdout(output):
                 status = onboarding_check.main(root)
         self.assertEqual(status, 1)
+        status_line, trace = self.output_lines(output)
         self.assertEqual(
-            output.getvalue(), "FAIL gate=onboarding_welcome_timeout_a elapsedSeconds=2.0\n")
+            status_line, "FAIL gate=onboarding_welcome_timeout_a elapsedSeconds=2.0")
+        self.assertEqual(trace, onboarding_check.empty_trace_payload())
 
         with tempfile.TemporaryDirectory() as directory:
             root = self.owned_root(directory)
@@ -78,8 +101,9 @@ class OnboardingCheckTests(unittest.TestCase):
                     contextlib.redirect_stdout(output):
                 status = onboarding_check.main(root)
         self.assertEqual(status, 1)
+        status_line, _ = self.output_lines(output)
         self.assertEqual(
-            output.getvalue(), "FAIL gate=onboarding_welcome_timeout_a elapsedSeconds=2.0\n")
+            status_line, "FAIL gate=onboarding_welcome_timeout_a elapsedSeconds=2.0")
 
         with tempfile.TemporaryDirectory() as directory:
             root = self.owned_root(directory)
@@ -96,12 +120,32 @@ class OnboardingCheckTests(unittest.TestCase):
                     contextlib.redirect_stdout(output):
                 status = onboarding_check.main(root)
         self.assertEqual(status, 1)
+        status_line, _ = self.output_lines(output)
         self.assertEqual(
-            output.getvalue(), "FAIL gate=ui_cleanup_incomplete_a elapsedSeconds=3.0\n")
+            status_line, "FAIL gate=ui_cleanup_incomplete_a elapsedSeconds=3.0")
         self.assertEqual(
             onboarding_check.closed_status_gate("synthetic_arbitrary_a", False),
             "unclassified_controller_failure",
         )
+
+    def test_trace_is_bounded_strict_and_contains_no_ui_payload(self):
+        trace = onboarding_check.ClosedOnboardingTrace()
+        for index in range(onboarding_check.MAX_TRACE_EVENTS + 3):
+            trace("unknown", 0, 0.0, float(index))
+        payload = onboarding_check.validated_trace_payload(trace)
+        self.assertEqual(len(payload["events"]), onboarding_check.MAX_TRACE_EVENTS)
+        self.assertEqual(payload["droppedEvents"], 3)
+        self.assertEqual(payload["counts"]["unknown"], onboarding_check.MAX_TRACE_EVENTS + 3)
+        serialized = json.dumps(payload)
+        for forbidden in ("Your nickname", "Public room", "<?xml", "/data/local/tmp",
+                          "emulator-5554"):
+            self.assertNotIn(forbidden, serialized)
+        with self.assertRaises(ValueError):
+            trace("not_allowlisted", 0, 0.0, 0.0)
+        with self.assertRaises(ValueError):
+            trace("unknown", 3, 0.0, 0.0)
+        with self.assertRaises(ValueError):
+            trace("unknown", 0, float("inf"), 0.0)
 
     def test_controller_and_runner_have_no_media_path(self):
         controller = (HERE / "onboarding_check.py").read_text()
@@ -115,6 +159,13 @@ class OnboardingCheckTests(unittest.TestCase):
         self.assertNotIn("wait_fgs_active", controller)
         self.assertIn("emulator-5554", runner)
         self.assertNotIn("emulator-5556", runner)
+
+        timeout_trace_line = next(
+            line for line in runner.splitlines()
+            if "ONBOARDING_TRACE {" in line
+        )
+        encoded = timeout_trace_line.split("ONBOARDING_TRACE ", 1)[1].split("'", 1)[0]
+        self.assertEqual(json.loads(encoded), onboarding_check.empty_trace_payload())
 
     def test_workflow_labels_are_exact_and_mutually_exclusive(self):
         workflow = (HERE.parents[1] / ".github/workflows/fgs-emulator-evidence.yml").read_text()

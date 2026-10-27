@@ -2,6 +2,7 @@
 """External UI automation of the unchanged release APK on two synthetic AVDs only."""
 from concurrent.futures import ThreadPoolExecutor
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -29,6 +30,11 @@ UI_DUMP_COMMAND_SECONDS = 13
 UI_DUMP_ATTEMPTS = 2
 UI_POST_CLEANUP_SECONDS = 3
 UI_FILE_COMMAND_SECONDS = 2
+ONBOARDING_TRACE_EVENTS = frozenset({
+    "activity_resumed", "welcome_seen", "start_tapped", "bluetooth", "permission",
+    "notifications", "auxiliary", "home", "unknown", "ui_prepare", "ui_stale",
+    "ui_command", "ui_output", "ui_read", "ui_parse", "ui_complete",
+})
 
 SERIAL_PHASES = frozenset({
     "boot_timeout", "emulator_identity", "api_image", "device_setup",
@@ -135,16 +141,35 @@ def ui_timeout(deadline, cap):
     return None if remaining <= 0 else min(cap, remaining)
 
 
-def ui_adb(serial, deadline, timeout_phase, error_phase, *args, cap):
+def emit_onboarding_trace(observer, event, attempt=0, allocated=0.0, elapsed=0.0):
+    if observer is None:
+        return
+    values = (allocated, elapsed)
+    if (event not in ONBOARDING_TRACE_EVENTS or type(attempt) is not int or attempt < 0
+            or not all(isinstance(value, (int, float)) and not isinstance(value, bool)
+                       and math.isfinite(value) and value >= 0 for value in values)):
+        raise ValueError("Invalid closed onboarding trace event")
+    observer(event, attempt, float(allocated), float(elapsed))
+
+
+def ui_adb(serial, deadline, timeout_phase, error_phase, *args, cap,
+           observer=None, trace_event=None, trace_attempt=0):
     timeout = ui_timeout(deadline, cap)
     if timeout is None:
         raise GateError(timeout_phase, serial)
+    started = time.monotonic() if observer is not None else None
     try:
         return adb(serial, *args, timeout=timeout)
     except subprocess.TimeoutExpired:
         raise GateError(timeout_phase, serial) from None
     except (RuntimeError, ValueError):
         raise GateError(error_phase, serial) from None
+    finally:
+        if observer is not None:
+            emit_onboarding_trace(
+                observer, trace_event, trace_attempt, timeout,
+                max(0.0, time.monotonic() - started),
+            )
 
 
 def owned_ui_dump_path(serial, path):
@@ -224,27 +249,39 @@ def append_scenario_event(receipt, name, video_start, elapsed=None):
     receipt["events"].append({"step": name, "elapsedSeconds": rounded})
 
 
-def ui_dump_attempt(serial, path, deadline):
+def ui_dump_attempt(serial, path, deadline, observer=None, trace_attempt=0):
     """Create, read and remove one fresh hierarchy without exporting its contents."""
     read_complete = False
     try:
         ui_adb(serial, deadline, "ui_dump_prepare_cleanup", "ui_dump_prepare_cleanup",
-               "shell", "rm", "-f", path, cap=UI_FILE_COMMAND_SECONDS)
+               "shell", "rm", "-f", path, cap=UI_FILE_COMMAND_SECONDS,
+               observer=observer, trace_event="ui_prepare", trace_attempt=trace_attempt)
         ui_adb(serial, deadline, "ui_dump_stale", "ui_dump_stale",
-               "shell", "test", "!", "-e", path, cap=UI_FILE_COMMAND_SECONDS)
+               "shell", "test", "!", "-e", path, cap=UI_FILE_COMMAND_SECONDS,
+               observer=observer, trace_event="ui_stale", trace_attempt=trace_attempt)
         ui_adb(serial, deadline, "ui_dump_command_timeout", "ui_dump_command_error",
-               "shell", "uiautomator", "dump", path, cap=UI_DUMP_COMMAND_SECONDS)
+               "shell", "uiautomator", "dump", path, cap=UI_DUMP_COMMAND_SECONDS,
+               observer=observer, trace_event="ui_command", trace_attempt=trace_attempt)
         ui_adb(serial, deadline, "ui_dump_output_missing", "ui_dump_output_missing",
-               "shell", "test", "-s", path, cap=UI_FILE_COMMAND_SECONDS)
+               "shell", "test", "-s", path, cap=UI_FILE_COMMAND_SECONDS,
+               observer=observer, trace_event="ui_output", trace_attempt=trace_attempt)
         xml = ui_adb(serial, deadline, "ui_dump_read", "ui_dump_read",
-                     "exec-out", "cat", path, cap=UI_DUMP_COMMAND_SECONDS)
+                     "exec-out", "cat", path, cap=UI_DUMP_COMMAND_SECONDS,
+                     observer=observer, trace_event="ui_read", trace_attempt=trace_attempt)
         read_complete = True
         if not xml.strip():
             raise GateError("ui_dump_output_missing", serial)
+        parse_started = time.monotonic() if observer is not None else None
         try:
             root = E.fromstring(xml)
         except E.ParseError:
             raise GateError("ui_dump_parse", serial) from None
+        finally:
+            if observer is not None:
+                emit_onboarding_trace(
+                    observer, "ui_parse", trace_attempt, 0.0,
+                    max(0.0, time.monotonic() - parse_started),
+                )
         items = list(root.iter("node"))
         if root.tag != "hierarchy" or not items:
             raise GateError("ui_dump_parse", serial)
@@ -259,25 +296,43 @@ def ui_dump_attempt(serial, path, deadline):
         return items
 
 
-def nodes(serial, deadline):
+def nodes(serial, deadline, observer=None):
     """Take at most two fresh snapshots inside a 26-second/caller deadline."""
-    snapshot_deadline = min(deadline, time.monotonic() + UI_SNAPSHOT_BUDGET_SECONDS)
+    snapshot_started = time.monotonic()
+    snapshot_deadline = min(deadline, snapshot_started + UI_SNAPSHOT_BUDGET_SECONDS)
     if snapshot_deadline - time.monotonic() <= 0:
-        raise GateError("ui_dump_command_timeout", serial)
+        failure = GateError("ui_dump_command_timeout", serial)
+        failure.caller_deadline_reached = time.monotonic() >= deadline
+        raise failure
     last_failure = None
     for attempt in range(UI_DUMP_ATTEMPTS):
         if time.monotonic() >= snapshot_deadline:
             break
         path = ui_dump_path(serial)
         try:
-            return ui_dump_attempt(serial, path, snapshot_deadline)
+            if observer is None:
+                items = ui_dump_attempt(serial, path, snapshot_deadline)
+            else:
+                items = ui_dump_attempt(
+                    serial, path, snapshot_deadline, observer=observer,
+                    trace_attempt=attempt + 1,
+                )
+                emit_onboarding_trace(
+                    observer, "ui_complete", attempt + 1,
+                    max(0.0, snapshot_deadline - snapshot_started),
+                    max(0.0, time.monotonic() - snapshot_started),
+                )
+            return items
         except GateError as failure:
+            failure.caller_deadline_reached = time.monotonic() >= deadline
             last_failure = failure
             if attempt + 1 < UI_DUMP_ATTEMPTS:
                 bounded_sleep(snapshot_deadline, 0.25)
     if last_failure is not None:
         raise last_failure
-    raise GateError("ui_dump_command_timeout", serial)
+    failure = GateError("ui_dump_command_timeout", serial)
+    failure.caller_deadline_reached = time.monotonic() >= deadline
+    raise failure
 
 
 def labels(items):
@@ -289,6 +344,32 @@ def select(items, label, contains=False):
         return label.casefold() in value.casefold() if contains else label.casefold() == value.casefold()
     return next((n for n in items if n.get("enabled") == "true" and
                  any(matches(n.get(key, "")) for key in ("text", "content-desc"))), None)
+
+
+def select_action(items, label, contains=False):
+    """Return a matching actionable node, or its actionable containing ancestor."""
+    def matches(node):
+        def value_matches(value):
+            return (label.casefold() in value.casefold() if contains
+                    else label.casefold() == value.casefold())
+        return (node.get("enabled") == "true"
+                and any(value_matches(node.get(key, ""))
+                        for key in ("text", "content-desc")))
+
+    def actionable(node):
+        return (node.get("enabled") == "true"
+                and (node.get("clickable") == "true"
+                     or node.get("class", "").rsplit(".", 1)[-1] == "Button"))
+
+    direct = next((node for node in items if matches(node) and actionable(node)), None)
+    if direct is not None:
+        return direct
+    for label_node in (node for node in items if matches(node)):
+        for candidate in items:
+            if (actionable(candidate)
+                    and any(descendant is label_node for descendant in candidate.iter("node"))):
+                return candidate
+    return None
 
 
 def tap(serial, node, phase="ui_action", deadline=None):
@@ -334,42 +415,78 @@ def wait_activity_resumed(serial, deadline):
     raise GateError("activity_resume_timeout", serial)
 
 
-def onboarding(serial, deadline):
+def onboarding(serial, deadline, observer=None):
+    trace_started = time.monotonic() if observer is not None else None
+
+    def progress(event):
+        if observer is not None:
+            emit_onboarding_trace(
+                observer, event, 0, 0.0,
+                max(0.0, time.monotonic() - trace_started),
+            )
+
     deadline_adb(serial, "activity_launch", deadline, "shell", "am", "start", "-n", COMPONENT)
     wait_activity_resumed(serial, min(deadline, time.monotonic() + 20))
+    progress("activity_resumed")
     last_phase = "onboarding_unknown"
+    welcome_seen = False
+    start_tapped = False
     while time.monotonic() < deadline:
-        items = nodes(serial, deadline)
-        if select(items, "Public room") is not None:
+        try:
+            items = (nodes(serial, deadline) if observer is None
+                     else nodes(serial, deadline, observer=observer))
+        except GateError as failure:
+            if (failure.gate == gate_name("ui_dump_command_timeout", serial)
+                    and getattr(failure, "caller_deadline_reached", False)):
+                break
+            raise
+        home_visible = select(items, "Public room") is not None
+        if home_visible and welcome_seen and start_tapped:
+            progress("home")
             return
         nickname_label = select(items, "Your nickname")
         if nickname_label is not None:
+            if not welcome_seen:
+                welcome_seen = True
+                progress("welcome_seen")
             last_phase = "onboarding_welcome_timeout"
-            start = select(items, "Start")
-            if start is not None:
+            start = select_action(items, "Start")
+            if start is not None and not start_tapped:
                 tap(serial, start, "onboarding_welcome_start", deadline)
+                start_tapped = True
+                progress("start_tapped")
+            if not bounded_sleep(deadline, 0.4):
+                break
+            continue
+
+        if home_visible:
+            last_phase = ("onboarding_welcome_timeout" if welcome_seen
+                          else "onboarding_unknown")
+            progress("unknown")
             if not bounded_sleep(deadline, 0.4):
                 break
             continue
 
         actions = (
-            ("Allow notifications", "onboarding_notifications"),
-            ("While using the app", "onboarding_permission"),
-            ("Allow", "onboarding_permission"),
-            ("Continue", "onboarding_bluetooth"),
-            ("Turn on Bluetooth", "onboarding_bluetooth"),
-            ("Skip for Now", "onboarding_auxiliary"),
+            ("Allow notifications", "onboarding_notifications", "notifications"),
+            ("While using the app", "onboarding_permission", "permission"),
+            ("Allow", "onboarding_permission", "permission"),
+            ("Continue", "onboarding_bluetooth", "bluetooth"),
+            ("Turn on Bluetooth", "onboarding_bluetooth", "bluetooth"),
+            ("Skip for Now", "onboarding_auxiliary", "auxiliary"),
         )
         acted = False
-        for label, phase in actions:
-            target = select(items, label)
+        for label, phase, progress_event in actions:
+            target = select_action(items, label)
             if target is not None:
                 last_phase = phase
                 tap(serial, target, phase, deadline)
+                progress(progress_event)
                 acted = True
                 break
         if not acted:
             last_phase = "onboarding_unknown"
+            progress("unknown")
         if not bounded_sleep(deadline, 0.4):
             break
     raise GateError(last_phase, serial)
