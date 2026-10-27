@@ -23,6 +23,7 @@ jobs:
       - run: bash -n tools/fgs-evidence/run.sh
       - run: bash -n tools/fgs-evidence/run-onboarding.sh
       - run: bash -n tools/fgs-evidence/run-scenario.sh
+      - run: bash -n tools/fgs-evidence/build-ui-reader.sh
 
   diagnostic:
     if: >-

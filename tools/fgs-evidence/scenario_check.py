@@ -17,9 +17,12 @@ from capture import (
     SERIALS,
     SERIAL_PHASES,
     boot_and_install,
+    cleanup_ui_reader,
+    configure_ui_reader,
     deferred_ui_dump_counts,
     run_product_scenario,
     sweep_deferred_ui_dumps,
+    ui_reader_healthcheck,
 )
 from onboarding_check import (
     ClosedOnboardingTrace,
@@ -29,6 +32,7 @@ from onboarding_check import (
 
 
 APK_NAME = "wesh108-test-signed.apk"
+UI_READER_NAME = "wesh-ui-reader.jar"
 CONTROLLER_LIMIT_SECONDS = 650
 TRACE_PREFIX = "SCENARIO_TRACE "
 PRODUCT_STEPS = SCENARIO_STEPS[1:]
@@ -60,7 +64,9 @@ def main(root: Path) -> int:
         if len(head) != 40 or any(character not in "0123456789abcdef" for character in head):
             raise RuntimeError("Invalid reviewed head")
         apk = root / APK_NAME
-        if not apk.is_file() or apk.is_symlink():
+        reader = root / UI_READER_NAME
+        if (not apk.is_file() or apk.is_symlink()
+                or not reader.is_file() or reader.is_symlink()):
             raise RuntimeError("Missing verified test APK")
 
         with ThreadPoolExecutor(2) as pool:
@@ -68,11 +74,20 @@ def main(root: Path) -> int:
             for future in futures:
                 future.result()
 
+        reader_deadline = min(controller_deadline, time.monotonic() + 60)
+        for serial in SERIALS:
+            configure_ui_reader(serial, reader, reader_deadline)
+        with ThreadPoolExecutor(2) as pool:
+            futures = [pool.submit(ui_reader_healthcheck, serial, reader_deadline)
+                       for serial in SERIALS]
+            for future in futures:
+                future.result()
+
         scenario_started = time.monotonic()
         scenario_deadline = min(
             controller_deadline, scenario_started + SCENARIO_BUDGET_SECONDS)
         events = [{"step": "scenario_started", "elapsedSeconds": 0.0}]
-        trace("scenario_started", 0, 0.0, 0.0)
+        trace("scenario_started", "global", 0, 0.0, 0.0)
 
         def event(name):
             index = len(events) - 1
@@ -93,9 +108,16 @@ def main(root: Path) -> int:
     except Exception:
         gate = "unclassified_controller_failure"
     finally:
+        reader_cleanup_complete = True
+        for serial in SERIALS:
+            try:
+                cleanup_ui_reader(serial, min(controller_deadline, time.monotonic() + 5))
+            except Exception:
+                reader_cleanup_complete = False
         try:
             sweep_deferred_ui_dumps(min(controller_deadline, time.monotonic() + 6))
-            cleanup_complete = deferred_ui_dump_counts() == {"a": 0, "b": 0}
+            cleanup_complete = (reader_cleanup_complete
+                                and deferred_ui_dump_counts() == {"a": 0, "b": 0})
         except Exception:
             cleanup_complete = False
         if not cleanup_complete:

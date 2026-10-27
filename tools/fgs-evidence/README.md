@@ -54,6 +54,47 @@ upload or `GITHUB_OUTPUT`, and always removes its disposable APK, keys, AVDs and
 SDK logs. A PASS qualifies only this synthetic two-AVD non-media scenario; it is
 not physical-device, Play-signing, video or public-release evidence.
 
+The consumed non-media scenario run `40509022819` reached the disposable
+two-AVD controller and ended at `ui_dump_output_missing_a` after 107.0 seconds.
+Its closed trace proves that two side-A dump attempts reached the output check
+without a nonempty hierarchy file; because the same bounded trace was shared by
+both onboarding threads, it does not attribute the recorded home observation to
+side A. No raw stderr or XML was retained, so the run cannot distinguish the
+platform dumper's documented idle-timeout and null-root branches. It produced no
+artifact and does not qualify the product scenario.
+
+For the next separately reviewed **non-media scenario only**, the tools build a
+small one-shot DEX reader from `ui-reader/UiHierarchyReader.java`. It compiles
+against the installed API 35 `android.jar` and converts with the repository's
+pinned Android build tools 37.0.0 (`gradle/libs.versions.toml`), without Maven,
+Gradle dependencies, instrumentation APKs or product changes. The shell process
+loads that DEX together with `/system/framework/uiautomator.jar`, reflects only
+public constructors and methods on the platform `UiAutomationShellWrapper` and
+`AccessibilityNodeInfoDumper`, disables compressed layout hierarchy, then calls
+public `UiAutomation.getRootInActiveWindow()` directly. It never calls
+`waitForIdle`, changes `FLAG_SECURE`, takes a screenshot, uses root, grants a
+permission or enables a hidden-API exemption.
+
+Each disposable side receives a nonce-scoped controller-owned reader path and
+XML path. The controller checks the reader SHA-256 after push, healthchecks a
+fresh, complete `hierarchy` containing at least one `node` before the first app
+launch, and then makes every snapshot use that reader with no silent fallback to
+classic `uiautomator dump`. Root-null, bridge, API, dump, output, disconnect,
+checksum and cleanup failures map to fixed gates; raw output, XML, paths and
+exceptions remain unexported. Disconnect runs in `finally`, and the controller
+removes and proves absence of the guest reader during its existing always-cleanup
+path. The same two retries and 13/26/165-second bounds remain unchanged. This is
+an empirical compatibility check for the pinned API 35 Google APIs image: the
+reflected classes are platform `@hide` classes even though the invoked members
+are public, so static compilation alone is not a runtime qualification.
+
+The closed non-media trace is schema version 2. Every retained record now carries
+only `side=a`, `side=b` or `side=global`; it never uses a serial as an identifier.
+The existing 64-record head/tail bound, aggregate counts, finite timings and
+fixed event enum remain unchanged. Media and standalone-onboarding jobs retain
+their current reader until a distinct reviewed follow-up explicitly proves
+parity; this first tools-only lot neither runs nor authorizes a recording.
+
 The first non-media run, `40496918526`, verified canonical preparation and then
 ended after 168.1 seconds at `ui_dump_command_timeout_a`. Cleanup passed, the
 other two jobs were skipped and the run produced no artifact. The elapsed time

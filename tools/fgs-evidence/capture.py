@@ -6,6 +6,7 @@ import math
 import os
 from pathlib import Path
 import re
+import secrets
 import subprocess
 import sys
 from threading import Lock
@@ -30,6 +31,9 @@ UI_DUMP_COMMAND_SECONDS = 13
 UI_DUMP_ATTEMPTS = 2
 UI_POST_CLEANUP_SECONDS = 3
 UI_FILE_COMMAND_SECONDS = 2
+UI_READER_HOST_JAR = "wesh-ui-reader.jar"
+UI_READER_CLASS = "org.samouraiworld.wesh.tools.UiHierarchyReader"
+UI_READER_SUCCESS = "WESH_UI_READER_OK"
 ONBOARDING_TRACE_EVENTS = frozenset({
     "activity_resumed", "welcome_seen", "start_tapped", "bluetooth", "permission",
     "notifications", "auxiliary", "home", "unknown", "ui_prepare", "ui_stale",
@@ -57,6 +61,9 @@ SERIAL_PHASES = frozenset({
     "notification_visible", "notification_open", "quit_action", "quit_timeout",
     "host_recorder_help_transport", "host_recorder_help_contract", "host_recorder_start",
     "host_recording_file",
+    "ui_reader_prepare", "ui_reader_push", "ui_reader_hash", "ui_reader_root_null",
+    "ui_reader_bridge", "ui_reader_api", "ui_reader_dump", "ui_reader_output",
+    "ui_reader_disconnect", "ui_reader_cleanup",
 })
 GLOBAL_GATES = frozenset({
     "unclassified_controller_failure", "scenario_budget", "scenario_clock", "evidence_export",
@@ -72,8 +79,12 @@ SCENARIO_STEPS = (
 
 _UI_DUMP_SEQUENCE_LOCK = Lock()
 _UI_DUMP_SEQUENCE = {serial: 0 for serial in SERIALS}
+_UI_DUMP_NONCE = secrets.token_hex(8)
 _UI_DUMP_DEFERRED_LOCK = Lock()
 _UI_DUMP_DEFERRED = {serial: set() for serial in SERIALS}
+_UI_READER_LOCK = Lock()
+_UI_READER_PATHS = {}
+_UI_READER_READY = set()
 
 
 def gate_name(phase, serial=None):
@@ -108,7 +119,7 @@ def gated(serial, phase, operation):
         return operation()
     except GateError:
         raise
-    except (RuntimeError, ValueError, subprocess.TimeoutExpired, E.ParseError):
+    except (RuntimeError, ValueError, OSError, subprocess.TimeoutExpired, E.ParseError):
         raise GateError(phase, serial) from None
 
 
@@ -139,7 +150,8 @@ def ui_dump_path(serial):
     with _UI_DUMP_SEQUENCE_LOCK:
         _UI_DUMP_SEQUENCE[serial] += 1
         sequence = _UI_DUMP_SEQUENCE[serial]
-    return f"/data/local/tmp/wesh-fgs-window-{SIDES[serial]}-{sequence:08d}.xml"
+    return (f"/data/local/tmp/wesh-fgs-window-{SIDES[serial]}-{_UI_DUMP_NONCE}-"
+            f"{sequence:08d}.xml")
 
 
 def ui_timeout(deadline, cap):
@@ -148,7 +160,8 @@ def ui_timeout(deadline, cap):
     return None if remaining <= 0 else min(cap, remaining)
 
 
-def emit_onboarding_trace(observer, event, attempt=0, allocated=0.0, elapsed=0.0):
+def emit_onboarding_trace(observer, event, attempt=0, allocated=0.0, elapsed=0.0,
+                          serial=None):
     if observer is None:
         return
     values = (allocated, elapsed)
@@ -156,7 +169,10 @@ def emit_onboarding_trace(observer, event, attempt=0, allocated=0.0, elapsed=0.0
             or not all(isinstance(value, (int, float)) and not isinstance(value, bool)
                        and math.isfinite(value) and value >= 0 for value in values)):
         raise ValueError("Invalid closed onboarding trace event")
-    observer(event, attempt, float(allocated), float(elapsed))
+    side = "global" if serial is None else SIDES.get(serial)
+    if side not in {"a", "b", "global"}:
+        raise ValueError("Invalid closed onboarding trace side")
+    observer(event, side, attempt, float(allocated), float(elapsed))
 
 
 def ui_adb(serial, deadline, timeout_phase, error_phase, *args, cap,
@@ -169,20 +185,21 @@ def ui_adb(serial, deadline, timeout_phase, error_phase, *args, cap,
         return adb(serial, *args, timeout=timeout)
     except subprocess.TimeoutExpired:
         raise GateError(timeout_phase, serial) from None
-    except (RuntimeError, ValueError):
+    except (RuntimeError, ValueError, OSError):
         raise GateError(error_phase, serial) from None
     finally:
         if observer is not None:
             emit_onboarding_trace(
                 observer, trace_event, trace_attempt, timeout,
                 max(0.0, time.monotonic() - started),
+                serial=serial,
             )
 
 
 def owned_ui_dump_path(serial, path):
     side = SIDES.get(serial)
     return side is not None and re.fullmatch(
-        rf"/data/local/tmp/wesh-fgs-window-{side}-\d{{8}}\.xml", path,
+        rf"/data/local/tmp/wesh-fgs-window-{side}-[0-9a-f]{{16}}-\d{{8}}\.xml", path,
     ) is not None
 
 
@@ -256,6 +273,126 @@ def append_scenario_event(receipt, name, video_start, elapsed=None):
     receipt["events"].append({"step": name, "elapsedSeconds": rounded})
 
 
+def ui_reader_guest_path(serial):
+    if serial not in SIDES:
+        raise ValueError("Only the two owned emulator serials are allowed")
+    return f"/data/local/tmp/wesh-fgs-ui-reader-{SIDES[serial]}-{_UI_DUMP_NONCE}.jar"
+
+
+def owned_ui_reader_path(serial, path):
+    side = SIDES.get(serial)
+    return side is not None and re.fullmatch(
+        rf"/data/local/tmp/wesh-fgs-ui-reader-{side}-[0-9a-f]{{16}}\.jar", path,
+    ) is not None
+
+
+def configure_ui_reader(serial, host_jar, deadline):
+    """Push and checksum one tools-only reader for an explicitly selected serial."""
+    host_jar = Path(host_jar)
+    if (host_jar.name != UI_READER_HOST_JAR or not host_jar.is_file()
+            or host_jar.is_symlink()):
+        raise GateError("ui_reader_prepare", serial)
+    expected = digest(host_jar)
+    if re.fullmatch(r"[0-9a-f]{64}", expected) is None:
+        raise GateError("ui_reader_hash", serial)
+    guest = ui_reader_guest_path(serial)
+    with _UI_READER_LOCK:
+        existing = _UI_READER_PATHS.get(serial)
+        if existing is not None and existing != guest:
+            raise GateError("ui_reader_prepare", serial)
+        _UI_READER_PATHS[serial] = guest
+        _UI_READER_READY.discard(serial)
+    try:
+        deadline_adb(serial, "ui_reader_prepare", deadline,
+                     "shell", "rm", "-f", guest, cap=UI_FILE_COMMAND_SECONDS)
+        deadline_adb(serial, "ui_reader_prepare", deadline,
+                     "shell", "test", "!", "-e", guest, cap=UI_FILE_COMMAND_SECONDS)
+        deadline_adb(serial, "ui_reader_push", deadline,
+                     "push", str(host_jar), guest, cap=12)
+        deadline_adb(serial, "ui_reader_push", deadline,
+                     "shell", "test", "-s", guest, cap=UI_FILE_COMMAND_SECONDS)
+        output = deadline_adb(serial, "ui_reader_hash", deadline,
+                              "shell", "sha256sum", guest, cap=UI_FILE_COMMAND_SECONDS)
+        match = re.fullmatch(r"([0-9a-f]{64})\s+\S+\s*", output)
+        if match is None or match.group(1) != expected:
+            raise GateError("ui_reader_hash", serial)
+    except Exception:
+        try:
+            timeout = ui_timeout(deadline, UI_POST_CLEANUP_SECONDS)
+            if timeout is not None:
+                adb(serial, "shell", "rm", "-f", guest, timeout=timeout)
+        except (RuntimeError, ValueError, OSError, subprocess.TimeoutExpired):
+            pass
+        raise
+    with _UI_READER_LOCK:
+        _UI_READER_READY.add(serial)
+
+
+def cleanup_ui_reader(serial, deadline):
+    """Remove only the explicitly configured reader and prove it is absent."""
+    with _UI_READER_LOCK:
+        guest = _UI_READER_PATHS.get(serial)
+    if guest is None:
+        return
+    if not owned_ui_reader_path(serial, guest):
+        raise GateError("ui_reader_cleanup", serial)
+    deadline_adb(serial, "ui_reader_cleanup", deadline,
+                 "shell", "rm", "-f", guest, cap=UI_POST_CLEANUP_SECONDS)
+    deadline_adb(serial, "ui_reader_cleanup", deadline,
+                 "shell", "test", "!", "-e", guest, cap=UI_FILE_COMMAND_SECONDS)
+    with _UI_READER_LOCK:
+        if _UI_READER_PATHS.get(serial) == guest:
+            del _UI_READER_PATHS[serial]
+        _UI_READER_READY.discard(serial)
+
+
+def ui_reader_command(serial, path, deadline, observer=None, trace_attempt=0):
+    with _UI_READER_LOCK:
+        guest = _UI_READER_PATHS.get(serial)
+        ready = serial in _UI_READER_READY
+    if guest is None or not ready or not owned_ui_reader_path(serial, guest):
+        raise GateError("ui_reader_prepare", serial)
+    if not owned_ui_dump_path(serial, path):
+        raise GateError("ui_reader_prepare", serial)
+    timeout = ui_timeout(deadline, UI_DUMP_COMMAND_SECONDS)
+    if timeout is None:
+        raise GateError("ui_dump_command_timeout", serial)
+    started = time.monotonic() if observer is not None else None
+    try:
+        result = subprocess.run([
+            "adb", "-s", serial, "shell", "env",
+            f"CLASSPATH={guest}:/system/framework/uiautomator.jar",
+            "app_process", "/system/bin", UI_READER_CLASS, path,
+        ], capture_output=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise GateError("ui_dump_command_timeout", serial) from None
+    except (OSError, ValueError):
+        raise GateError("ui_dump_command_error", serial) from None
+    finally:
+        if observer is not None:
+            emit_onboarding_trace(
+                observer, "ui_command", trace_attempt, timeout,
+                max(0.0, time.monotonic() - started), serial=serial,
+            )
+    failure_by_status = {
+        20: "ui_reader_api", 21: "ui_reader_bridge", 22: "ui_reader_api",
+        23: "ui_reader_root_null", 24: "ui_reader_dump",
+        25: "ui_reader_output", 26: "ui_reader_disconnect",
+    }
+    if result.returncode != 0:
+        raise GateError(failure_by_status.get(
+            result.returncode, "ui_dump_command_error"), serial)
+    lines = [line.strip() for line in result.stdout.decode(
+        errors="replace").splitlines() if line.strip()]
+    if not lines or lines[-1] != UI_READER_SUCCESS:
+        raise GateError("ui_reader_output", serial)
+
+
+def ui_reader_healthcheck(serial, deadline):
+    """Prove the configured one-shot reader returns a parseable nonempty hierarchy."""
+    nodes(serial, deadline)
+
+
 def ui_dump_attempt(serial, path, deadline, observer=None, trace_attempt=0):
     """Create, read and remove one fresh hierarchy without exporting its contents."""
     read_complete = False
@@ -266,9 +403,18 @@ def ui_dump_attempt(serial, path, deadline, observer=None, trace_attempt=0):
         ui_adb(serial, deadline, "ui_dump_stale", "ui_dump_stale",
                "shell", "test", "!", "-e", path, cap=UI_FILE_COMMAND_SECONDS,
                observer=observer, trace_event="ui_stale", trace_attempt=trace_attempt)
-        ui_adb(serial, deadline, "ui_dump_command_timeout", "ui_dump_command_error",
-               "shell", "uiautomator", "dump", path, cap=UI_DUMP_COMMAND_SECONDS,
-               observer=observer, trace_event="ui_command", trace_attempt=trace_attempt)
+        with _UI_READER_LOCK:
+            reader_configured = serial in _UI_READER_PATHS
+            reader_ready = serial in _UI_READER_READY
+        if reader_configured and not reader_ready:
+            raise GateError("ui_reader_prepare", serial)
+        if reader_ready:
+            ui_reader_command(
+                serial, path, deadline, observer=observer, trace_attempt=trace_attempt)
+        else:
+            ui_adb(serial, deadline, "ui_dump_command_timeout", "ui_dump_command_error",
+                   "shell", "uiautomator", "dump", path, cap=UI_DUMP_COMMAND_SECONDS,
+                   observer=observer, trace_event="ui_command", trace_attempt=trace_attempt)
         ui_adb(serial, deadline, "ui_dump_output_missing", "ui_dump_output_missing",
                "shell", "test", "-s", path, cap=UI_FILE_COMMAND_SECONDS,
                observer=observer, trace_event="ui_output", trace_attempt=trace_attempt)
@@ -288,6 +434,7 @@ def ui_dump_attempt(serial, path, deadline, observer=None, trace_attempt=0):
                 emit_onboarding_trace(
                     observer, "ui_parse", trace_attempt, 0.0,
                     max(0.0, time.monotonic() - parse_started),
+                    serial=serial,
                 )
         items = list(root.iter("node"))
         if root.tag != "hierarchy" or not items:
@@ -328,6 +475,7 @@ def nodes(serial, deadline, observer=None):
                     observer, "ui_complete", attempt + 1,
                     max(0.0, snapshot_deadline - snapshot_started),
                     max(0.0, time.monotonic() - snapshot_started),
+                    serial=serial,
                 )
             return items
         except GateError as failure:
@@ -447,6 +595,7 @@ def onboarding(serial, deadline, observer=None):
             emit_onboarding_trace(
                 observer, event, 0, 0.0,
                 max(0.0, time.monotonic() - trace_started),
+                serial=serial,
             )
 
     deadline_adb(serial, "activity_launch", deadline, "shell", "am", "start", "-n", COMPONENT)
@@ -519,10 +668,10 @@ def onboarding(serial, deadline, observer=None):
 def trace_scenario_progress(observer, event, started, serial=None):
     if observer is None:
         return
-    attempt = 0 if serial is None else (1 if SIDES[serial] == "a" else 2)
     emit_onboarding_trace(
-        observer, event, attempt, 0.0,
+        observer, event, 0, 0.0,
         max(0.0, time.monotonic() - started),
+        serial=serial,
     )
 
 

@@ -37,7 +37,7 @@ ALLOWED_OUTPUT_GATES = LOCAL_GATES | frozenset(
 
 def empty_trace_payload():
     return {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "events": [],
         "counts": {event: 0 for event in sorted(ONBOARDING_TRACE_EVENTS)},
         "droppedEvents": 0,
@@ -49,15 +49,17 @@ class ClosedOnboardingTrace:
         self.payload = empty_trace_payload()
         self.lock = Lock()
 
-    def __call__(self, event, attempt, allocated, elapsed):
+    def __call__(self, event, side, attempt, allocated, elapsed):
         values = (allocated, elapsed)
-        if (event not in ONBOARDING_TRACE_EVENTS or type(attempt) is not int
+        if (event not in ONBOARDING_TRACE_EVENTS or side not in {"a", "b", "global"}
+                or type(attempt) is not int
                 or not 0 <= attempt <= 2
                 or not all(type(value) in (int, float) and math.isfinite(value)
                            and 0 <= value <= CONTROLLER_LIMIT_SECONDS for value in values)):
             raise ValueError("Invalid closed onboarding trace event")
         record = {
             "event": event,
+            "side": side,
             "attempt": attempt,
             "allocatedSeconds": round(float(allocated), 3),
             "elapsedSeconds": round(float(elapsed), 3),
@@ -76,7 +78,7 @@ def validated_trace_payload(trace):
     payload = trace.payload
     if set(payload) != {"schemaVersion", "events", "counts", "droppedEvents"}:
         raise ValueError("Invalid closed onboarding trace schema")
-    if payload["schemaVersion"] != 1 or set(payload["counts"]) != ONBOARDING_TRACE_EVENTS:
+    if payload["schemaVersion"] != 2 or set(payload["counts"]) != ONBOARDING_TRACE_EVENTS:
         raise ValueError("Invalid closed onboarding trace enums")
     if (len(payload["events"]) > MAX_TRACE_EVENTS
             or type(payload["droppedEvents"]) is not int or payload["droppedEvents"] < 0
@@ -86,8 +88,9 @@ def validated_trace_payload(trace):
     if sum(payload["counts"].values()) != len(payload["events"]) + payload["droppedEvents"]:
         raise ValueError("Inconsistent closed onboarding trace counts")
     for record in payload["events"]:
-        if (set(record) != {"event", "attempt", "allocatedSeconds", "elapsedSeconds"}
+        if (set(record) != {"event", "side", "attempt", "allocatedSeconds", "elapsedSeconds"}
                 or record["event"] not in ONBOARDING_TRACE_EVENTS
+                or record["side"] not in {"a", "b", "global"}
                 or type(record["attempt"]) is not int or not 0 <= record["attempt"] <= 2):
             raise ValueError("Invalid closed onboarding trace record")
         for field in ("allocatedSeconds", "elapsedSeconds"):

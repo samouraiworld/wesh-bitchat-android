@@ -54,6 +54,7 @@ if not (enough_disk and enough_memory and enough_cpu):
 PY
 
 timeout 480 sdkmanager 'emulator' 'platform-tools' \
+  'platforms;android-35' 'build-tools;37.0.0' \
   'system-images;android-35;google_apis;x86_64' >"$root/sdk-setup.log" 2>&1 \
   || fail sdkmanager_install
 python3 - "$ANDROID_SDK_ROOT" <<'PY' || fail sdk_revision
@@ -71,6 +72,12 @@ try:
 except BaseException:
     raise SystemExit(1)
 PY
+[[ -f "$ANDROID_SDK_ROOT/platforms/android-35/android.jar" \
+   && ! -L "$ANDROID_SDK_ROOT/platforms/android-35/android.jar" \
+   && -x "$ANDROID_SDK_ROOT/build-tools/37.0.0/d8" \
+   && ! -L "$ANDROID_SDK_ROOT/build-tools/37.0.0/d8" ]] || fail ui_reader_sdk
+bash tools/fgs-evidence/build-ui-reader.sh "$root/wesh-ui-reader.jar" \
+  >"$root/ui-reader-build.log" 2>&1 || fail ui_reader_build
 emulator -accel-check >"$root/accel.log" 2>&1 || fail emulator_acceleration
 
 for name in wesh-scenario-a wesh-scenario-b; do

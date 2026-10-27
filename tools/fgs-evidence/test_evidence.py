@@ -51,6 +51,9 @@ class EvidenceChecks(unittest.TestCase):
         with capture._UI_DUMP_DEFERRED_LOCK:
             for paths in capture._UI_DUMP_DEFERRED.values():
                 paths.clear()
+        with capture._UI_READER_LOCK:
+            capture._UI_READER_PATHS.clear()
+            capture._UI_READER_READY.clear()
 
     def archive(self, directory, name, entries):
         path = Path(directory) / name
@@ -384,8 +387,9 @@ class EvidenceChecks(unittest.TestCase):
             "ui_prepare", "ui_stale", "ui_command", "ui_output", "ui_read",
             "ui_parse", "ui_complete",
         ])
-        for event, attempt, allocated, elapsed in observed:
+        for event, side, attempt, allocated, elapsed in observed:
             self.assertIn(event, capture.ONBOARDING_TRACE_EVENTS)
+            self.assertEqual(side, "a")
             self.assertEqual(attempt, 1)
             self.assertGreaterEqual(allocated, 0)
             self.assertGreaterEqual(elapsed, 0)
@@ -509,8 +513,14 @@ class EvidenceChecks(unittest.TestCase):
             capture.nodes(capture.SERIALS[1], capture.time.monotonic()+2)
         dump_paths = {serial: args[-1] for serial, args in calls
                       if args[0:3] == ("shell", "uiautomator", "dump")}
-        self.assertRegex(dump_paths[capture.SERIALS[0]], r"wesh-fgs-window-a-\d{8}\.xml$")
-        self.assertRegex(dump_paths[capture.SERIALS[1]], r"wesh-fgs-window-b-\d{8}\.xml$")
+        self.assertRegex(
+            dump_paths[capture.SERIALS[0]],
+            r"wesh-fgs-window-a-[0-9a-f]{16}-\d{8}\.xml$",
+        )
+        self.assertRegex(
+            dump_paths[capture.SERIALS[1]],
+            r"wesh-fgs-window-b-[0-9a-f]{16}-\d{8}\.xml$",
+        )
         self.assertNotEqual(*dump_paths.values())
         for serial, path in dump_paths.items():
             removals = [args for call_serial, args in calls if call_serial == serial and
@@ -571,8 +581,8 @@ class EvidenceChecks(unittest.TestCase):
         self.assertNotIn("private", str(failure.exception))
 
     def test_ui_dump_sweep_uses_only_owned_paths_and_exports_counts_only(self):
-        owned_a = "/data/local/tmp/wesh-fgs-window-a-00000001.xml"
-        owned_b = "/data/local/tmp/wesh-fgs-window-b-00000001.xml"
+        owned_a = "/data/local/tmp/wesh-fgs-window-a-0123456789abcdef-00000001.xml"
+        owned_b = "/data/local/tmp/wesh-fgs-window-b-0123456789abcdef-00000001.xml"
         self.assertTrue(capture.defer_ui_dump_cleanup(capture.SERIALS[0], owned_a))
         self.assertTrue(capture.defer_ui_dump_cleanup(capture.SERIALS[1], owned_b))
         self.assertFalse(capture.defer_ui_dump_cleanup(
@@ -590,7 +600,7 @@ class EvidenceChecks(unittest.TestCase):
         self.assertEqual(capture.deferred_ui_dump_counts(), {"a": 0, "b": 0})
 
     def test_ui_dump_sweep_failure_is_bounded_and_keeps_only_count(self):
-        owned = "/data/local/tmp/wesh-fgs-window-a-00000001.xml"
+        owned = "/data/local/tmp/wesh-fgs-window-a-0123456789abcdef-00000001.xml"
         capture.defer_ui_dump_cleanup(capture.SERIALS[0], owned)
         with patch("capture.adb", side_effect=OSError("private sweep spawn detail")) as command:
             capture.sweep_deferred_ui_dumps(capture.time.monotonic()+6)
@@ -897,7 +907,7 @@ class EvidenceChecks(unittest.TestCase):
         def deadline_timeout(*_args, **_kwargs):
             clock[0] = 10.0
             kwargs = _kwargs
-            kwargs["observer"]("ui_command", 1, 0.1, 0.1)
+            kwargs["observer"]("ui_command", "a", 1, 0.1, 0.1)
             failure = capture.GateError("ui_dump_command_timeout", capture.SERIALS[0])
             failure.caller_deadline_reached = True
             raise failure
@@ -1051,7 +1061,8 @@ class EvidenceChecks(unittest.TestCase):
             exported.update(json.loads(json.dumps(receipt)))
 
         capture.defer_ui_dump_cleanup(
-            capture.SERIALS[0], "/data/local/tmp/wesh-fgs-window-a-00000001.xml")
+            capture.SERIALS[0],
+            "/data/local/tmp/wesh-fgs-window-a-0123456789abcdef-00000001.xml")
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root/"evidence").mkdir()

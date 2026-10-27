@@ -35,9 +35,9 @@ class OnboardingCheckTests(unittest.TestCase):
             root = self.owned_root(directory)
             output = io.StringIO()
             def observed_onboarding(_serial, _deadline, observer):
-                observer("activity_resumed", 0, 0.0, 0.5)
-                observer("ui_command", 1, 13.0, 10.2)
-                observer("home", 0, 0.0, 11.0)
+                observer("activity_resumed", "a", 0, 0.0, 0.5)
+                observer("ui_command", "a", 1, 13.0, 10.2)
+                observer("home", "a", 0, 0.0, 11.0)
 
             with mock.patch.dict(os.environ, {
                     "GITHUB_ACTIONS": "true", "EVIDENCE_HEAD": "a" * 40}, clear=True), \
@@ -64,6 +64,8 @@ class OnboardingCheckTests(unittest.TestCase):
         self.assertEqual(trace["counts"]["ui_command"], 1)
         self.assertEqual(trace["counts"]["home"], 1)
         self.assertEqual(trace["droppedEvents"], 0)
+        self.assertEqual(trace["schemaVersion"], 2)
+        self.assertTrue(all(event["side"] == "a" for event in trace["events"]))
 
     def test_allowlisted_failure_and_cleanup_failure_remain_redacted(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -132,27 +134,30 @@ class OnboardingCheckTests(unittest.TestCase):
     def test_trace_is_bounded_strict_and_contains_no_ui_payload(self):
         trace = onboarding_check.ClosedOnboardingTrace()
         for index in range(onboarding_check.MAX_TRACE_EVENTS + 3):
-            trace("unknown", 0, 0.0, float(index))
+            trace("unknown", "a", 0, 0.0, float(index))
         payload = onboarding_check.validated_trace_payload(trace)
         self.assertEqual(len(payload["events"]), onboarding_check.MAX_TRACE_EVENTS)
         self.assertEqual(payload["droppedEvents"], 3)
         self.assertEqual(payload["counts"]["unknown"], onboarding_check.MAX_TRACE_EVENTS + 3)
+        self.assertTrue(all(event["side"] == "a" for event in payload["events"]))
         serialized = json.dumps(payload)
         for forbidden in ("Your nickname", "Public room", "<?xml", "/data/local/tmp",
                           "emulator-5554"):
             self.assertNotIn(forbidden, serialized)
         with self.assertRaises(ValueError):
-            trace("not_allowlisted", 0, 0.0, 0.0)
+            trace("not_allowlisted", "a", 0, 0.0, 0.0)
         with self.assertRaises(ValueError):
-            trace("unknown", 3, 0.0, 0.0)
+            trace("unknown", "a", 3, 0.0, 0.0)
         with self.assertRaises(ValueError):
-            trace("unknown", 0, float("inf"), 0.0)
+            trace("unknown", "a", 0, float("inf"), 0.0)
+        with self.assertRaises(ValueError):
+            trace("unknown", "emulator-5554", 0, 0.0, 0.0)
 
     def test_trace_retains_late_closed_product_phase_when_ui_detail_is_full(self):
         trace = onboarding_check.ClosedOnboardingTrace()
         for index in range(onboarding_check.MAX_TRACE_EVENTS):
-            trace("ui_command", 1, 13.0, float(index))
-        trace("remote_received", 2, 0.0, 70.0)
+            trace("ui_command", "a", 1, 13.0, float(index))
+        trace("remote_received", "b", 2, 0.0, 70.0)
         payload = onboarding_check.validated_trace_payload(trace)
         self.assertEqual(len(payload["events"]), onboarding_check.MAX_TRACE_EVENTS)
         self.assertEqual(payload["droppedEvents"], 1)
@@ -165,7 +170,8 @@ class OnboardingCheckTests(unittest.TestCase):
 
         def emit(worker):
             for index in range(100):
-                trace("ui_command", 1 + worker % 2, 13.0, float(index))
+                trace("ui_command", "a" if worker % 2 == 0 else "b",
+                      1 + worker % 2, 13.0, float(index))
 
         with ThreadPoolExecutor(max_workers=4) as pool:
             futures = [pool.submit(emit, worker) for worker in range(4)]
@@ -176,7 +182,7 @@ class OnboardingCheckTests(unittest.TestCase):
         self.assertEqual(len(payload["events"]), onboarding_check.MAX_TRACE_EVENTS)
         self.assertEqual(payload["droppedEvents"], 400 - onboarding_check.MAX_TRACE_EVENTS)
         head = list(payload["events"][:onboarding_check.TRACE_PREFIX_EVENTS])
-        trace("remote_received", 2, 0.0, 101.0)
+        trace("remote_received", "b", 2, 0.0, 101.0)
         payload = onboarding_check.validated_trace_payload(trace)
         self.assertEqual(payload["events"][:onboarding_check.TRACE_PREFIX_EVENTS], head)
         self.assertEqual(payload["events"][-1]["event"], "remote_received")
