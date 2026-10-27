@@ -18,6 +18,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.Job
 import com.bitchat.android.mesh.BluetoothMeshDelegate
+import com.bitchat.android.mesh.BoundSendOutcome
 import com.bitchat.android.mesh.BluetoothMeshService
 import com.bitchat.android.mesh.MeshService
 import com.bitchat.android.model.BitchatMessage
@@ -852,20 +853,26 @@ class ChatViewModel(
     /** Wesh public text is sent verbatim to the local mesh: no commands, no named channels, no internet relay. */
     internal val weshPublicSending = MutableStateFlow(false)
 
-    fun sendWeshPublic(content: String, onAccepted: (Boolean) -> Unit) {
+    fun sendWeshPublic(content: String, onAccepted: (Boolean) -> Unit) =
+        sendWeshPublicOutcome(content) { onAccepted(it == BoundSendOutcome.SENT) }
+
+    fun sendWeshPublicOutcome(content: String, onOutcome: (BoundSendOutcome) -> Unit) {
         val transport = meshService
         val authorized = transport.weshPublicSendGuard {
             !weshPanicInProgress.value && com.bitchat.android.startup.WeshRuntime.transportAllowed &&
                 meshService === transport && weshBluetoothReady()
         }
-        if (!authorized() || !weshPublicSending.compareAndSet(false, true)) { onAccepted(false); return }
+        // Another attempt may already be transmitting this text. Busy is not proof of zero effect.
+        if (weshPublicSending.value) { onOutcome(BoundSendOutcome.UNCONFIRMED); return }
+        if (!authorized()) { onOutcome(BoundSendOutcome.NOT_SENT); return }
+        if (!weshPublicSending.compareAndSet(false, true)) { onOutcome(BoundSendOutcome.UNCONFIRMED); return }
         viewModelScope.launch {
             try {
-                val accepted = WeshMessagePolicy.sendPublicText(content, state.getNicknameValue(), transport.myPeerID,
+                val outcome = WeshMessagePolicy.sendPublicTextOutcome(content, state.getNicknameValue(), transport.myPeerID,
                     store = messageManager::addMessage,
-                    bluetoothSend = { transport.sendWeshPublicMessage(it, authorized) },
+                    bluetoothSend = { transport.sendWeshPublicMessageOutcome(it, authorized) },
                     authorized = authorized)
-                onAccepted(accepted)
+                onOutcome(outcome)
             } finally {
                 weshPublicSending.value = false
             }

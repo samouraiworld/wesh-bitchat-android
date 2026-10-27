@@ -35,6 +35,7 @@ import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import com.bitchat.android.BuildConfig
 import com.bitchat.android.R
+import com.bitchat.android.mesh.BoundSendOutcome
 import com.bitchat.android.model.BitchatMessage
 import com.bitchat.android.model.BitchatMessageType
 import com.bitchat.android.model.DeliveryStatus
@@ -371,6 +372,7 @@ private fun PaveNavHost(viewModel: ChatViewModel, appearance: WeshAppearance, on
     val msgDestinationChanged = stringResource(R.string.wesh_pave_fluo_destination_changed)
     val msgDraftChanged = stringResource(R.string.wesh_pave_fluo_draft_changed)
     val msgPublicFailed = stringResource(R.string.wesh_pave_fluo_public_failed)
+    val msgPublicUnconfirmed = stringResource(R.string.wesh_pave_fluo_public_unconfirmed)
     val msgPrivateFailed = stringResource(R.string.wesh_pave_fluo_private_failed)
     val msgDraftTooLong = stringResource(R.string.wesh_pave_fluo_draft_too_long)
     val mediaUnsupported = stringResource(R.string.wesh_pave_fluo_media_unsupported)
@@ -386,8 +388,12 @@ private fun PaveNavHost(viewModel: ChatViewModel, appearance: WeshAppearance, on
             if (!prefs.publicDisclosureAccepted) {
                 publicCapture = capture
                 publicRequest = WeshMessagePolicy.PublicSendRequest(capture.text)
-            } else viewModel.sendWeshPublic(capture.text) { accepted ->
-                if (accepted) viewModel.weshDraftStore.clearIfUnchanged(capture) else feedback = msgPublicFailed
+            } else viewModel.sendWeshPublicOutcome(capture.text) { outcome ->
+                when (outcome) {
+                    BoundSendOutcome.SENT -> viewModel.weshDraftStore.clearIfUnchanged(capture)
+                    BoundSendOutcome.NOT_SENT -> feedback = msgPublicFailed
+                    BoundSendOutcome.UNCONFIRMED, BoundSendOutcome.AUTH_FAILED -> feedback = msgPublicUnconfirmed
+                }
             }
         } else if (privatePeer != null) {
             viewModel.sendWeshPrivate(capture.text, privatePeer) { accepted ->
@@ -594,11 +600,15 @@ private fun PaveNavHost(viewModel: ChatViewModel, appearance: WeshAppearance, on
                         viewModel.weshBluetoothReady(),
                     )
                 ) {
-                    viewModel.sendWeshPublic(request.content) { accepted ->
-                        if (accepted) {
-                            prefs.publicDisclosureAccepted = true
-                            viewModel.weshDraftStore.clearIfUnchanged(capture)
-                        } else feedback = msgPublicFailed
+                    viewModel.sendWeshPublicOutcome(request.content) { outcome ->
+                        when (outcome) {
+                            BoundSendOutcome.SENT -> {
+                                prefs.publicDisclosureAccepted = true
+                                viewModel.weshDraftStore.clearIfUnchanged(capture)
+                            }
+                            BoundSendOutcome.NOT_SENT -> feedback = msgPublicFailed
+                            BoundSendOutcome.UNCONFIRMED, BoundSendOutcome.AUTH_FAILED -> feedback = msgPublicUnconfirmed
+                        }
                     }
                 } else feedback = msgDestinationChanged
                 publicRequest = null

@@ -60,6 +60,7 @@
     <string name="wesh_pave_fluo_destination_changed">The destination changed. Your text is kept.</string>
     <string name="wesh_pave_fluo_draft_changed">The draft changed. Read your text again.</string>
     <string name="wesh_pave_fluo_public_failed">Local sending interrupted or unavailable. Your text is kept.</string>
+    <string name="wesh_pave_fluo_public_unconfirmed">Sending could not be confirmed. The message may already have been received. Sending it again may create a duplicate. Your text is kept.</string>
     <string name="wesh_pave_fluo_private_failed">Sending unavailable. Check the contact and the connection.</string>
     <string name="wesh_pave_fluo_draft_too_long">Draft too long. Your previous text is kept.</string>
     <string name="wesh_pave_fluo_draft_error">Draft not saved on this phone. Do not close Wesh.</string>

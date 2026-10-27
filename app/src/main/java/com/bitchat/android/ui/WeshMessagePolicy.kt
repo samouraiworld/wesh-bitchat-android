@@ -1,5 +1,6 @@
 package com.bitchat.android.ui
 
+import com.bitchat.android.mesh.BoundSendOutcome
 import com.bitchat.android.util.booleanOr
 import com.bitchat.android.util.stringOr
 import android.content.Context
@@ -33,18 +34,45 @@ internal object WeshMessagePolicy {
             destination == "public" && currentDraft == content && bluetoothReady && content.isNotBlank() && content.toByteArray().size <= 2000
     }
 
+    /** Compatibility path: a Boolean refusal never proves that no bytes left the transport. */
     suspend fun sendPublicText(
         content: String, nickname: String, myPeerID: String,
         store: (BitchatMessage) -> Unit,
         bluetoothSend: suspend (String) -> Boolean,
         authorized: () -> Boolean = { true }
-    ): Boolean {
-        if (content.isBlank() || content.toByteArray(Charsets.UTF_8).size > 2000) return false
-        if (!authorized() || !bluetoothSend(content) || !authorized()) return false
-        // A link accepted it, and the public room has no receipts: it is sent, never left waiting.
-        store(BitchatMessage(sender = nickname, content = content, timestamp = Date(),
-            isRelay = false, senderPeerID = myPeerID, deliveryStatus = DeliveryStatus.Sent))
-        return true
+    ): Boolean = sendPublicTextOutcome(content, nickname, myPeerID, store,
+        bluetoothSend = { if (bluetoothSend(it)) BoundSendOutcome.SENT else BoundSendOutcome.UNCONFIRMED },
+        authorized = authorized) == BoundSendOutcome.SENT
+
+    /** Only a confirmed, still-authorized handoff may create a local success echo. */
+    suspend fun sendPublicTextOutcome(
+        content: String, nickname: String, myPeerID: String,
+        store: (BitchatMessage) -> Unit,
+        bluetoothSend: suspend (String) -> BoundSendOutcome,
+        authorized: () -> Boolean = { true }
+    ): BoundSendOutcome {
+        if (content.isBlank() || content.toByteArray(Charsets.UTF_8).size > 2000 || !authorized()) {
+            return BoundSendOutcome.NOT_SENT
+        }
+        return try {
+            when (bluetoothSend(content)) {
+                BoundSendOutcome.NOT_SENT -> BoundSendOutcome.NOT_SENT
+                BoundSendOutcome.UNCONFIRMED, BoundSendOutcome.AUTH_FAILED -> BoundSendOutcome.UNCONFIRMED
+                BoundSendOutcome.SENT -> {
+                    if (!authorized()) BoundSendOutcome.UNCONFIRMED else {
+                        // This confirms local GATT completion, never recipient receipt.
+                        store(BitchatMessage(sender = nickname, content = content, timestamp = Date(),
+                            isRelay = false, senderPeerID = myPeerID, deliveryStatus = DeliveryStatus.Sent))
+                        BoundSendOutcome.SENT
+                    }
+                }
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            // The transport or the record step may already have had an effect. Never retry here.
+            BoundSendOutcome.UNCONFIRMED
+        }
     }
 
     /**
