@@ -14,7 +14,7 @@ permissions:
   contents: read
 
 jobs:
-  capture:
+  validate:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
@@ -43,6 +43,7 @@ jobs:
           bash -n tools/store-assets/capture_android_store_screenshots.sh
 
       - name: Prepare isolated CI emulator
+        if: ${{ github.event_name == 'workflow_dispatch' }}
         run: |
           sdk_root="${ANDROID_SDK_ROOT:-${ANDROID_HOME:?Android SDK root is required}}"
           sdk_tools="$sdk_root/cmdline-tools/latest/bin"
@@ -68,12 +69,13 @@ jobs:
           python3 tools/store-assets/verify_capture_release_boundary.py app/build/outputs/apk/release
 
       - name: Capture fourteen synthetic product-view scenes
+        if: ${{ github.event_name == 'workflow_dispatch' }}
         run: |
           sdk_root="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
           "$sdk_root/emulator/emulator" -avd WeshStoreCapture -port 5554 -no-window -no-audio -no-boot-anim -no-snapshot-load -no-snapshot-save -gpu swiftshader -camera-front none -camera-back none > "$RUNNER_TEMP/store-emulator.log" 2>&1 &
           adb -s "$ANDROID_STORE_CAPTURE_SERIAL" wait-for-device
           booted=false
-          for attempt in $(seq 1 180); do
+          for ((attempt = 0; attempt < 180; attempt++)); do
             if [[ "$(adb -s "$ANDROID_STORE_CAPTURE_SERIAL" shell getprop sys.boot_completed | tr -d '\r')" == 1 ]]; then
               booted=true
               break
@@ -83,17 +85,18 @@ jobs:
           [[ "$booted" == true ]] || { echo 'Synthetic emulator did not finish booting'; exit 1; }
           adb -s "$ANDROID_STORE_CAPTURE_SERIAL" shell wm size 1080x1920
           adb -s "$ANDROID_STORE_CAPTURE_SERIAL" shell wm density 420
-          export ANDROID_STORE_CAPTURE_OUTPUT="$RUNNER_TEMP/android-store-candidate107-unbound"
+          export ANDROID_STORE_CAPTURE_OUTPUT="$RUNNER_TEMP/android-store-candidate108-unbound"
           bash tools/store-assets/capture_android_store_screenshots.sh
 
       - name: Stop isolated emulator
-        if: always()
+        if: ${{ always() && github.event_name == 'workflow_dispatch' }}
         run: adb -s "$ANDROID_STORE_CAPTURE_SERIAL" emu kill >/dev/null 2>&1 || true
 
       - name: Retain only sanitized synthetic images and source manifest
+        if: ${{ github.event_name == 'workflow_dispatch' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: android-store-candidate107-unbound
-          path: ${{ runner.temp }}/android-store-candidate107-unbound
+          name: android-store-candidate108-unbound
+          path: ${{ runner.temp }}/android-store-candidate108-unbound
           if-no-files-found: error
           retention-days: 14
