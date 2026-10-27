@@ -58,10 +58,19 @@ SERIAL_PHASES = frozenset({
     "ui_reader_bridge", "ui_reader_api", "ui_reader_dump", "ui_reader_output",
     "ui_reader_disconnect", "ui_reader_cleanup",
 })
+RUNNER_PREREQUISITE_GATES = frozenset({
+    "runner_prerequisite_unclassified", "verified_test_apk", "sdkmanager_missing",
+    "kvm_missing", "kvm_permission_setup", "kvm_access", "runner_disk_capacity",
+    "runner_memory_capacity", "runner_cpu_capacity", "runner_capacity_check",
+    "runner_workspace_setup", "sdk_root_missing", "sdkmanager_install",
+    "emulator_revision", "system_image_revision",
+    "sdk_revision_check", "ui_reader_sdk", "ui_reader_build", "emulator_acceleration",
+    "avd_creation_a", "avd_creation_b", "capture_attempt",
+})
 GLOBAL_GATES = frozenset({
     "unclassified_controller_failure", "scenario_budget", "scenario_clock", "evidence_export",
     "diagnostic_export_config",
-})
+}) | RUNNER_PREREQUISITE_GATES
 PREFLIGHT_STEPS = ("boot_install_bluetooth_ready",)
 SCENARIO_STEPS = (
     "recording_commands_started", "actual_onboarding_permissions_completed",

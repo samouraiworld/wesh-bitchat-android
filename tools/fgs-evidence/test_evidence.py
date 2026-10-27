@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import stat
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
@@ -840,7 +841,35 @@ class EvidenceChecks(unittest.TestCase):
             capture.diagnostic_failure_media_enabled()
         self.assertEqual(failure.exception.gate, "diagnostic_export_config")
 
-    def test_diagnostic_runner_failure_creates_only_closed_receipt_beside_provenance(self):
+    def test_standard_runner_prerequisite_failure_creates_two_json_and_no_media(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runner_temp = Path(directory)
+            root = runner_temp / "fgs-evidence"
+            evidence = root / "evidence"
+            evidence.mkdir(parents=True)
+            (evidence / "provenance.json").write_text('{"synthetic":true}')
+            environment = {
+                "GITHUB_ACTIONS": "true",
+                "RUNNER_TEMP": str(runner_temp),
+                "EVIDENCE_HEAD": "a" * 40,
+            }
+            with patch.dict(os.environ, environment, clear=True):
+                self.assertEqual(diagnostic_failure_receipt.main(
+                    root, "runner_memory_capacity"), 0)
+                original = (evidence / "attempt.json").read_bytes()
+                self.assertEqual(diagnostic_failure_receipt.main(
+                    root, "runner_memory_capacity"), 0)
+            self.assertEqual({path.name for path in evidence.iterdir()}, {
+                "attempt.json", "provenance.json",
+            })
+            self.assertEqual((evidence / "attempt.json").read_bytes(), original)
+            receipt = json.loads(original)
+            self.assertEqual(receipt["failureGate"], "runner_memory_capacity")
+            self.assertFalse(receipt["diagnosticFailureMediaEnabled"])
+            self.assertFalse(receipt["recordingsExported"])
+            self.assertEqual(receipt["closedUiTrace"], capture.empty_trace_payload())
+
+    def test_diagnostic_runner_prerequisite_receipt_preserves_enabled_mode(self):
         with tempfile.TemporaryDirectory() as directory:
             runner_temp = Path(directory)
             root = runner_temp / "fgs-evidence"
@@ -854,18 +883,109 @@ class EvidenceChecks(unittest.TestCase):
                 "FGS_DIAGNOSTIC_FAILURE_MEDIA": "true",
             }
             with patch.dict(os.environ, environment, clear=True):
-                self.assertEqual(diagnostic_failure_receipt.main(root), 0)
-                original = (evidence / "attempt.json").read_bytes()
-                self.assertEqual(diagnostic_failure_receipt.main(root), 0)
+                self.assertEqual(diagnostic_failure_receipt.main(
+                    root, "avd_creation_b"), 0)
+            receipt = json.loads((evidence / "attempt.json").read_text())
+            self.assertEqual(receipt["failureGate"], "avd_creation_b")
+            self.assertTrue(receipt["diagnosticFailureMediaEnabled"])
+            self.assertFalse(receipt["diagnosticFailureMediaExported"])
+
+    def test_runner_prerequisite_receipt_rejects_unknown_gate_and_extra_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runner_temp = Path(directory)
+            root = runner_temp / "fgs-evidence"
+            evidence = root / "evidence"
+            evidence.mkdir(parents=True)
+            (evidence / "provenance.json").write_text('{"synthetic":true}')
+            environment = {
+                "GITHUB_ACTIONS": "true",
+                "RUNNER_TEMP": str(runner_temp),
+                "EVIDENCE_HEAD": "a" * 40,
+            }
+            with patch.dict(os.environ, environment, clear=True):
+                self.assertEqual(diagnostic_failure_receipt.main(
+                    root, "not_allowlisted"), 1)
+                self.assertFalse((evidence / "attempt.json").exists())
+                (evidence / "unexpected.webm").write_bytes(b"synthetic")
+                self.assertEqual(diagnostic_failure_receipt.main(
+                    root, "runner_cpu_capacity"), 1)
+                self.assertFalse((evidence / "attempt.json").exists())
+
+    def test_runner_prerequisite_receipt_refuses_wrong_root_and_real_attempt_overwrite(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runner_temp = Path(directory)
+            root = runner_temp / "fgs-evidence"
+            evidence = root / "evidence"
+            evidence.mkdir(parents=True)
+            (evidence / "provenance.json").write_text('{"synthetic":true}')
+            existing = b'{"result":"SCENARIO_PASS_RECORDINGS_AWAIT_LOCAL_VALIDATION"}\n'
+            (evidence / "attempt.json").write_bytes(existing)
+            environment = {
+                "GITHUB_ACTIONS": "true",
+                "RUNNER_TEMP": str(runner_temp),
+                "EVIDENCE_HEAD": "a" * 40,
+            }
+            with patch.dict(os.environ, environment, clear=True):
+                self.assertEqual(diagnostic_failure_receipt.main(
+                    root, "capture_attempt"), 0)
+                self.assertEqual(diagnostic_failure_receipt.main(
+                    runner_temp / "other", "capture_attempt"), 1)
+            self.assertEqual((evidence / "attempt.json").read_bytes(), existing)
+
+    def test_media_runner_maps_closed_prerequisite_gates_before_capture(self):
+        source = (Path(capture.__file__).parent / "run.sh").read_text()
+        self.assertIn("trap 'unexpected_failure", source)
+        self.assertIn('"$root" "$1"', source)
+        self.assertIn("11) fail runner_disk_capacity", source)
+        self.assertIn("12) fail runner_memory_capacity", source)
+        self.assertIn("13) fail runner_cpu_capacity", source)
+        self.assertIn("21) fail emulator_revision", source)
+        self.assertIn("22) fail system_image_revision", source)
+        self.assertIn('failure_gate="avd_creation_$side"', source)
+        self.assertIn("failure_gate=capture_attempt", source)
+        self.assertNotIn("if [[ \"${FGS_DIAGNOSTIC_FAILURE_MEDIA", source)
+        self.assertTrue({
+            "runner_disk_capacity", "runner_memory_capacity", "runner_cpu_capacity",
+            "emulator_revision", "system_image_revision", "ui_reader_build",
+            "avd_creation_a", "avd_creation_b", "capture_attempt",
+        }.issubset(capture.RUNNER_PREREQUISITE_GATES))
+
+    def test_standard_runner_failure_before_capture_exports_only_two_closed_json(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runner_temp = Path(directory)
+            root = runner_temp / "fgs-evidence"
+            evidence = root / "evidence"
+            evidence.mkdir(parents=True)
+            (root / "wesh109-test-signed.apk").write_bytes(b"synthetic")
+            (evidence / "provenance.json").write_text('{"synthetic":true}')
+            fake_bin = runner_temp / "bin"
+            fake_bin.mkdir()
+            uname = fake_bin / "uname"
+            uname.write_text("#!/bin/sh\nprintf 'Linux\\n'\n")
+            uname.chmod(0o755)
+            (fake_bin / "python3").symlink_to(sys.executable)
+            (fake_bin / "mkdir").symlink_to("/bin/mkdir")
+            environment = {
+                "GITHUB_ACTIONS": "true",
+                "RUNNER_TEMP": str(runner_temp),
+                "EVIDENCE_HEAD": "a" * 40,
+                "ANDROID_SDK_ROOT": str(runner_temp / "sdk"),
+                "ANDROID_HOME": str(runner_temp / "sdk"),
+                "PATH": str(fake_bin),
+            }
+            repository = Path(capture.__file__).resolve().parents[2]
+            result = subprocess.run(
+                ["/bin/bash", "tools/fgs-evidence/run.sh", str(root)],
+                cwd=repository, env=environment, capture_output=True, timeout=10,
+            )
+            self.assertNotEqual(result.returncode, 0)
             self.assertEqual({path.name for path in evidence.iterdir()}, {
                 "attempt.json", "provenance.json",
             })
-            self.assertEqual((evidence / "attempt.json").read_bytes(), original)
-            receipt = json.loads(original)
-            self.assertEqual(receipt["failureGate"], "unclassified_controller_failure")
-            self.assertTrue(receipt["diagnosticFailureMediaEnabled"])
+            receipt = json.loads((evidence / "attempt.json").read_text())
+            self.assertEqual(receipt["failureGate"], "sdkmanager_missing")
+            self.assertFalse(receipt["diagnosticFailureMediaEnabled"])
             self.assertFalse(receipt["recordingsExported"])
-            self.assertEqual(receipt["closedUiTrace"], capture.empty_trace_payload())
 
     def test_activity_guard_requires_resumed_marker_and_package_on_same_line(self):
         misleading = f"mResumedActivity: other.package/.Main\nRecent task: {capture.PACKAGE}"

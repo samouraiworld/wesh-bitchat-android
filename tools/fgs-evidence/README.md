@@ -283,6 +283,26 @@ This is a controlled robustness experiment that removes the bulk-injection
 assumption. It does not establish the cause of the prior shorter draft and does
 not change the app, transport, gates or 165-second budget.
 
+The next standard media run, `40558394251`, passed canonical preparation and all
+eleven attestations, then exited in the two-AVD runner step before `capture.py`
+could create an attempt receipt. Its closed artifact contained only
+`provenance.json`; it therefore proves no AVD, recorder, video or product state.
+The raw job log was deliberately not retrieved, so the exact prerequisite that
+failed remains unknown. The reviewed emulator and image pins and all runner
+resource thresholds remain unchanged.
+
+Runner setup now maps its resource, SDK revision, reader build, acceleration and
+per-side AVD-creation checks to fixed allowlisted prerequisite gates. A guarded
+error trap covers an otherwise unexpected pre-controller exit without recording
+the failed command or its output. If `capture.py` has not already created a real
+attempt, the same strict evidence directory receives one exclusive synthetic
+`attempt.json` beside `provenance.json`; no path, resource value, log, XML, key,
+APK, AVD data or media is added. Existing attempt receipts are never overwritten.
+The ordinary standard job keeps diagnostic failure-media retention disabled;
+the distinct diagnostic label and its explicit authorization requirement are
+unchanged. These receipts improve classification only and do not establish the
+cause of run `40558394251` or qualify any product behavior.
+
 The first reviewed attempt, [40214942196](https://github.com/samouraiworld/wesh-bitchat-android/actions/runs/40214942196),
 failed during Java setup: `21.0.11+10` was not a matching Temurin setup selector.
 Canonical verification, signing, SDK/AVD setup, BLE and recording did not run;
