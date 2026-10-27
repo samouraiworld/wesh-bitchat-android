@@ -6,5 +6,5 @@
         <item quantity="other">phones in range</item>
     </plurals>
     <string name="wesh_pave_fluo_bluetooth_on">Bluetooth on</string>
-    <string name="wesh_pave_fluo_bluetooth_off">Bluetooth off</string>
+    <string name="wesh_pave_fluo_bluetooth_off">Bluetooth unavailable</string>
 </resources>

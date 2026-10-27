@@ -38,7 +38,7 @@
     <string name="wesh_pave_bt_denied">Sans Bluetooth, Wesh ne trouve personne autour.</string>
     <string name="wesh_pave_connexion_title">Connexion</string>
     <string name="wesh_pave_bt_active">Bluetooth actif</string>
-    <string name="wesh_pave_bt_off_body">Activez Bluetooth pour parler aux téléphones autour.</string>
+    <string name="wesh_pave_bt_off_body">Vérifiez le Bluetooth et les autorisations. Sous Android 11 ou antérieur, activez aussi la localisation pour détecter les téléphones autour. Le mode Internet reste accessible.</string>
     <string name="wesh_pave_internet_mode">Mode Internet</string>
     <string name="wesh_pave_internet_off">Désactivé · tout passe par Bluetooth</string>
     <string name="wesh_pave_internet_connecting">Connexion à Tor…</string>
