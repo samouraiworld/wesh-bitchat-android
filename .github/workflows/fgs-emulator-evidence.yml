@@ -1,0 +1,210 @@
+name: FGS canonical 109 emulator evidence
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fgs-evidence-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - run: python3 -m unittest discover -s tools/fgs-evidence -p 'test_*.py'
+      - run: bash -n tools/fgs-evidence/run.sh
+      - run: bash -n tools/fgs-evidence/run-onboarding.sh
+      - run: bash -n tools/fgs-evidence/run-scenario.sh
+      - run: bash -n tools/fgs-evidence/build-ui-reader.sh
+
+  diagnostic:
+    if: >-
+      github.event.action == 'labeled' &&
+      github.event.label.name == 'fgs-emulator-diagnose' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Read only allowlisted disposable runner prerequisites
+        env:
+          EVIDENCE_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: python3 tools/fgs-evidence/diagnose.py "$RUNNER_TEMP/fgs-diagnostic.json"
+      - name: Upload only the capability diagnostic
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: fgs-runner-capability-diagnostic
+          path: ${{ runner.temp }}/fgs-diagnostic.json
+          if-no-files-found: error
+          retention-days: 7
+
+  onboarding:
+    if: >-
+      github.event.action == 'labeled' &&
+      github.event.label.name == 'fgs-onboarding-reviewed' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      actions: read
+      attestations: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5
+        with:
+          distribution: temurin
+          java-version: '21.0.11+10.0.LTS'
+      - name: Verify canonical 109 and sign only for one disposable emulator
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/fgs-evidence/prepare.py "$RUNNER_TEMP/fgs-onboarding"
+      - name: Check real first onboarding without media
+        env:
+          EVIDENCE_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: bash tools/fgs-evidence/run-onboarding.sh "$RUNNER_TEMP/fgs-onboarding"
+      - name: Remove disposable key, AVD, SDK logs and temporary data
+        if: always()
+        run: rm -rf -- "$RUNNER_TEMP/fgs-onboarding"
+
+  scenario:
+    if: >-
+      github.event.action == 'labeled' &&
+      github.event.label.name == 'fgs-scenario-reviewed' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      actions: read
+      attestations: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5
+        with:
+          distribution: temurin
+          java-version: '21.0.11+10.0.LTS'
+      - name: Verify canonical 109 and sign only for two disposable emulators
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/fgs-evidence/prepare.py "$RUNNER_TEMP/fgs-scenario"
+      - name: Check the real two-AVD product scenario without media
+        env:
+          EVIDENCE_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: bash tools/fgs-evidence/run-scenario.sh "$RUNNER_TEMP/fgs-scenario"
+      - name: Remove disposable keys, AVDs, SDK logs and temporary data
+        if: always()
+        run: rm -rf -- "$RUNNER_TEMP/fgs-scenario"
+
+  evidence:
+    if: >-
+      github.event.action == 'labeled' &&
+      github.event.label.name == 'fgs-emulator-reviewed' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      actions: read
+      attestations: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5
+        with:
+          distribution: temurin
+          java-version: '21.0.11+10.0.LTS'
+      - name: Verify the canonical artifact and sign only for disposable emulators
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/fgs-evidence/prepare.py "$RUNNER_TEMP/fgs-evidence"
+      - name: Real two-AVD BLE attempt and screen recording
+        env:
+          EVIDENCE_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: bash tools/fgs-evidence/run.sh "$RUNNER_TEMP/fgs-evidence"
+      - name: Upload synthetic host recordings awaiting local validation and allowlisted receipts
+        if: success()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: fgs-canonical109-simulated-ble
+          path: ${{ runner.temp }}/fgs-evidence/evidence/*
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Preserve only allowlisted receipts after an incomplete attempt
+        if: always() && !success()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: fgs-canonical109-incomplete-attempt
+          path: |
+            ${{ runner.temp }}/fgs-evidence/evidence/attempt.json
+            ${{ runner.temp }}/fgs-evidence/evidence/provenance.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Remove disposable keys, AVDs, recordings and temporary data
+        if: always()
+        run: rm -rf -- "$RUNNER_TEMP/fgs-evidence"
+
+  diagnostic-evidence:
+    if: >-
+      github.event.action == 'labeled' &&
+      github.event.label.name == 'fgs-emulator-diagnostic-reviewed' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      actions: read
+      attestations: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5
+        with:
+          distribution: temurin
+          java-version: '21.0.11+10.0.LTS'
+      - name: Verify the canonical artifact and sign only for disposable emulators
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/fgs-evidence/prepare.py "$RUNNER_TEMP/fgs-evidence"
+      - name: One explicitly reviewed diagnostic recording attempt
+        env:
+          EVIDENCE_HEAD: ${{ github.event.pull_request.head.sha }}
+          FGS_DIAGNOSTIC_FAILURE_MEDIA: 'true'
+        run: bash tools/fgs-evidence/run.sh "$RUNNER_TEMP/fgs-evidence"
+      - name: Upload only the closed diagnostic inventory
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: fgs-canonical109-diagnostic-attempt
+          path: ${{ runner.temp }}/fgs-evidence/evidence/*
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Remove disposable keys, AVDs, recordings and temporary data
+        if: always()
+        run: rm -rf -- "$RUNNER_TEMP/fgs-evidence"
