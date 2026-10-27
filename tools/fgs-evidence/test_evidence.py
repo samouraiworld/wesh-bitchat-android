@@ -2,6 +2,7 @@
 from contextlib import ExitStack
 import hashlib
 import json
+import os
 from pathlib import Path
 import stat
 import subprocess
@@ -13,6 +14,7 @@ import zipfile
 
 import capture
 import diagnose
+import diagnostic_failure_receipt
 import localassemble
 import prepare
 
@@ -794,6 +796,77 @@ class EvidenceChecks(unittest.TestCase):
             self.assertIsNone(complete["failureGate"])
             self.assertIsNone(complete["failureElapsedSeconds"])
 
+    def test_diagnostic_export_keeps_primary_failure_and_closed_five_file_inventory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "evidence").mkdir()
+            (root / "evidence" / "provenance.json").write_text('{"synthetic":true}')
+            (root / "evidence" / "attempt.json").write_text("{}")
+            recordings = []
+            for side in ("a", "b"):
+                path = (root / "avd" / f"wesh-fgs-{side}.avd" / "console_out" /
+                        f"recording-{side}.webm")
+                path.parent.mkdir(parents=True)
+                path.write_bytes(b"synthetic unit bytes")
+                recordings.append(path)
+            receipt = {
+                "result": "NOT_COMPLETED",
+                "recordingsExported": False,
+                "diagnosticFailureMediaEnabled": True,
+                "diagnosticFailureMediaExported": False,
+                "failureGate": "onboarding_unknown_a",
+                "failureElapsedSeconds": 90.0,
+            }
+            capture.export_host_recordings(
+                root, recordings, receipt, diagnostic_failure=True)
+            self.assertEqual({path.name for path in (root / "evidence").iterdir()}, {
+                "recording-a.webm", "recording-b.webm", "provenance.json",
+                "attempt.json", "SHA256SUMS",
+            })
+            exported = json.loads((root / "evidence" / "attempt.json").read_text())
+            self.assertEqual(exported["result"], "NOT_COMPLETED")
+            self.assertEqual(exported["failureGate"], "onboarding_unknown_a")
+            self.assertTrue(exported["recordingsExported"])
+            self.assertTrue(exported["diagnosticFailureMediaExported"])
+
+    def test_failure_media_mode_is_exact_and_unknown_value_fails_closed(self):
+        for value, expected in (("false", False), ("true", True)):
+            with self.subTest(value=value), patch.dict(
+                    capture.os.environ, {"FGS_DIAGNOSTIC_FAILURE_MEDIA": value}, clear=False):
+                self.assertIs(capture.diagnostic_failure_media_enabled(), expected)
+        with patch.dict(capture.os.environ, {
+                "FGS_DIAGNOSTIC_FAILURE_MEDIA": "synthetic-unknown"}, clear=False), \
+                self.assertRaises(capture.GateError) as failure:
+            capture.diagnostic_failure_media_enabled()
+        self.assertEqual(failure.exception.gate, "diagnostic_export_config")
+
+    def test_diagnostic_runner_failure_creates_only_closed_receipt_beside_provenance(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runner_temp = Path(directory)
+            root = runner_temp / "fgs-evidence"
+            evidence = root / "evidence"
+            evidence.mkdir(parents=True)
+            (evidence / "provenance.json").write_text('{"synthetic":true}')
+            environment = {
+                "GITHUB_ACTIONS": "true",
+                "RUNNER_TEMP": str(runner_temp),
+                "EVIDENCE_HEAD": "a" * 40,
+                "FGS_DIAGNOSTIC_FAILURE_MEDIA": "true",
+            }
+            with patch.dict(os.environ, environment, clear=True):
+                self.assertEqual(diagnostic_failure_receipt.main(root), 0)
+                original = (evidence / "attempt.json").read_bytes()
+                self.assertEqual(diagnostic_failure_receipt.main(root), 0)
+            self.assertEqual({path.name for path in evidence.iterdir()}, {
+                "attempt.json", "provenance.json",
+            })
+            self.assertEqual((evidence / "attempt.json").read_bytes(), original)
+            receipt = json.loads(original)
+            self.assertEqual(receipt["failureGate"], "unclassified_controller_failure")
+            self.assertTrue(receipt["diagnosticFailureMediaEnabled"])
+            self.assertFalse(receipt["recordingsExported"])
+            self.assertEqual(receipt["closedUiTrace"], capture.empty_trace_payload())
+
     def test_activity_guard_requires_resumed_marker_and_package_on_same_line(self):
         misleading = f"mResumedActivity: other.package/.Main\nRecent task: {capture.PACKAGE}"
         with patch("capture.adb", return_value=misleading):
@@ -829,7 +902,8 @@ class EvidenceChecks(unittest.TestCase):
         self.assertLess(main_source.index("ui_reader_healthcheck"),
                         main_source.index("require_host_recorder(serial"))
         self.assertLess(main_source.index('event("recording_commands_started"'),
-                        main_source.index("run_product_scenario(deadline, event)"))
+                        main_source.index(
+                            "run_product_scenario(deadline, event, observer=trace)"))
         self.assertNotIn("recorded_relaunch", main_source)
         self.assertIn("onboarding_deadline = min(deadline", scenario_source)
         self.assertIn("service_deadline = min(deadline", scenario_source)
@@ -1152,9 +1226,10 @@ class EvidenceChecks(unittest.TestCase):
             advance(1)
 
         def scenario(deadline, event, observer=None):
-            self.assertIsNone(observer)
+            self.assertIsNotNone(observer)
             calls.append(("scenario",))
             scenario_deadlines.append(deadline)
+            observer("screen_home_before_welcome", "a", 0, 0.0, 0.5)
             for step in capture.SCENARIO_STEPS[1:]:
                 advance(1)
                 event(step)
@@ -1214,6 +1289,9 @@ class EvidenceChecks(unittest.TestCase):
         self.assertEqual([event["step"] for event in exported["events"]],
                          list(capture.SCENARIO_STEPS))
         self.assertEqual(exported["deferredUiDumpCleanupCountBySide"], {"a": 1, "b": 0})
+        self.assertEqual(exported["closedUiTrace"]["schemaVersion"], 2)
+        self.assertEqual(exported["closedUiTrace"]["events"][0]["event"],
+                         "screen_home_before_welcome")
         self.assertIsNone(exported["failureElapsedSeconds"])
         self.assertNotIn("private", json.dumps(exported))
         times = [event["elapsedSeconds"] for event in exported["events"]]
@@ -1245,6 +1323,8 @@ class EvidenceChecks(unittest.TestCase):
                  patch("capture.cleanup_ui_reader", side_effect=[
                      capture.GateError("ui_reader_cleanup", capture.SERIALS[0]), None,
                  ]) as cleanup_reader, \
+                 patch("capture.validated_trace_payload",
+                       side_effect=ValueError("synthetic invalid trace")), \
                  patch("capture.export_host_recordings", export):
                 with self.assertRaises(RuntimeError):
                     capture.main(root)
@@ -1255,15 +1335,28 @@ class EvidenceChecks(unittest.TestCase):
         export.assert_not_called()
         self.assertEqual(attempt["events"], [])
         self.assertEqual(attempt["failureGate"], "host_recorder_start_b")
+        self.assertEqual(attempt["closedUiTrace"], capture.empty_trace_payload())
         self.assertEqual(cleanup_reader.call_count, 2)
         self.assertIsInstance(attempt["failureElapsedSeconds"], float)
         self.assertGreaterEqual(attempt["failureElapsedSeconds"], 0)
+
+    def test_all_controllers_share_one_closed_trace_codec(self):
+        import closed_trace
+        import onboarding_check
+        import scenario_check
+
+        self.assertIs(capture.ClosedOnboardingTrace, closed_trace.ClosedOnboardingTrace)
+        self.assertIs(onboarding_check.ClosedOnboardingTrace,
+                      closed_trace.ClosedOnboardingTrace)
+        self.assertIs(scenario_check.ClosedOnboardingTrace,
+                      closed_trace.ClosedOnboardingTrace)
 
     def test_main_reader_cleanup_failure_blocks_export_after_passing_scenario(self):
         clock = [0.0]
 
         def scenario(_deadline, event, observer=None):
-            self.assertIsNone(observer)
+            self.assertIsNotNone(observer)
+            observer("screen_welcome", "a", 0, 0.0, 0.25)
             for step in capture.SCENARIO_STEPS[1:]:
                 clock[0] += 1.0
                 event(step)
@@ -1294,6 +1387,8 @@ class EvidenceChecks(unittest.TestCase):
         self.assertEqual(attempt["result"], "NOT_COMPLETED")
         self.assertEqual(attempt["failureGate"], "ui_reader_cleanup_a")
         self.assertIsInstance(attempt["failureElapsedSeconds"], float)
+        self.assertEqual(attempt["closedUiTrace"]["events"][0]["event"],
+                         "screen_welcome")
 
     def test_main_reader_hash_gate_prevents_recorder_and_product_launch(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1325,6 +1420,54 @@ class EvidenceChecks(unittest.TestCase):
         export.assert_not_called()
         self.assertEqual(attempt["failureGate"], "ui_reader_hash_a")
         self.assertEqual(attempt["events"], [])
+
+    def test_failure_recordings_are_exported_only_by_explicit_diagnostic_mode(self):
+        for enabled in (False, True):
+            with self.subTest(enabled=enabled), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / "evidence").mkdir()
+                (root / "evidence" / "provenance.json").write_text(
+                    '{"synthetic":true}')
+                export = Mock()
+                wait_recordings = Mock()
+
+                def scenario(_deadline, _event, observer):
+                    observer("screen_unknown_app", "a", 0, 0.0, 1.0)
+                    raise capture.GateError("onboarding_unknown", capture.SERIALS[0])
+
+                with patch.dict(capture.os.environ, {
+                        "GITHUB_ACTIONS": "true", "EVIDENCE_HEAD": "1" * 40,
+                        "FGS_DIAGNOSTIC_FAILURE_MEDIA": str(enabled).lower()}, clear=False), \
+                     patch("capture.ThreadPoolExecutor", ImmediateExecutor), \
+                     patch("capture.boot_and_install"), \
+                     patch("capture.configure_ui_reader"), \
+                     patch("capture.ui_reader_healthcheck"), \
+                     patch("capture.require_host_recorder"), \
+                     patch("capture.start_host_recorder"), \
+                     patch("capture.run_product_scenario", side_effect=scenario), \
+                     patch("capture.wait_host_recordings", wait_recordings), \
+                     patch("capture.cleanup_ui_reader"), \
+                     patch("capture.sweep_deferred_ui_dumps"), \
+                     patch("capture.deferred_ui_dump_counts",
+                           return_value={"a": 0, "b": 0}), \
+                     patch("capture.export_host_recordings", export):
+                    with self.assertRaises(RuntimeError):
+                        capture.main(root)
+                attempt = json.loads((root / "evidence" / "attempt.json").read_text())
+                self.assertEqual(attempt["failureGate"], "onboarding_unknown_a")
+                self.assertEqual(
+                    attempt["closedUiTrace"]["events"][0]["event"],
+                    "screen_unknown_app",
+                )
+                if enabled:
+                    wait_recordings.assert_called_once()
+                    self.assertTrue(export.call_args.kwargs["diagnostic_failure"])
+                else:
+                    wait_recordings.assert_not_called()
+                    export.assert_not_called()
+                    self.assertEqual({path.name for path in (root / "evidence").iterdir()}, {
+                        "attempt.json", "provenance.json",
+                    })
 
     def test_real_first_public_disclosure_requires_confirmation(self):
         title = E.Element("node", {
@@ -1942,6 +2085,9 @@ class EvidenceChecks(unittest.TestCase):
                    "notPhysicalEvidence": True, "notPlaySigned": True, "failureGate": None,
                    "failureElapsedSeconds": None,
                    "deferredUiDumpCleanupCountBySide": {"a": 0, "b": 0},
+                   "closedUiTrace": capture.empty_trace_payload(),
+                   "diagnosticFailureMediaEnabled": False,
+                   "diagnosticFailureMediaExported": False,
                    "preflightEvents": [{"step": step, "elapsedSeconds": number+1}
                                        for number, step in enumerate(capture.PREFLIGHT_STEPS)],
                    "events": [{"step": step, "elapsedSeconds": number+1}
@@ -1973,6 +2119,36 @@ class EvidenceChecks(unittest.TestCase):
             (root/"recording-a.webm").write_bytes(b"changed unit bytes")
             with self.assertRaises(localassemble.ValidationFailure):
                 localassemble.validate_inputs(root, "1"*40)
+
+    def test_local_assembler_accepts_real_success_but_rejects_diagnostic_failure_media(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.local_bundle(directory)
+            attempt = json.loads((root / "attempt.json").read_text())
+            attempt["diagnosticFailureMediaEnabled"] = True
+            (root / "attempt.json").write_text(json.dumps(attempt))
+            self.rehash_bundle(root)
+            localassemble.validate_inputs(root, "1" * 40)
+
+            attempt["diagnosticFailureMediaExported"] = True
+            attempt["result"] = "NOT_COMPLETED"
+            attempt["failureGate"] = "onboarding_unknown_a"
+            attempt["failureElapsedSeconds"] = 90.0
+            (root / "attempt.json").write_text(json.dumps(attempt))
+            self.rehash_bundle(root)
+            with self.assertRaisesRegex(localassemble.ValidationFailure,
+                                        "scenario_receipt"):
+                localassemble.validate_inputs(root, "1" * 40)
+
+    def test_local_assembler_rejects_success_with_incomplete_reader_cleanup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.local_bundle(directory)
+            attempt = json.loads((root / "attempt.json").read_text())
+            attempt["deferredUiDumpCleanupCountBySide"] = {"a": 0, "b": 1}
+            (root / "attempt.json").write_text(json.dumps(attempt))
+            self.rehash_bundle(root)
+            with self.assertRaisesRegex(localassemble.ValidationFailure,
+                                        "scenario_cleanup"):
+                localassemble.validate_inputs(root, "1" * 40)
 
     def test_local_metadata_gate_requires_null_failure_clock_for_success(self):
         with tempfile.TemporaryDirectory() as directory:

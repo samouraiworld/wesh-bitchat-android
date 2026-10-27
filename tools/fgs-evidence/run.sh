@@ -2,7 +2,14 @@
 set -euo pipefail
 
 # This script deliberately has no physical-device fallback and never calls unscoped adb shell.
-fail() { printf 'FGS prerequisite failed: %s\n' "$1" >&2; exit 1; }
+fail() {
+  printf 'FGS prerequisite failed: %s\n' "$1" >&2
+  if [[ "${FGS_DIAGNOSTIC_FAILURE_MEDIA:-false}" == true && -n "${root:-}" \
+        && ! -e "$root/evidence/attempt.json" ]]; then
+    python3 tools/fgs-evidence/diagnostic_failure_receipt.py "$root" >/dev/null 2>&1 || true
+  fi
+  exit 1
+}
 [[ "${GITHUB_ACTIONS:-}" == true && "$(uname -s)" == Linux ]] || fail runner_context
 root="${1:?disposable evidence directory required}"
 [[ "$root" == "$RUNNER_TEMP/fgs-evidence" && -f "$root/wesh109-test-signed.apk" ]] || fail verified_test_apk

@@ -14,6 +14,22 @@ scenario budget. On success both host physical-display recordings finish their
 180-second limit, preserving a short final post-roll; failure never exports a passing recording.
 Any missing real state aborts; there is no fake-peer fallback.
 
+The distinct label `fgs-emulator-diagnostic-reviewed` is default-off and requires
+a new, exact-head human authorization of failure-media export before use. Only
+that label sets the closed value `FGS_DIAGNOSTIC_FAILURE_MEDIA=true`. If both
+host recorders started, both regular WebMs finish, the allowlisted primary gate
+is preserved and reader cleanup is complete, an incomplete attempt may retain
+the two synthetic WebMs with `attempt.json`, `provenance.json` and `SHA256SUMS`
+for seven days. Otherwise it retains receipts only. The ordinary
+`fgs-emulator-reviewed` job never sets this flag and still exports no WebM on
+failure. Unknown flag values fail closed. An exported diagnostic failure remains
+`NOT_COMPLETED`, keeps its primary gate and `finalVideoQualified=false`; the
+local assembler rejects it. If the exact same strict scenario instead completes
+all nine events with valid WebMs and clean teardown, enabling failure retention
+does not invalidate that genuine success: it remains subject to the usual local
+duration, codec and visual review. This option exists only to make a separately
+authorized failure visually diagnosable and is never enabled by static CI.
+
 The six attempts documented below are retained as **historical canonical 107**
 diagnostics. Each one-attempt approval was consumed by its named run. The current
 tooling is rebound to canonical 109 and has no inherited approval: rebasing,
@@ -123,6 +139,19 @@ change does not alter `FLAG_SECURE`, host recording, product actions, the
 13/26/165-second bounds, the two-WebM closed inventory or seven-day retention.
 It has not run and does not itself authorize or qualify a recording.
 
+The consumed canonical 109 media run `40551799481` used the direct reader and
+started both host recorders, then ended at `onboarding_unknown_a`. Its receipt
+contains only the recorder-start event: the media path at that reviewed head did
+not pass the closed observer into the shared product scenario, so it cannot
+identify the last screen class on either side. The timing is compatible with the
+side-A onboarding sub-deadline being exhausted, but does not establish a screen,
+reader failure, product defect or recorder-contention cause. No WebM was exported.
+The media controller now passes the same bounded observer as the successful
+non-media controller and embeds only its validated enum/side/timing/count payload
+in `attempt.json` on success or failure. This closes an observability gap only;
+it does not change a selector, product action, gate, retry, timeout, recorder,
+`FLAG_SECURE`, or video success criterion, and it does not authorize another run.
+
 The first non-media run, `40496918526`, verified canonical preparation and then
 ended after 168.1 seconds at `ui_dump_command_timeout_a`. Cleanup passed, the
 other two jobs were skipped and the run produced no artifact. The elapsed time
@@ -137,8 +166,9 @@ at most 64 events from a fixed enum, aggregate counters and only non-negative
 finite allocated/elapsed timings. Progress enums distinguish activity resume,
 Welcome observation, Start action, permission categories and home; UI enums
 distinguish the dump phases. No UI label, node, XML, path, emulator serial or raw
-command output reaches the trace. The video path passes no observer and gains no
-trace or receipt fields. Both paths now require the ordered real Welcome, Start
+command output reaches the trace. The media and non-media paths share this trace
+codec; the media receipt embeds it without changing the closed failure/success
+file inventories. Both paths require the ordered real Welcome, Start
 and home observations before onboarding can pass, so a transient home shell is
 not accepted; Start and permission actions must also resolve to an actionable
 button/node rather than an enabled heading. If a dump command expires only

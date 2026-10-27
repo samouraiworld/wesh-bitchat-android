@@ -224,7 +224,8 @@ class ScenarioCheckTests(unittest.TestCase):
 
         workflow = (HERE.parents[1] / ".github/workflows/fgs-emulator-evidence.yml").read_text()
         labels = ("fgs-emulator-diagnose", "fgs-onboarding-reviewed",
-                  "fgs-scenario-reviewed", "fgs-emulator-reviewed")
+                  "fgs-scenario-reviewed", "fgs-emulator-reviewed",
+                  "fgs-emulator-diagnostic-reviewed")
         for label in labels:
             self.assertEqual(workflow.count(
                 f"github.event.label.name == '{label}'"), 1)
@@ -240,6 +241,13 @@ class ScenarioCheckTests(unittest.TestCase):
         self.assertNotIn("upload-artifact", scenario_job)
         self.assertNotIn("GITHUB_OUTPUT", scenario_job)
         self.assertNotIn("run.sh", scenario_job)
+
+        diagnostic_job = workflow.split("\n  diagnostic-evidence:\n", 1)[1]
+        self.assertIn("timeout-minutes: 25", diagnostic_job)
+        self.assertIn("ref: ${{ github.event.pull_request.head.sha }}", diagnostic_job)
+        self.assertIn("FGS_DIAGNOSTIC_FAILURE_MEDIA: 'true'", diagnostic_job)
+        self.assertIn("retention-days: 7", diagnostic_job)
+        self.assertIn("if: always()", diagnostic_job)
 
 
 if __name__ == "__main__":

@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 
 from capture import CAPTURE_SOURCE, PREFLIGHT_STEPS, SCENARIO_RESULT, SCENARIO_STEPS
+from closed_trace import validate_trace_payload
 from prepare import APK, FILES, SOURCE, digest
 
 RECORDINGS = ("recording-a.webm", "recording-b.webm")
@@ -31,7 +32,8 @@ ATTEMPT_FIELDS = frozenset({
     "result", "failureGate", "preflightEvents", "events", "environment", "emulator",
     "systemImageRevision", "evidenceSource", "captureSource", "notPhysicalEvidence",
     "notPlaySigned", "recordingsExported", "finalVideoQualified", "failureElapsedSeconds",
-    "deferredUiDumpCleanupCountBySide",
+    "deferredUiDumpCleanupCountBySide", "closedUiTrace",
+    "diagnosticFailureMediaEnabled", "diagnosticFailureMediaExported",
 })
 
 
@@ -88,6 +90,14 @@ def validate_attempt_shape(attempt):
     require(failure_elapsed is None or
             (type(failure_elapsed) in (int, float) and math.isfinite(failure_elapsed) and
              failure_elapsed >= 0), "failure_elapsed_clock")
+    diagnostic_enabled = attempt.get("diagnosticFailureMediaEnabled")
+    diagnostic_exported = attempt.get("diagnosticFailureMediaExported")
+    require(type(diagnostic_enabled) is bool and type(diagnostic_exported) is bool and
+            (not diagnostic_exported or diagnostic_enabled), "diagnostic_media_flags")
+    try:
+        validate_trace_payload(attempt.get("closedUiTrace"))
+    except ValueError:
+        raise ValidationFailure("closed_ui_trace") from None
     return validate_cleanup_diagnostics(attempt)
 
 
@@ -108,9 +118,11 @@ def validate_bundle(evidence, source_head):
     require(provenance["source"] == SOURCE and provenance["unsignedApkSHA256"] == FILES[APK] and
             provenance["attestationsVerified"] == 11 and provenance["apkPayloadUnchanged"] is True,
             "canonical_provenance")
-    validate_attempt_shape(attempt)
+    cleanup_counts = validate_attempt_shape(attempt)
+    require(cleanup_counts == {"a": 0, "b": 0}, "scenario_cleanup")
     require(attempt["evidenceSource"] == source_head and attempt["result"] == SCENARIO_RESULT and
             attempt["recordingsExported"] is True and attempt["finalVideoQualified"] is False and
+            attempt["diagnosticFailureMediaExported"] is False and
             attempt["notPhysicalEvidence"] is True and attempt["notPlaySigned"] is True and
             attempt.get("failureGate") is None and attempt.get("failureElapsedSeconds") is None and
             attempt.get("captureSource") == CAPTURE_SOURCE,

@@ -24,7 +24,7 @@ from capture import (
     sweep_deferred_ui_dumps,
     ui_reader_healthcheck,
 )
-from onboarding_check import (
+from closed_trace import (
     ClosedOnboardingTrace,
     empty_trace_payload,
     validated_trace_payload,

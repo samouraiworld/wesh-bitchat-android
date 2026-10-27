@@ -13,6 +13,12 @@ from threading import Lock
 import time
 import xml.etree.ElementTree as E
 
+from closed_trace import (
+    ClosedOnboardingTrace,
+    ONBOARDING_TRACE_EVENTS,
+    empty_trace_payload,
+    validated_trace_payload,
+)
 from prepare import digest
 
 SERIALS = ("emulator-5554", "emulator-5556")
@@ -34,36 +40,6 @@ UI_FILE_COMMAND_SECONDS = 2
 UI_READER_HOST_JAR = "wesh-ui-reader.jar"
 UI_READER_CLASS = "org.samouraiworld.wesh.tools.UiHierarchyReader"
 UI_READER_SUCCESS = "WESH_UI_READER_OK"
-ONBOARDING_TRACE_EVENTS = frozenset({
-    "activity_resumed", "welcome_seen", "start_tapped", "bluetooth", "permission",
-    "notifications", "auxiliary", "home", "unknown", "ui_prepare", "ui_stale",
-    "ui_command", "ui_output", "ui_read", "ui_parse", "ui_complete", "room_open_tapped",
-    "send_requested", "composer_focus_requested", "composer_focused",
-    "composer_expected", "composer_empty", "composer_other", "composer_shorter",
-    "composer_longer", "composer_same_length_other", "composer_ambiguous",
-    "confirmation_visible", "confirmation_tap_requested",
-    "confirmation_present_after_tap", "confirmation_dismissed",
-    "feedback_destination_changed", "feedback_draft_changed",
-    "feedback_send_unavailable", "feedback_send_unconfirmed",
-    "feedback_draft_unavailable",
-    "feedback_bluetooth_needed", "bubble_candidate_exact",
-    "bubble_candidate_editor_only", "bubble_candidate_absent",
-    "failure_caller_deadline_reached", "message_bubble", "remote_received",
-    "background_requested", "notification_visible", "notification_open_tapped",
-    "activity_resumed_after_notification", "quit_requested", "shade_opened",
-    "notification_card_found", "expand_tapped", "quit_action_found", "quit_tapped",
-    "service_stopped", "notification_absent", "quit_completed",
-    "onboarding_completed", "fgs_active", "peers_visible", "messages_bidirectional",
-    "background_send", "scenario_started",
-    "screen_home_ready", "screen_home_before_welcome", "screen_welcome",
-    "screen_welcome_marker_disabled", "screen_bluetooth_explainer",
-    "screen_notifications_explainer", "screen_permission_system",
-    "screen_startup_preparing", "screen_startup_blocked", "screen_app_loading",
-    "screen_app_error", "screen_bluetooth_fallback", "screen_unknown_app",
-    "screen_android_error", "screen_unknown_system", "screen_unknown_foreign",
-    "screen_unknown_mixed",
-})
-
 SERIAL_PHASES = frozenset({
     "boot_timeout", "emulator_identity", "api_image", "device_setup",
     "bluetooth_on_timeout", "install", "package_verify", "activity_launch",
@@ -84,6 +60,7 @@ SERIAL_PHASES = frozenset({
 })
 GLOBAL_GATES = frozenset({
     "unclassified_controller_failure", "scenario_budget", "scenario_clock", "evidence_export",
+    "diagnostic_export_config",
 })
 PREFLIGHT_STEPS = ("boot_install_bluetooth_ready",)
 SCENARIO_STEPS = (
@@ -112,6 +89,15 @@ def gate_name(phase, serial=None):
     if serial not in SIDES or phase not in SERIAL_PHASES:
         raise ValueError("Unallowlisted serial failure gate")
     return f"{phase}_{SIDES[serial]}"
+
+
+def diagnostic_failure_media_enabled():
+    value = os.environ.get("FGS_DIAGNOSTIC_FAILURE_MEDIA", "false")
+    if value == "false":
+        return False
+    if value == "true":
+        return True
+    raise GateError("diagnostic_export_config")
 
 
 class GateError(RuntimeError):
@@ -1262,7 +1248,8 @@ def wait_host_recordings(recordings, last_recorder_start):
             raise GateError("host_recording_file", serial)
 
 
-def export_host_recordings(root, recordings, receipt, failure_elapsed_seconds=None):
+def export_host_recordings(root, recordings, receipt, failure_elapsed_seconds=None,
+                           diagnostic_failure=False):
     evidence = root / "evidence"
     staging = root / "evidence-ready"
     backup = root / "evidence-failure-receipts"
@@ -1270,6 +1257,13 @@ def export_host_recordings(root, recordings, receipt, failure_elapsed_seconds=No
     allowed_names = ("recording-a.webm", "recording-b.webm", "provenance.json",
                      "attempt.json", "SHA256SUMS")
     backup_moved = False
+
+    if diagnostic_failure:
+        if (receipt.get("result") != "NOT_COMPLETED" or not receipt.get("failureGate")
+                or receipt.get("diagnosticFailureMediaEnabled") is not True):
+            raise GateError("evidence_export")
+    elif receipt.get("result") != SCENARIO_RESULT:
+        raise GateError("evidence_export")
 
     def remove_owned(directory):
         for name in allowed_names:
@@ -1288,7 +1282,9 @@ def export_host_recordings(root, recordings, receipt, failure_elapsed_seconds=No
             path.rename(destination)
         (staging / "provenance.json").write_bytes((evidence / "provenance.json").read_bytes())
         receipt["recordingsExported"] = True
-        receipt["failureGate"] = None
+        receipt["diagnosticFailureMediaExported"] = diagnostic_failure
+        if not diagnostic_failure:
+            receipt["failureGate"] = None
         (staging / "attempt.json").write_text(json.dumps(receipt, indent=2)+"\n")
         (staging / "SHA256SUMS").write_text("".join(
             f"{digest(path)}  {path.name}\n"
@@ -1315,8 +1311,10 @@ def export_host_recordings(root, recordings, receipt, failure_elapsed_seconds=No
         try:
             receipt["result"] = "NOT_COMPLETED"
             receipt["recordingsExported"] = False
-            receipt["failureGate"] = gate_name("evidence_export")
-            receipt["failureElapsedSeconds"] = failure_elapsed_seconds
+            receipt["diagnosticFailureMediaExported"] = False
+            if receipt.get("failureGate") is None:
+                receipt["failureGate"] = gate_name("evidence_export")
+                receipt["failureElapsedSeconds"] = failure_elapsed_seconds
             (evidence / "attempt.json").write_text(json.dumps(receipt, indent=2)+"\n")
         except OSError:
             pass
@@ -1404,6 +1402,7 @@ def run_product_scenario(deadline, event, observer=None):
 def main(root):
     if os.environ.get("GITHUB_ACTIONS") != "true":
         raise RuntimeError("Disposable GitHub runner only")
+    trace = ClosedOnboardingTrace()
     receipt = {
         "result": "NOT_COMPLETED", "failureGate": None, "preflightEvents": [], "events": [],
         "environment": "Two API35 x86_64 AVDs; netsim simulated BLE",
@@ -1412,6 +1411,9 @@ def main(root):
         "notPhysicalEvidence": True, "notPlaySigned": True,
         "failureElapsedSeconds": None,
         "deferredUiDumpCleanupCountBySide": {"a": 0, "b": 0},
+        "closedUiTrace": empty_trace_payload(),
+        "diagnosticFailureMediaEnabled": False,
+        "diagnosticFailureMediaExported": False,
         "recordingsExported": False, "finalVideoQualified": False,
     }
     recordings = [root / "avd" / f"wesh-fgs-{side}.avd" / "console_out" /
@@ -1429,6 +1431,7 @@ def main(root):
         append_scenario_event(receipt, name, video_start, elapsed)
 
     try:
+        receipt["diagnosticFailureMediaEnabled"] = diagnostic_failure_media_enabled()
         with ThreadPoolExecutor(2) as pool:
             futures = [pool.submit(boot_and_install, serial, root / "wesh109-test-signed.apk") for serial in SERIALS]
             for future in futures:
@@ -1456,7 +1459,7 @@ def main(root):
 
         # The first product launch, onboarding, permission prompts, service start and peer setup are
         # all real actions inside the two host recordings, before the declared device interaction.
-        run_product_scenario(deadline, event)
+        run_product_scenario(deadline, event, observer=trace)
         receipt["result"] = SCENARIO_RESULT
     except GateError as error:
         receipt["failureGate"] = error.gate
@@ -1487,9 +1490,30 @@ def main(root):
                     time.monotonic()-attempt_start, 1)
         sweep_deferred_ui_dumps(time.monotonic() + 2 * UI_POST_CLEANUP_SECONDS)
         receipt["deferredUiDumpCleanupCountBySide"] = deferred_ui_dump_counts()
+        try:
+            receipt["closedUiTrace"] = validated_trace_payload(trace)
+        except ValueError:
+            receipt["result"] = "NOT_COMPLETED"
+            if receipt["failureGate"] is None:
+                receipt["failureGate"] = gate_name("unclassified_controller_failure")
+                receipt["failureElapsedSeconds"] = round(
+                    time.monotonic() - attempt_start, 1)
+            receipt["closedUiTrace"] = empty_trace_payload()
         (root / "evidence/attempt.json").write_text(json.dumps(receipt, indent=2)+"\n")
 
     if receipt["result"] != SCENARIO_RESULT:
+        if (receipt["diagnosticFailureMediaEnabled"] and last_recorder_start is not None
+                and reader_cleanup_error is None
+                and receipt["deferredUiDumpCleanupCountBySide"] == {"a": 0, "b": 0}):
+            try:
+                wait_host_recordings(recordings, last_recorder_start)
+                export_host_recordings(
+                    root, recordings, receipt,
+                    failure_elapsed_seconds=round(time.monotonic() - attempt_start, 1),
+                    diagnostic_failure=True,
+                )
+            except GateError:
+                pass
         raise RuntimeError("Allowlisted failure gate was written to the receipt")
 
     export_host_recordings(

@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import localassemble
+from closed_trace import empty_trace_payload
 from prepare import digest
 
 
@@ -72,6 +73,9 @@ class LocalAssembleCaptionTests(unittest.TestCase):
     def test_attempt_receipt_rejects_every_unallowlisted_top_level_field(self):
         attempt = {field: None for field in localassemble.ATTEMPT_FIELDS}
         attempt["deferredUiDumpCleanupCountBySide"] = {"a": 0, "b": 0}
+        attempt["closedUiTrace"] = empty_trace_payload()
+        attempt["diagnosticFailureMediaEnabled"] = False
+        attempt["diagnosticFailureMediaExported"] = False
         localassemble.validate_attempt_shape(attempt)
 
         for field in ("rawUiDump", "cleanupPath", "runnerDiagnostic"):
@@ -82,9 +86,53 @@ class LocalAssembleCaptionTests(unittest.TestCase):
                                                 "scenario_receipt_fields"):
                 localassemble.validate_attempt_shape(contaminated)
 
+    def test_attempt_receipt_rejects_nonclosed_trace_content_and_bounds(self):
+        def attempt_with(trace):
+            attempt = {field: None for field in localassemble.ATTEMPT_FIELDS}
+            attempt["deferredUiDumpCleanupCountBySide"] = {"a": 0, "b": 0}
+            attempt["closedUiTrace"] = trace
+            attempt["diagnosticFailureMediaEnabled"] = False
+            attempt["diagnosticFailureMediaExported"] = False
+            return attempt
+
+        valid = empty_trace_payload()
+        valid["events"] = [{
+            "event": "ui_command", "side": "a", "attempt": 1,
+            "allocatedSeconds": 13.0, "elapsedSeconds": 1.0,
+        }]
+        valid["counts"]["ui_command"] = 1
+        localassemble.validate_attempt_shape(attempt_with(valid))
+
+        mutations = []
+        extra_trace_key = json.loads(json.dumps(valid))
+        extra_trace_key["rawUiText"] = "synthetic private text"
+        mutations.append(extra_trace_key)
+        extra_record_key = json.loads(json.dumps(valid))
+        extra_record_key["events"][0]["label"] = "synthetic private text"
+        mutations.append(extra_record_key)
+        unknown_event = json.loads(json.dumps(valid))
+        unknown_event["events"][0]["event"] = "synthetic private text"
+        mutations.append(unknown_event)
+        nonfinite = json.loads(json.dumps(valid))
+        nonfinite["events"][0]["elapsedSeconds"] = float("nan")
+        mutations.append(nonfinite)
+        too_many = empty_trace_payload()
+        too_many["events"] = [dict(valid["events"][0]) for _ in range(65)]
+        too_many["counts"]["ui_command"] = 65
+        mutations.append(too_many)
+
+        for trace in mutations:
+            with self.subTest(trace=trace), \
+                    self.assertRaisesRegex(localassemble.ValidationFailure,
+                                           "closed_ui_trace"):
+                localassemble.validate_attempt_shape(attempt_with(trace))
+
     def test_failure_elapsed_clock_is_numeric_or_null_without_raw_detail(self):
         attempt = {field: None for field in localassemble.ATTEMPT_FIELDS}
         attempt["deferredUiDumpCleanupCountBySide"] = {"a": 0, "b": 0}
+        attempt["closedUiTrace"] = empty_trace_payload()
+        attempt["diagnosticFailureMediaEnabled"] = False
+        attempt["diagnosticFailureMediaExported"] = False
         for value in (None, 0, 68.6):
             with self.subTest(value=value):
                 attempt["failureElapsedSeconds"] = value
@@ -94,6 +142,23 @@ class LocalAssembleCaptionTests(unittest.TestCase):
                     self.assertRaisesRegex(localassemble.ValidationFailure,
                                            "failure_elapsed_clock"):
                 attempt["failureElapsedSeconds"] = value
+                localassemble.validate_attempt_shape(attempt)
+
+    def test_diagnostic_media_flags_are_exact_booleans_and_one_way(self):
+        attempt = {field: None for field in localassemble.ATTEMPT_FIELDS}
+        attempt["deferredUiDumpCleanupCountBySide"] = {"a": 0, "b": 0}
+        attempt["closedUiTrace"] = empty_trace_payload()
+        attempt["diagnosticFailureMediaEnabled"] = False
+        attempt["diagnosticFailureMediaExported"] = False
+        localassemble.validate_attempt_shape(attempt)
+        attempt["diagnosticFailureMediaEnabled"] = True
+        localassemble.validate_attempt_shape(attempt)
+        for enabled, exported in ((False, True), (0, False), (False, 0), ("true", False)):
+            attempt["diagnosticFailureMediaEnabled"] = enabled
+            attempt["diagnosticFailureMediaExported"] = exported
+            with self.subTest(enabled=enabled, exported=exported), \
+                    self.assertRaisesRegex(localassemble.ValidationFailure,
+                                           "diagnostic_media_flags"):
                 localassemble.validate_attempt_shape(attempt)
 
     @unittest.skipUnless(PIL_AVAILABLE, "Pillow is an explicit local-assembly dependency")

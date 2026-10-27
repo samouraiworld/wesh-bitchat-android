@@ -207,7 +207,7 @@ class OnboardingCheckTests(unittest.TestCase):
     def test_workflow_labels_are_exact_and_mutually_exclusive(self):
         workflow = (HERE.parents[1] / ".github/workflows/fgs-emulator-evidence.yml").read_text()
         labels = ("fgs-emulator-diagnose", "fgs-onboarding-reviewed",
-                  "fgs-emulator-reviewed")
+                  "fgs-emulator-reviewed", "fgs-emulator-diagnostic-reviewed")
         for label in labels:
             self.assertEqual(workflow.count(f"github.event.label.name == '{label}'"), 1)
         self.assertIn("bash -n tools/fgs-evidence/run-onboarding.sh", workflow)
