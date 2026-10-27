@@ -166,6 +166,30 @@ classify a refusal, and it never overrides an exact canonical message bubble.
 No UI text, message, bounds, node, XML or identifier is added to the trace, and
 success still requires exact canonical-app bubbles on both emulators.
 
+The next non-media run, `40519086123`, ended at `onboarding_unknown_a` before
+the send diagnostics ran. Sixty snapshots completed and the retained tail shows
+repeated unknown observations on side A, but the aggregate Welcome, Start and
+home counters do not identify which side produced them. No raw hierarchy was
+retained, so the receipt cannot distinguish Wesh's intentionally identical
+CHECKING/INITIALIZING home shell from startup, loading, error, permission or
+other unrecognized screens, and the total controller duration proves none of
+those causes.
+
+The closed trace now classifies onboarding snapshots in memory from exact known
+markers and fixed package families. Its enum distinguishes ready and premature
+home, enabled and disabled Welcome markers, the Bluetooth and notifications
+explainers, Android permission UI, startup preparing/blocked, app loading/error,
+Bluetooth fallback, Android error controls, and unknown app/system/foreign/mixed
+screens. Repeated identical
+screens are suppressed; the last class is emitted once more on failure so it
+survives the bounded rolling tail. Consequently trace counters count emitted
+diagnostic records, not screen visits. No label or package value is serialized,
+no new action is taken, and only the ordered real Welcome, Start and home still
+passes onboarding. On a later send/receive snapshot failure, the already closed
+composer, bubble, feedback and confirmation states are likewise re-emitted
+before the fixed failure event; the original gate and all time budgets remain
+unchanged.
+
 The first reviewed attempt, [40214942196](https://github.com/samouraiworld/wesh-bitchat-android/actions/runs/40214942196),
 failed during Java setup: `21.0.11+10` was not a matching Temurin setup selector.
 Canonical verification, signing, SDK/AVD setup, BLE and recording did not run;

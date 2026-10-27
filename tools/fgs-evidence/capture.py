@@ -52,6 +52,13 @@ ONBOARDING_TRACE_EVENTS = frozenset({
     "service_stopped", "notification_absent", "quit_completed",
     "onboarding_completed", "fgs_active", "peers_visible", "messages_bidirectional",
     "background_send", "scenario_started",
+    "screen_home_ready", "screen_home_before_welcome", "screen_welcome",
+    "screen_welcome_marker_disabled", "screen_bluetooth_explainer",
+    "screen_notifications_explainer", "screen_permission_system",
+    "screen_startup_preparing", "screen_startup_blocked", "screen_app_loading",
+    "screen_app_error", "screen_bluetooth_fallback", "screen_unknown_app",
+    "screen_android_error", "screen_unknown_system", "screen_unknown_foreign",
+    "screen_unknown_mixed",
 })
 
 SERIAL_PHASES = frozenset({
@@ -599,6 +606,69 @@ def wait_activity_resumed(serial, deadline):
     raise GateError("activity_resume_timeout", serial)
 
 
+PERMISSION_CONTROLLER_PACKAGES = frozenset({
+    "com.android.permissioncontroller", "com.google.android.permissioncontroller",
+})
+SYSTEM_PACKAGES = frozenset({"android", "com.android.systemui"})
+ANDROID_ERROR_RESOURCE_IDS = frozenset({
+    "android:id/aerr_close", "android:id/aerr_wait", "android:id/aerr_restart",
+    "android:id/aerr_report",
+})
+
+
+def exact_marker_nodes(items, marker, package=None):
+    return [node for node in items
+            if (package is None or node.get("package") == package)
+            and marker in (node.get("text", ""), node.get("content-desc", ""))]
+
+
+def onboarding_screen_event(items, welcome_seen=False, start_tapped=False):
+    """Return one fixed diagnostic class without exposing UI content or package names."""
+    packages = {node.get("package", "") for node in items if node.get("package", "")}
+    nickname = exact_marker_nodes(items, "Your nickname", PACKAGE)
+    if nickname:
+        return ("screen_welcome" if any(node.get("enabled") == "true" for node in nickname)
+                else "screen_welcome_marker_disabled")
+    if exact_marker_nodes(items, "Public room", PACKAGE):
+        return ("screen_home_ready" if welcome_seen and start_tapped
+                else "screen_home_before_welcome")
+    if exact_marker_nodes(items, "Bluetooth, to find the phones around", PACKAGE):
+        return "screen_bluetooth_explainer"
+    if exact_marker_nodes(items, "Get told when a message arrives", PACKAGE):
+        return "screen_notifications_explainer"
+    if packages & PERMISSION_CONTROLLER_PACKAGES:
+        return "screen_permission_system"
+    if any(node.get("package") == "android"
+           and node.get("resource-id") in ANDROID_ERROR_RESOURCE_IDS
+           for node in items):
+        return "screen_android_error"
+    if exact_marker_nodes(items, "Getting Wesh ready…", PACKAGE):
+        return "screen_startup_preparing"
+    startup_blocked = (
+        "Your identity is unavailable for now. Try again without erasing the app’s data.",
+        "An erase is unfinished or can’t be checked. Wesh stays locked to protect your data. "
+        "You can ask Android to erase all Wesh data.",
+    )
+    if any(exact_marker_nodes(items, marker, PACKAGE) for marker in startup_blocked):
+        return "screen_startup_blocked"
+    if exact_marker_nodes(items, "Initializing mesh network", PACKAGE):
+        return "screen_app_loading"
+    if exact_marker_nodes(items, "Setup Not Complete", PACKAGE):
+        return "screen_app_error"
+    fallback_markers = (
+        "Turn on Bluetooth", "Bluetooth unavailable", "Bluetooth is on",
+    )
+    if any(exact_marker_nodes(items, marker, PACKAGE) for marker in fallback_markers):
+        return "screen_bluetooth_fallback"
+    if packages == {PACKAGE}:
+        return "screen_unknown_app"
+    if packages and packages <= SYSTEM_PACKAGES:
+        return "screen_unknown_system"
+    if packages and PACKAGE not in packages and not packages & SYSTEM_PACKAGES:
+        return "screen_unknown_foreign"
+    return "screen_unknown_mixed"
+
+
 def onboarding(serial, deadline, observer=None):
     trace_started = time.monotonic() if observer is not None else None
 
@@ -616,15 +686,32 @@ def onboarding(serial, deadline, observer=None):
     last_phase = "onboarding_unknown"
     welcome_seen = False
     start_tapped = False
+    last_screen_event = None
+    final_screen_emitted = False
+
+    def screen_progress(items, final=False):
+        nonlocal last_screen_event
+        event = onboarding_screen_event(items, welcome_seen, start_tapped)
+        if final or event != last_screen_event:
+            progress(event)
+        last_screen_event = event
+
+    def repeat_last_screen():
+        if last_screen_event is not None:
+            progress(last_screen_event)
+
     while time.monotonic() < deadline:
         try:
             items = (nodes(serial, deadline) if observer is None
                      else nodes(serial, deadline, observer=observer))
         except GateError as failure:
+            repeat_last_screen()
+            final_screen_emitted = True
             if (failure.gate == gate_name("ui_dump_command_timeout", serial)
                     and getattr(failure, "caller_deadline_reached", False)):
                 break
             raise
+        screen_progress(items)
         home_visible = select(items, "Public room") is not None
         if home_visible and welcome_seen and start_tapped:
             progress("home")
@@ -647,7 +734,6 @@ def onboarding(serial, deadline, observer=None):
         if home_visible:
             last_phase = ("onboarding_welcome_timeout" if welcome_seen
                           else "onboarding_unknown")
-            progress("unknown")
             if not bounded_sleep(deadline, 0.4):
                 break
             continue
@@ -671,9 +757,10 @@ def onboarding(serial, deadline, observer=None):
                 break
         if not acted:
             last_phase = "onboarding_unknown"
-            progress("unknown")
         if not bounded_sleep(deadline, 0.4):
             break
+    if not final_screen_emitted:
+        repeat_last_screen()
     raise GateError(last_phase, serial)
 
 
@@ -779,10 +866,14 @@ def trace_send_snapshot(observer, states, items, message, started, serial):
     return composer, bubble, feedback
 
 
-def scenario_nodes(serial, deadline, observer, trace_started):
+def scenario_nodes(serial, deadline, observer, trace_started, states=None):
     try:
         return nodes(serial, deadline, observer=observer)
     except GateError as failure:
+        if states is not None:
+            for event in dict.fromkeys(
+                    event for event in states.values() if event is not None):
+                trace_scenario_progress(observer, event, trace_started, serial)
         if getattr(failure, "caller_deadline_reached", False):
             trace_scenario_progress(
                 observer, "failure_caller_deadline_reached", trace_started, serial)
@@ -819,7 +910,7 @@ def wait_message_bubble(serial, message, deadline, observer=None, trace_started=
                         remote=False):
     states = {}
     while time.monotonic() < deadline:
-        items = scenario_nodes(serial, deadline, observer, trace_started)
+        items = scenario_nodes(serial, deadline, observer, trace_started, states)
         trace_send_snapshot(observer, states, items, message, trace_started, serial)
         if message_bubble(items, message) is not None:
             trace_scenario_progress(
@@ -843,7 +934,7 @@ def send(serial, message, deadline, observer=None, trace_started=None):
     saw_expected_draft = False
     feedback_before_submit = None
     while time.monotonic() < deadline:
-        items = scenario_nodes(serial, deadline, observer, trace_started)
+        items = scenario_nodes(serial, deadline, observer, trace_started, states)
         composer, _bubble, feedback = trace_send_snapshot(
             observer, states, items, message, trace_started, serial)
         feedback_before_submit = feedback
@@ -863,7 +954,7 @@ def send(serial, message, deadline, observer=None, trace_started=None):
     confirmation_requested = False
     feedback_cleared_after_submit = False
     while time.monotonic() < deadline:
-        items = scenario_nodes(serial, deadline, observer, trace_started)
+        items = scenario_nodes(serial, deadline, observer, trace_started, states)
         _composer, _bubble, feedback = trace_send_snapshot(
             observer, states, items, message, trace_started, serial)
         state = public_send_state(items, message)

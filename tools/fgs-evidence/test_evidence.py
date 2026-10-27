@@ -1002,13 +1002,18 @@ class EvidenceChecks(unittest.TestCase):
 
     def test_onboarding_observer_receives_only_allowlisted_progress(self):
         welcome = [
-            E.Element("node", {"text": "Your nickname", "enabled": "true"}),
+            E.Element("node", {
+                "text": "Your nickname", "enabled": "true",
+                "package": capture.PACKAGE,
+            }),
             E.Element("node", {
                 "text": "Start", "enabled": "true", "clickable": "true",
-                "bounds": "[0,0][20,20]",
+                "bounds": "[0,0][20,20]", "package": capture.PACKAGE,
             }),
         ]
-        home = [E.Element("node", {"text": "Public room", "enabled": "true"})]
+        home = [E.Element("node", {
+            "text": "Public room", "enabled": "true", "package": capture.PACKAGE,
+        })]
         observed = []
 
         with patch("capture.deadline_adb"), patch("capture.wait_activity_resumed"), \
@@ -1019,12 +1024,74 @@ class EvidenceChecks(unittest.TestCase):
                 observer=lambda *values: observed.append(values),
             )
         self.assertEqual([event[0] for event in observed], [
-            "activity_resumed", "welcome_seen", "start_tapped", "home",
+            "activity_resumed", "screen_welcome", "welcome_seen", "start_tapped",
+            "screen_home_ready", "home",
         ])
         serialized = json.dumps(observed)
         for forbidden in ("Your nickname", "Public room", "<?xml", "/data/local/tmp",
                           "emulator-5554"):
             self.assertNotIn(forbidden, serialized)
+
+    def test_onboarding_screen_classifier_uses_only_fixed_markers_and_packages(self):
+        def app_node(text, enabled="true"):
+            return E.Element("node", {
+                "text": text, "enabled": enabled, "package": capture.PACKAGE,
+            })
+
+        cases = (
+            ([app_node("Your nickname")], "screen_welcome"),
+            ([app_node("Your nickname", "false")], "screen_welcome_marker_disabled"),
+            ([app_node("Public room")], "screen_home_before_welcome"),
+            ([app_node("Bluetooth, to find the phones around")],
+             "screen_bluetooth_explainer"),
+            ([app_node("Get told when a message arrives")],
+             "screen_notifications_explainer"),
+            ([E.Element("node", {"package": "com.google.android.permissioncontroller"})],
+             "screen_permission_system"),
+            ([app_node("Getting Wesh ready…")], "screen_startup_preparing"),
+            ([app_node("Your identity is unavailable for now. "
+                       "Try again without erasing the app’s data.")],
+             "screen_startup_blocked"),
+            ([app_node("Initializing mesh network")], "screen_app_loading"),
+            ([app_node("Setup Not Complete")], "screen_app_error"),
+            ([app_node("Bluetooth unavailable")], "screen_bluetooth_fallback"),
+            ([app_node("unrecognized app screen")], "screen_unknown_app"),
+            ([E.Element("node", {"package": "com.android.systemui"})],
+             "screen_unknown_system"),
+            ([E.Element("node", {
+                "package": "android", "resource-id": "android:id/aerr_close",
+            })], "screen_android_error"),
+            ([E.Element("node", {"package": "synthetic.foreign"})],
+             "screen_unknown_foreign"),
+            ([app_node("unrecognized app screen"),
+              E.Element("node", {"package": "com.android.systemui"})],
+             "screen_unknown_mixed"),
+        )
+        for items, expected in cases:
+            self.assertEqual(capture.onboarding_screen_event(items), expected)
+            self.assertIn(expected, capture.ONBOARDING_TRACE_EVENTS)
+        self.assertEqual(capture.onboarding_screen_event(
+            [app_node("Public room")], welcome_seen=True, start_tapped=True,
+        ), "screen_home_ready")
+
+    def test_onboarding_deduplicates_screen_transitions_and_repeats_terminal_class(self):
+        home = [E.Element("node", {
+            "text": "Public room", "enabled": "true", "package": capture.PACKAGE,
+        })]
+        observed = []
+        with patch("capture.deadline_adb"), patch("capture.wait_activity_resumed"), \
+             patch("capture.nodes", return_value=home), \
+             patch("capture.bounded_sleep", side_effect=[True, False]):
+            with self.assertRaises(capture.GateError) as raised:
+                capture.onboarding(
+                    capture.SERIALS[0], capture.time.monotonic() + 2,
+                    observer=lambda *values: observed.append(values),
+                )
+        self.assertEqual(raised.exception.gate, "onboarding_unknown_a")
+        self.assertEqual([entry[0] for entry in observed], [
+            "activity_resumed", "screen_home_before_welcome",
+            "screen_home_before_welcome",
+        ])
 
     def test_main_records_first_launch_setup_and_interaction_under_one_clock(self):
         clock = [0.0]
@@ -1503,7 +1570,8 @@ class EvidenceChecks(unittest.TestCase):
         self.assertEqual([call.args[2] for call in tap.call_args_list], [
             "message_composer", "message_submit", "message_confirmation",
         ])
-        self.assertIn("confirmation_present_after_tap", [entry[0] for entry in observed])
+        self.assertEqual([entry[0] for entry in observed].count(
+            "confirmation_present_after_tap"), 2)
         self.assertEqual([entry[0] for entry in observed].count(
             "confirmation_tap_requested"), 1)
         self.assertEqual(observed[-1][0], "failure_caller_deadline_reached")
