@@ -824,6 +824,10 @@ class EvidenceChecks(unittest.TestCase):
             "def run_product_scenario", 1)[1].split("def main(root):", 1)[0]
         self.assertLess(main_source.index("start_host_recorder(serial"),
                         main_source.index('event("recording_commands_started"'))
+        self.assertLess(main_source.index("configure_ui_reader(serial"),
+                        main_source.index("require_host_recorder(serial"))
+        self.assertLess(main_source.index("ui_reader_healthcheck"),
+                        main_source.index("require_host_recorder(serial"))
         self.assertLess(main_source.index('event("recording_commands_started"'),
                         main_source.index("run_product_scenario(deadline, event)"))
         self.assertNotIn("recorded_relaunch", main_source)
@@ -831,6 +835,19 @@ class EvidenceChecks(unittest.TestCase):
         self.assertIn("service_deadline = min(deadline", scenario_source)
         self.assertIn("peer_deadline = min(deadline", scenario_source)
         self.assertNotIn("recording_commands_started", scenario_source)
+
+    def test_media_runner_builds_the_same_pinned_reader_as_nonmedia(self):
+        source = (Path(capture.__file__).parent / "run.sh").read_text()
+        self.assertIn("'platforms;android-35'", source)
+        self.assertIn("'build-tools;37.0.0'", source)
+        self.assertIn('platforms/android-35/android.jar', source)
+        self.assertIn('build-tools/37.0.0/d8', source)
+        self.assertIn(
+            'bash tools/fgs-evidence/build-ui-reader.sh "$root/wesh-ui-reader.jar"',
+            source,
+        )
+        self.assertLess(source.index("build-ui-reader.sh"),
+                        source.index("emulator -accel-check"))
 
     def test_scenario_clock_has_explicit_zero_then_real_positive_onboarding(self):
         receipt = {"events": []}
@@ -1121,6 +1138,12 @@ class EvidenceChecks(unittest.TestCase):
         def capability(serial, _deadline):
             calls.append(("capability", serial))
 
+        def configure(serial, _reader, _deadline):
+            calls.append(("configure", serial))
+
+        def healthcheck(serial, _deadline):
+            calls.append(("healthcheck", serial))
+
         def start(serial, _path, deadline):
             if not video_origin:
                 video_origin.append(clock[0])
@@ -1139,6 +1162,9 @@ class EvidenceChecks(unittest.TestCase):
         def export(_root, _recordings, receipt, **_kwargs):
             exported.update(json.loads(json.dumps(receipt)))
 
+        def cleanup_reader(serial, _deadline):
+            calls.append(("cleanup_reader", serial))
+
         capture.defer_ui_dump_cleanup(
             capture.SERIALS[0],
             "/data/local/tmp/wesh-fgs-window-a-0123456789abcdef-00000001.xml")
@@ -1151,19 +1177,36 @@ class EvidenceChecks(unittest.TestCase):
                 stack.enter_context(patch("capture.ThreadPoolExecutor", ImmediateExecutor))
                 stack.enter_context(patch("capture.time.monotonic", side_effect=lambda: clock[0]))
                 stack.enter_context(patch("capture.boot_and_install", side_effect=boot))
+                stack.enter_context(patch("capture.configure_ui_reader", side_effect=configure))
+                stack.enter_context(patch("capture.ui_reader_healthcheck", side_effect=healthcheck))
                 stack.enter_context(patch("capture.require_host_recorder", side_effect=capability))
                 stack.enter_context(patch("capture.start_host_recorder", side_effect=start))
                 stack.enter_context(patch("capture.run_product_scenario", side_effect=scenario))
                 stack.enter_context(patch("capture.wait_host_recordings"))
+                stack.enter_context(patch("capture.cleanup_ui_reader", side_effect=cleanup_reader))
                 stack.enter_context(patch("capture.export_host_recordings", side_effect=export))
                 stack.enter_context(patch("capture.adb", side_effect=OSError("private sweep spawn")))
                 capture.main(root)
 
         starts = [index for index, call in enumerate(calls) if call[0] == "start"]
         scenarios = [index for index, call in enumerate(calls) if call[0] == "scenario"]
+        configurations = [index for index, call in enumerate(calls)
+                          if call[0] == "configure"]
+        healthchecks = [index for index, call in enumerate(calls)
+                        if call[0] == "healthcheck"]
+        capabilities = [index for index, call in enumerate(calls)
+                        if call[0] == "capability"]
+        cleanups = [index for index, call in enumerate(calls)
+                    if call[0] == "cleanup_reader"]
+        self.assertEqual(len(configurations), 2)
+        self.assertEqual(len(healthchecks), 2)
+        self.assertEqual(len(cleanups), 2)
         self.assertEqual(len(starts), 2)
         self.assertEqual(len(scenarios), 1)
+        self.assertLess(max(configurations), min(healthchecks))
+        self.assertLess(max(healthchecks), min(capabilities))
         self.assertLess(max(starts), min(scenarios))
+        self.assertLess(max(scenarios), min(cleanups))
         self.assertTrue(all(deadline <= video_origin[0] + capture.SCENARIO_BUDGET_SECONDS
                             for deadline in scenario_deadlines))
         self.assertEqual([event["step"] for event in exported["preflightEvents"]],
@@ -1193,10 +1236,15 @@ class EvidenceChecks(unittest.TestCase):
                     "GITHUB_ACTIONS": "true", "EVIDENCE_HEAD": "1"*40}, clear=False), \
                  patch("capture.ThreadPoolExecutor", ImmediateExecutor), \
                  patch("capture.boot_and_install"), \
+                 patch("capture.configure_ui_reader"), \
+                 patch("capture.ui_reader_healthcheck"), \
                  patch("capture.require_host_recorder"), \
                  patch("capture.start_host_recorder", start), \
                  patch("capture.onboarding", onboarding), \
                  patch("capture.wait_host_recordings", wait_recordings), \
+                 patch("capture.cleanup_ui_reader", side_effect=[
+                     capture.GateError("ui_reader_cleanup", capture.SERIALS[0]), None,
+                 ]) as cleanup_reader, \
                  patch("capture.export_host_recordings", export):
                 with self.assertRaises(RuntimeError):
                     capture.main(root)
@@ -1207,8 +1255,76 @@ class EvidenceChecks(unittest.TestCase):
         export.assert_not_called()
         self.assertEqual(attempt["events"], [])
         self.assertEqual(attempt["failureGate"], "host_recorder_start_b")
+        self.assertEqual(cleanup_reader.call_count, 2)
         self.assertIsInstance(attempt["failureElapsedSeconds"], float)
         self.assertGreaterEqual(attempt["failureElapsedSeconds"], 0)
+
+    def test_main_reader_cleanup_failure_blocks_export_after_passing_scenario(self):
+        clock = [0.0]
+
+        def scenario(_deadline, event, observer=None):
+            self.assertIsNone(observer)
+            for step in capture.SCENARIO_STEPS[1:]:
+                clock[0] += 1.0
+                event(step)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "evidence").mkdir()
+            export = Mock()
+            with patch.dict(capture.os.environ, {
+                    "GITHUB_ACTIONS": "true", "EVIDENCE_HEAD": "1"*40}, clear=False), \
+                 patch("capture.ThreadPoolExecutor", ImmediateExecutor), \
+                 patch("capture.time.monotonic", side_effect=lambda: clock[0]), \
+                 patch("capture.boot_and_install"), \
+                 patch("capture.configure_ui_reader"), \
+                 patch("capture.ui_reader_healthcheck"), \
+                 patch("capture.require_host_recorder"), \
+                 patch("capture.start_host_recorder"), \
+                 patch("capture.run_product_scenario", side_effect=scenario), \
+                 patch("capture.wait_host_recordings"), \
+                 patch("capture.cleanup_ui_reader", side_effect=[
+                     capture.GateError("ui_reader_cleanup", capture.SERIALS[0]), None,
+                 ]), \
+                 patch("capture.export_host_recordings", export):
+                with self.assertRaises(RuntimeError):
+                    capture.main(root)
+            attempt = json.loads((root / "evidence/attempt.json").read_text())
+        export.assert_not_called()
+        self.assertEqual(attempt["result"], "NOT_COMPLETED")
+        self.assertEqual(attempt["failureGate"], "ui_reader_cleanup_a")
+        self.assertIsInstance(attempt["failureElapsedSeconds"], float)
+
+    def test_main_reader_hash_gate_prevents_recorder_and_product_launch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "evidence").mkdir()
+            configure = Mock(side_effect=capture.GateError(
+                "ui_reader_hash", capture.SERIALS[0]))
+            healthcheck = Mock()
+            recorder = Mock()
+            scenario = Mock()
+            export = Mock()
+            with patch.dict(capture.os.environ, {
+                    "GITHUB_ACTIONS": "true", "EVIDENCE_HEAD": "1"*40}, clear=False), \
+                 patch("capture.ThreadPoolExecutor", ImmediateExecutor), \
+                 patch("capture.boot_and_install"), \
+                 patch("capture.configure_ui_reader", configure), \
+                 patch("capture.ui_reader_healthcheck", healthcheck), \
+                 patch("capture.require_host_recorder", recorder), \
+                 patch("capture.run_product_scenario", scenario), \
+                 patch("capture.cleanup_ui_reader"), \
+                 patch("capture.export_host_recordings", export):
+                with self.assertRaises(RuntimeError):
+                    capture.main(root)
+            attempt = json.loads((root / "evidence/attempt.json").read_text())
+        self.assertEqual(configure.call_count, 1)
+        healthcheck.assert_not_called()
+        recorder.assert_not_called()
+        scenario.assert_not_called()
+        export.assert_not_called()
+        self.assertEqual(attempt["failureGate"], "ui_reader_hash_a")
+        self.assertEqual(attempt["events"], [])
 
     def test_real_first_public_disclosure_requires_confirmation(self):
         title = E.Element("node", {

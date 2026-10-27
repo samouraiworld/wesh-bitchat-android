@@ -65,7 +65,7 @@ side A. No raw stderr or XML was retained, so the run cannot distinguish the
 platform dumper's documented idle-timeout and null-root branches. It produced no
 artifact and does not qualify the product scenario.
 
-For the next separately reviewed **non-media scenario only**, the tools build a
+The separately reviewed non-media scenario builds a
 small one-shot DEX reader from `ui-reader/UiHierarchyReader.java`. It compiles
 against the installed API 35 `android.jar` and converts with the repository's
 pinned Android build tools 37.0.0 (`gradle/libs.versions.toml`), without Maven,
@@ -107,9 +107,21 @@ command timeout remains the hard limit. The reader still never calls
 The closed non-media trace is schema version 2. Every retained record now carries
 only `side=a`, `side=b` or `side=global`; it never uses a serial as an identifier.
 The existing 64-record head/tail bound, aggregate counts, finite timings and
-fixed event enum remain unchanged. Media and standalone-onboarding jobs retain
-their current reader until a distinct reviewed follow-up explicitly proves
-parity; this first tools-only lot neither runs nor authorizes a recording.
+fixed event enum remain unchanged. Canonical 109 non-media run `40545072286`
+completed the whole real two-AVD software scenario with gate `none`, including
+bidirectional and background messages, notification resume and Quit; cleanup
+passed and it exported no artifact. This validates the direct reader on the
+pinned disposable API 35 image for that non-media scenario only. It is not
+physical-device, video, Play-signing or public-release evidence.
+
+The media controller now builds the same API 35/build-tools 37 reader, checks
+its hash and healthchecks both disposable sides before recorder capability,
+host recording and the first product launch. Every later media snapshot therefore
+uses the configured direct reader with no classic-dump fallback. Reader cleanup
+is fail-closed without masking an earlier scenario or recorder gate. This parity
+change does not alter `FLAG_SECURE`, host recording, product actions, the
+13/26/165-second bounds, the two-WebM closed inventory or seven-day retention.
+It has not run and does not itself authorize or qualify a recording.
 
 The first non-media run, `40496918526`, verified canonical preparation and then
 ended after 168.1 seconds at `ui_dump_command_timeout_a`. Cleanup passed, the

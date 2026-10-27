@@ -1433,6 +1433,14 @@ def main(root):
             futures = [pool.submit(boot_and_install, serial, root / "wesh109-test-signed.apk") for serial in SERIALS]
             for future in futures:
                 future.result()
+        reader_deadline = time.monotonic() + 60
+        for serial in SERIALS:
+            configure_ui_reader(serial, root / UI_READER_HOST_JAR, reader_deadline)
+        with ThreadPoolExecutor(2) as pool:
+            futures = [pool.submit(ui_reader_healthcheck, serial, reader_deadline)
+                       for serial in SERIALS]
+            for future in futures:
+                future.result()
         preflight_event("boot_install_bluetooth_ready")
 
         recorder_deadline = time.monotonic() + 20
@@ -1464,6 +1472,19 @@ def main(root):
                 receipt["result"] = "NOT_COMPLETED"
                 receipt["failureGate"] = error.gate
                 receipt["failureElapsedSeconds"] = round(time.monotonic()-attempt_start, 1)
+        reader_cleanup_error = None
+        for serial in SERIALS:
+            try:
+                cleanup_ui_reader(serial, time.monotonic() + 5)
+            except GateError as error:
+                if reader_cleanup_error is None:
+                    reader_cleanup_error = error
+        if reader_cleanup_error is not None:
+            receipt["result"] = "NOT_COMPLETED"
+            if receipt["failureGate"] is None:
+                receipt["failureGate"] = reader_cleanup_error.gate
+                receipt["failureElapsedSeconds"] = round(
+                    time.monotonic()-attempt_start, 1)
         sweep_deferred_ui_dumps(time.monotonic() + 2 * UI_POST_CLEANUP_SECONDS)
         receipt["deferredUiDumpCleanupCountBySide"] = deferred_ui_dump_counts()
         (root / "evidence/attempt.json").write_text(json.dumps(receipt, indent=2)+"\n")
