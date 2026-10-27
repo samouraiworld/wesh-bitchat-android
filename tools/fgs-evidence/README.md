@@ -9,9 +9,9 @@ Its expensive job runs only when a reviewer deliberately adds
 `fgs-emulator-reviewed` to this repository's PR after reviewing its exact head.
 Do not remove/re-add the label or rerun automatically. A further attempt requires
 review of the specific failed gate and its exact corrected head. The job has a
-25-minute limit and the UI flow a 165-second
+25-minute limit and the UI flow a 270-second
 scenario budget. On success both host physical-display recordings finish their
-180-second limit, preserving a short final post-roll; failure never exports a passing recording.
+300-second limit, preserving a short final post-roll; failure never exports a passing recording.
 Any missing real state aborts; there is no fake-peer fallback.
 
 The distinct label `fgs-emulator-diagnostic-reviewed` is default-off and requires
@@ -65,7 +65,7 @@ activate any other job; tests enforce that separation.
 two-AVD non-media check. It verifies the same canonical Android 109 APK and runs
 the shared real product flow—first onboarding, foreground services, real peer
 discovery, bidirectional public messages, background notification, background
-delivery, resume and Quit—inside the unchanged 165-second scenario budget. Its
+delivery, resume and Quit—inside the 270-second scenario budget. Its
 zero point is named `scenario_started`; it never emits the media-only
 `recording_commands_started` event. The job has no recorder, assembler, artifact
 upload or `GITHUB_OUTPUT`, and always removes its disposable APK, keys, AVDs and
@@ -101,7 +101,8 @@ classic `uiautomator dump`. Root-null, bridge, API, dump, output, disconnect,
 checksum and cleanup failures map to fixed gates; raw output, XML, paths and
 exceptions remain unexported. Disconnect runs in `finally`, and the controller
 removes and proves absence of the guest reader during its existing always-cleanup
-path. The same two retries and 13/26/165-second bounds remain unchanged. This is
+path. The same two retries and 13/26-second command/snapshot bounds remain
+unchanged; the overall scenario clock is 270 seconds. This is
 an empirical compatibility check for the pinned API 35 Google APIs image: the
 reflected classes are platform `@hide` classes even though the invoked members
 are public, so static compilation alone is not a runtime qualification.
@@ -135,8 +136,9 @@ its hash and healthchecks both disposable sides before recorder capability,
 host recording and the first product launch. Every later media snapshot therefore
 uses the configured direct reader with no classic-dump fallback. Reader cleanup
 is fail-closed without masking an earlier scenario or recorder gate. This parity
-change does not alter `FLAG_SECURE`, host recording, product actions, the
-13/26/165-second bounds, the two-WebM closed inventory or seven-day retention.
+change does not alter `FLAG_SECURE`, product actions, the 13/26-second UI bounds,
+the two-WebM closed inventory or seven-day retention. The evidence-based overall
+scenario and host-recorder limits are now 270/300 seconds as documented below.
 It has not run and does not itself authorize or qualify a recording.
 
 The consumed canonical 109 media run `40551799481` used the direct reader and
@@ -280,8 +282,8 @@ repair or retry, and Send remains impossible until the complete token is exact.
 Only fixed `composer_character_requested` and `composer_prefix_confirmed` events
 are added to the trace; no character, prefix, length or UI value is exported.
 This is a controlled robustness experiment that removes the bulk-injection
-assumption. It does not establish the cause of the prior shorter draft and does
-not change the app, transport, gates or 165-second budget.
+assumption. It does not establish the cause of the prior shorter draft and did
+not change the app, transport, gates or then-current 165-second budget.
 
 The next standard media run, `40558394251`, passed canonical preparation and all
 eleven attestations, then exited in the two-AVD runner step before `capture.py`
@@ -302,6 +304,37 @@ The ordinary standard job keeps diagnostic failure-media retention disabled;
 the distinct diagnostic label and its explicit authorization requirement are
 unchanged. These receipts improve classification only and do not establish the
 cause of run `40558394251` or qualify any product behavior.
+
+The later standard media run `40560604149` reached real onboarding, foreground
+services and peer discovery, but the product returned its fixed `NOT_SENT`
+feedback after the first confirmed public-send action. The draft stayed present
+and no message bubble was accepted. That outcome is retained as an actual product
+refusal; the controller does not retry it, and no timing change reclassifies or
+claims to fix its still-undetermined internal cause.
+
+Run `40563487786` then established a separate timing fact. Both real public sends
+and their opposite-side receipts completed by 135.081 seconds, and the connected
+device notification was visible by 144.835 seconds. During the required third
+background message, the closed trace reached eleven aggregate character requests
+and ten confirmed prefixes before a reader allocation of 0.046 seconds exhausted
+the 165-second caller clock at 164.888 seconds. Cleanup was complete and no WebM
+was exported. This proves neither product failure nor video success: the original
+165/180-second window was an earlier controller choice and no longer covered the
+expanded serialized UI reads plus the still-required remote receipt, resume,
+Quit, stopped service and removed notification.
+
+The controlled timing configuration therefore uses a 270-second scenario clock
+and a 300-second host-recorder limit. All nine real events remain mandatory and
+strictly ordered, including the third remote receipt, notification resume, real
+Quit, service stop and notification absence. The 13/26-second UI bounds,
+90-second onboarding and peer bounds, retry counts, controller timeout and
+25-minute job limit are unchanged. This is only a timing trial justified by the
+closed receipt. The upstream recorder parser permits this limit, but the pinned
+emulator's 300-second behavior remains runtime-unqualified until its terminal
+start response, decoded duration and full Quit coverage pass the existing
+fail-closed checks. This does not weaken a gate, retry `NOT_SENT`, change the
+release app or `FLAG_SECURE`, or qualify footage before the full scenario and
+local media review pass.
 
 The first reviewed attempt, [40214942196](https://github.com/samouraiworld/wesh-bitchat-android/actions/runs/40214942196),
 failed during Java setup: `21.0.11+10` was not a matching Temurin setup selector.
@@ -420,10 +453,11 @@ the old check asked parent-command help for a WebM detail documented on the
 The corrected preflight asks the documented `help-verbose` command and separates
 an adb/timeout failure (`host_recorder_help_transport_<side>`) from a malformed,
 missing-command, `KO` or non-terminal-`OK` response
-(`host_recorder_help_contract_<side>`), without exporting console text. The real
-recording command remains `screenrecord start --time-limit 180 <owned>.webm` and
-still requires a terminal `OK` with no `KO` line; there is no alternate recorder
-or guest-side fallback. The approval for run 40478621327 was consumed. This code
+(`host_recorder_help_contract_<side>`), without exporting console text. At that
+historical head, the real recording command was
+`screenrecord start --time-limit 180 <owned>.webm` and required a terminal `OK`
+with no `KO` line; there was no alternate recorder or guest-side fallback. The
+approval for run 40478621327 was consumed. This code
 correction does not authorize another run: any new attempt requires fresh
 explicit approval for its exact reviewed source head.
 
@@ -501,7 +535,7 @@ the first app launch. The zero-clock event is therefore
 
 Actual first launch, product onboarding and permission dialogs are then operated
 in parallel through UIAutomator hierarchy plus scoped OS input, with a 90-second
-deadline clamped to the single 165-second recording clock. Product-generated
+deadline clamped to the single 270-second recording clock. Product-generated
 synthetic nicknames are retained and synthetic messages are typed normally.
 Completion of both onboardings, both real
 foreground services and mutual netsim discovery are recorded at their real,
@@ -522,8 +556,8 @@ service stops it opens the shade again and requires a fresh stack
 snapshot with no matching Wesh notification; a collapsed or unavailable shade is
 not accepted as absence. Closed trace enums identify each Quit sub-phase without
 exporting notification text, hierarchy XML, identifiers or paths. The scenario
-budget is 165 seconds; both OS
-recorders retain their fixed 180-second limit for strict coverage and post-roll.
+budget is 270 seconds; both OS
+recorders retain their fixed 300-second limit for strict coverage and post-roll.
 
 ## Onboarding-only validation before any further recording
 
@@ -574,7 +608,7 @@ python3 tools/fgs-evidence/localassemble.py --evidence <verified-evidence-direct
 The assembler refuses CI execution, extra files/symlinks/duplicate JSON keys,
 wrong controller source, incomplete manifests or changed inputs. It requires the
 single boot preflight event, `recording_commands_started` at zero, and all eight
-real product events at positive monotone times below 165 seconds. Deferred UI
+real product events at positive monotone times below 270 seconds. Deferred UI
 cleanup diagnostics must contain exactly nonnegative integer counts for sides
 `a` and `b`, never paths or XML. Both local
 `ffprobe` durations must strictly cover the last Quit event from the conservative

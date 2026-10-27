@@ -677,7 +677,7 @@ class EvidenceChecks(unittest.TestCase):
         output = Path("/tmp/wesh-fgs-a.avd/console_out/recording-a.webm")
         with patch("capture.adb", return_value="OK\n") as command:
             capture.start_host_recorder(capture.SERIALS[0], output, capture.time.monotonic()+1)
-        self.assertEqual(capture.RECORDING_LIMIT_SECONDS, 180)
+        self.assertEqual(capture.RECORDING_LIMIT_SECONDS, 300)
         self.assertEqual(command.call_args.args[:6], (
             capture.SERIALS[0], "emu", "screenrecord", "start", "--time-limit",
             str(capture.RECORDING_LIMIT_SECONDS)))
@@ -720,10 +720,12 @@ class EvidenceChecks(unittest.TestCase):
                 path.parent.mkdir(parents=True)
                 path.write_bytes(b"synthetic unit bytes")
                 recordings.append(path)
-            capture.wait_host_recordings(recordings, capture.time.monotonic()-200)
+            completed_start = (capture.time.monotonic()
+                               - capture.RECORDING_LIMIT_SECONDS - 20)
+            capture.wait_host_recordings(recordings, completed_start)
             recordings[0].unlink()
             with self.assertRaises(capture.GateError) as failure:
-                capture.wait_host_recordings(recordings, capture.time.monotonic()-200)
+                capture.wait_host_recordings(recordings, completed_start)
             self.assertEqual(failure.exception.gate, "host_recording_file_a")
 
     def test_host_recording_wait_is_measured_from_last_start(self):
@@ -736,7 +738,8 @@ class EvidenceChecks(unittest.TestCase):
             with patch("capture.time.monotonic", return_value=100.0), \
                  patch("capture.time.sleep") as sleep:
                 capture.wait_host_recordings(recordings, 50.0)
-            sleep.assert_called_once_with(140.0)
+            sleep.assert_called_once_with(
+                50.0 + capture.RECORDING_LIMIT_SECONDS + 10 - 100.0)
 
     def test_export_rolls_back_both_webms_when_second_rename_fails(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1006,8 +1009,8 @@ class EvidenceChecks(unittest.TestCase):
         self.assertEqual(failure.exception.gate, "fgs_timeout_a")
 
     def test_recording_contract_captures_real_setup_before_interaction(self):
-        self.assertEqual(capture.RECORDING_LIMIT_SECONDS, 180)
-        self.assertEqual(capture.SCENARIO_BUDGET_SECONDS, 165)
+        self.assertEqual(capture.RECORDING_LIMIT_SECONDS, 300)
+        self.assertEqual(capture.SCENARIO_BUDGET_SECONDS, 270)
         self.assertEqual(capture.PREFLIGHT_STEPS, ("boot_install_bluetooth_ready",))
         self.assertEqual(capture.SCENARIO_STEPS[:4], (
             "recording_commands_started", "actual_onboarding_permissions_completed",
@@ -1063,7 +1066,8 @@ class EvidenceChecks(unittest.TestCase):
             capture.append_scenario_event(
                 receipt, "actual_onboarding_permissions_completed",
                 video_start=100.0, elapsed=0.0)
-        with patch("capture.time.monotonic", return_value=265.0):
+        with patch("capture.time.monotonic",
+                   return_value=100.0 + capture.SCENARIO_BUDGET_SECONDS):
             with self.assertRaises(capture.GateError) as failure:
                 capture.append_scenario_event(
                     receipt, "actual_onboarding_permissions_completed", video_start=100.0)
@@ -2385,12 +2389,15 @@ class EvidenceChecks(unittest.TestCase):
         self.assertEqual(capture.SCENARIO_RESULT, "SCENARIO_PASS_RECORDINGS_AWAIT_LOCAL_VALIDATION")
 
     def test_local_coverage_preserves_strict_quit_boundary(self):
-        localassemble.require_coverage([165.0, 166.0], 165.0)
+        quit_time = capture.SCENARIO_BUDGET_SECONDS - 1.0
+        localassemble.require_coverage([quit_time, quit_time + 1.0], quit_time)
         with self.assertRaises(localassemble.ValidationFailure):
-            localassemble.require_coverage([164.99, 166.0], 165.0)
+            localassemble.require_coverage(
+                [quit_time - 0.01, quit_time + 1.0], quit_time)
 
     def test_local_coverage_rejects_missing_and_nonfinite_durations(self):
-        for durations in ([180.0], [float("nan"), 180.0], [float("inf"), 180.0]):
+        limit = float(capture.RECORDING_LIMIT_SECONDS)
+        for durations in ([limit], [float("nan"), limit], [float("inf"), limit]):
             with self.assertRaises(localassemble.ValidationFailure):
                 localassemble.require_coverage(durations, 120.0)
 
@@ -2446,6 +2453,29 @@ class EvidenceChecks(unittest.TestCase):
             self.assertEqual(set(checksums), localassemble.HASHED_INPUTS)
             with self.assertRaises(localassemble.ValidationFailure):
                 localassemble.validate_inputs(root, "2"*40)
+
+    def test_local_metadata_gate_rejects_missing_quit_and_new_clock_boundary(self):
+        for mutation in ("missing_quit", "at_budget"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                root = self.local_bundle(directory)
+                attempt = json.loads((root / "attempt.json").read_text())
+                if mutation == "missing_quit":
+                    attempt["events"].pop()
+                    expected_gate = "scenario_event_sequence"
+                else:
+                    attempt["events"][-1]["elapsedSeconds"] = \
+                        capture.SCENARIO_BUDGET_SECONDS - 1
+                    (root / "attempt.json").write_text(json.dumps(attempt))
+                    self.rehash_bundle(root)
+                    last, _checksums = localassemble.validate_inputs(root, "1" * 40)
+                    self.assertEqual(last, capture.SCENARIO_BUDGET_SECONDS - 1)
+                    attempt["events"][-1]["elapsedSeconds"] = \
+                        capture.SCENARIO_BUDGET_SECONDS
+                    expected_gate = "scenario_event_clock"
+                (root / "attempt.json").write_text(json.dumps(attempt))
+                self.rehash_bundle(root)
+                with self.assertRaisesRegex(localassemble.ValidationFailure, expected_gate):
+                    localassemble.validate_inputs(root, "1" * 40)
 
     def test_local_metadata_gate_rejects_modified_recording(self):
         with tempfile.TemporaryDirectory() as directory:

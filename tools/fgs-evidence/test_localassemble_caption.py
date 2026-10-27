@@ -218,18 +218,21 @@ class LocalAssembleCaptionTests(unittest.TestCase):
         valid = json.dumps({
             "streams": [{"codec_type": "video", "codec_name": "h264", "width": 1440,
                          "height": 1360, "pix_fmt": "yuv420p", "nb_read_frames": "5400"}],
-            "format": {"format_name": "mov,mp4,m4a,3gp,3g2,mj2", "duration": "180.0"},
+            "format": {"format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+                       "duration": str(localassemble.RECORDING_LIMIT_SECONDS)},
         })
         with patch("localassemble.run_tool", return_value=valid):
             media = localassemble.probe_video("trusted-ffprobe", Path("assembled.mp4"), assembled=True)
         self.assertEqual(media["codec"], "h264")
         self.assertEqual(media["decodedFrames"], 5400)
-        self.assertEqual(media["durationSeconds"], 180.0)
+        self.assertEqual(
+            media["durationSeconds"], float(localassemble.RECORDING_LIMIT_SECONDS))
 
         invalid = json.dumps({
             "streams": [{"codec_type": "video", "codec_name": "hevc", "width": 1440,
                          "height": 1360, "pix_fmt": "yuv420p", "nb_read_frames": "5400"}],
-            "format": {"format_name": "mov,mp4,m4a,3gp,3g2,mj2", "duration": "180.0"},
+            "format": {"format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+                       "duration": str(localassemble.RECORDING_LIMIT_SECONDS)},
         })
         with patch("localassemble.run_tool", return_value=invalid):
             with self.assertRaisesRegex(localassemble.ValidationFailure, "video_codec_invalid"):
@@ -240,7 +243,8 @@ class LocalAssembleCaptionTests(unittest.TestCase):
             valid = json.dumps({
                 "streams": [{"codec_type": "video", "codec_name": codec, "width": 720,
                              "height": 1280, "pix_fmt": "yuv420p", "nb_read_frames": "900"}],
-                "format": {"format_name": "matroska,webm", "duration": "180.0"},
+                "format": {"format_name": "matroska,webm",
+                           "duration": str(localassemble.RECORDING_LIMIT_SECONDS)},
             })
             with patch("localassemble.run_tool", return_value=valid):
                 media = localassemble.probe_video("trusted-ffprobe", Path("recording.webm"))
@@ -250,7 +254,8 @@ class LocalAssembleCaptionTests(unittest.TestCase):
         wrong_container = json.dumps({
             "streams": [{"codec_type": "video", "codec_name": "vp8", "width": 720,
                          "height": 1280, "pix_fmt": "yuv420p", "nb_read_frames": "900"}],
-            "format": {"format_name": "mov,mp4,m4a,3gp,3g2,mj2", "duration": "180.0"},
+            "format": {"format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+                       "duration": str(localassemble.RECORDING_LIMIT_SECONDS)},
         })
         with patch("localassemble.run_tool", return_value=wrong_container):
             with self.assertRaisesRegex(localassemble.ValidationFailure, "video_container_invalid"):
@@ -262,7 +267,13 @@ class LocalAssembleCaptionTests(unittest.TestCase):
         self.assertEqual(run.call_args.args[:5],
                          ("trusted-ffmpeg", "-v", "error", "-xerror", "-i"))
         self.assertEqual(run.call_args.args[-5:], ("-map", "0:v:0", "-f", "null", "-"))
-        self.assertEqual(run.call_args.kwargs, {"timeout": 240})
+        self.assertEqual(run.call_args.kwargs, {
+            "timeout": localassemble.LOCAL_MEDIA_TIMEOUT_SECONDS,
+        })
+        self.assertEqual(
+            localassemble.LOCAL_MEDIA_TIMEOUT_SECONDS,
+            localassemble.RECORDING_LIMIT_SECONDS + 120,
+        )
 
     def test_concurrent_sidecar_is_never_removed(self):
         with tempfile.TemporaryDirectory() as directory:

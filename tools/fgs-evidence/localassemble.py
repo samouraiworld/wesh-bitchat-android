@@ -9,7 +9,14 @@ import re
 import subprocess
 import tempfile
 
-from capture import CAPTURE_SOURCE, PREFLIGHT_STEPS, SCENARIO_RESULT, SCENARIO_STEPS
+from capture import (
+    CAPTURE_SOURCE,
+    PREFLIGHT_STEPS,
+    RECORDING_LIMIT_SECONDS,
+    SCENARIO_BUDGET_SECONDS,
+    SCENARIO_RESULT,
+    SCENARIO_STEPS,
+)
 from closed_trace import validate_trace_payload
 from prepare import APK, FILES, SOURCE, digest
 
@@ -21,6 +28,7 @@ OUTPUT_WIDTH = 1440
 SCREEN_HEIGHT = 1280
 FOOTER_HEIGHT = 80
 OUTPUT_HEIGHT = SCREEN_HEIGHT + FOOTER_HEIGHT
+LOCAL_MEDIA_TIMEOUT_SECONDS = RECORDING_LIMIT_SECONDS + 120
 CAPTION_LINES = (
     "Wesh 109 - two emulators - simulated BLE netsim",
     "Canonical APK payload - disposable test signature",
@@ -132,7 +140,8 @@ def validate_bundle(evidence, source_head):
     times = event_times(attempt, "events", EVENTS,
                         "scenario_event_sequence", "scenario_event_clock", starts_at_zero=True,
                         strictly_increasing=True)
-    require(all(value < 165 for value in times), "scenario_event_clock")
+    require(all(value < SCENARIO_BUDGET_SECONDS for value in times),
+            "scenario_event_clock")
     return times[-1], checksums, attempt
 
 
@@ -197,7 +206,8 @@ def probe_video(ffprobe, path, *, assembled=False):
 
 def fully_decode(ffmpeg, path):
     run_tool(ffmpeg, "-v", "error", "-xerror", "-i", str(path),
-             "-map", "0:v:0", "-f", "null", "-", timeout=240)
+             "-map", "0:v:0", "-f", "null", "-",
+             timeout=LOCAL_MEDIA_TIMEOUT_SECONDS)
 
 
 def render_footer(path, font_path):
@@ -280,7 +290,7 @@ def assemble(evidence, output, source_head, ffmpeg, ffprobe, font):
                  "-filter_complex", composition_filter(), "-map", "[out]",
                  "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
                  "-an", "-map_metadata", "-1",
-                 str(temporary), timeout=240)
+                 str(temporary), timeout=LOCAL_MEDIA_TIMEOUT_SECONDS)
         fully_decode(ffmpeg, temporary)
         output_media = probe_video(ffprobe, temporary, assembled=True)
         output_duration = output_media["durationSeconds"]
