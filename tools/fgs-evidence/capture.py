@@ -32,6 +32,7 @@ SCENARIO_RESULT = "SCENARIO_PASS_RECORDINGS_AWAIT_LOCAL_VALIDATION"
 CAPTURE_SOURCE = "ANDROID_EMULATOR_HOST_PHYSICAL_DISPLAY_WEBM"
 RECORDING_LIMIT_SECONDS = 300
 SCENARIO_BUDGET_SECONDS = 270
+HOST_RECORDING_STARTUP_SECONDS = 8
 UI_SNAPSHOT_BUDGET_SECONDS = 26
 UI_DUMP_COMMAND_SECONDS = 13
 UI_DUMP_ATTEMPTS = 2
@@ -1327,18 +1328,56 @@ def console_response_ok(response):
             not any(re.match(r"(?i)^ko(?:\s|:|$)", line) for line in lines))
 
 
-def start_host_recorder(serial, output, deadline):
+def prepare_host_recording_path(serial, root, output):
     expected = f"recording-{SIDES[serial]}.webm"
     expected_avd = f"wesh-fgs-{SIDES[serial]}.avd"
-    if (not output.is_absolute() or output.name != expected or output.parent.name != "console_out" or
-            output.parent.parent.name != expected_avd):
+    avd_parent = root / "avd"
+    expected_avd_path = avd_parent / expected_avd
+    expected_parent = expected_avd_path / "console_out"
+    expected_output = expected_parent / expected
+    required_directories = (root, avd_parent, expected_avd_path)
+    if (not root.is_absolute() or not output.is_absolute()
+            or output != expected_output
+            or any(path.is_symlink() or not path.is_dir()
+                   for path in required_directories)):
         raise GateError("host_recorder_start", serial)
+    if expected_parent.is_symlink():
+        raise GateError("host_recorder_start", serial)
+    try:
+        expected_parent.mkdir(mode=0o700, exist_ok=True)
+    except OSError:
+        raise GateError("host_recorder_start", serial) from None
+    if (expected_parent.is_symlink() or not expected_parent.is_dir()
+            or output.is_symlink() or output.exists()):
+        raise GateError("host_recorder_start", serial)
+
+
+def start_host_recorder(serial, output, root, deadline):
+    prepare_host_recording_path(serial, root, output)
     response = deadline_adb(
         serial, "host_recorder_start", deadline, "emu", "screenrecord", "start",
-        "--time-limit", str(RECORDING_LIMIT_SECONDS), output.name, cap=8,
+        "--time-limit", str(RECORDING_LIMIT_SECONDS), str(output), cap=8,
     )
     if not console_response_ok(response):
         raise GateError("host_recorder_start", serial)
+
+
+def wait_host_recording_files_created(recordings, deadline):
+    """Require both owned regular output files before launching the product."""
+    while time.monotonic() < deadline:
+        invalid = [(serial, path) for serial, path in zip(SERIALS, recordings)
+                   if path.is_symlink()]
+        if invalid:
+            raise GateError("host_recording_file", invalid[0][0])
+        if all(path.is_file() for path in recordings):
+            return
+        if not bounded_sleep(deadline, 0.25):
+            break
+    if (all(not path.is_symlink() and path.is_file() for path in recordings)):
+        return
+    for serial, path in zip(SERIALS, recordings):
+        if path.is_symlink() or not path.is_file():
+            raise GateError("host_recording_file", serial)
 
 
 def wait_host_recordings(recordings, last_recorder_start):
@@ -1555,8 +1594,14 @@ def main(root):
         deadline = video_start + SCENARIO_BUDGET_SECONDS
         recorder_start_deadline = min(deadline, video_start + 12)
         for serial, path in zip(SERIALS, recordings):
-            start_host_recorder(serial, path, recorder_start_deadline)
+            prepare_host_recording_path(serial, root, path)
+        for serial, path in zip(SERIALS, recordings):
+            start_host_recorder(serial, path, root, recorder_start_deadline)
         last_recorder_start = time.monotonic()
+        wait_host_recording_files_created(
+            recordings,
+            min(deadline, last_recorder_start + HOST_RECORDING_STARTUP_SECONDS),
+        )
         event("recording_commands_started", 0.0)
 
         # The first product launch, onboarding, permission prompts, service start and peer setup are

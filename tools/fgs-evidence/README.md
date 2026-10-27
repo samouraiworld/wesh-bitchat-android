@@ -357,6 +357,29 @@ a permanently missing stack or persistent Wesh row fails closed. UI snapshots
 from this path now feed the same closed enum-only trace; no raw hierarchy or
 command output is retained.
 
+Run `40568828705` completed all nine real scenario events, including three remote
+receipts, the background notification, the single scoped Quit action, stopped
+service and absent notification at 195.936 seconds. It nevertheless ended at
+`host_recording_file_a` after the recorder wait and exported no WebM. The receipt
+does not establish where a recorder wrote, whether an encoder succeeded or that
+any past file was usable. Source inspection did establish a controller mismatch:
+the console start request supplied only `recording-<side>.webm`, while the later
+inventory checked the absolute owned `avd/wesh-fgs-<side>.avd/console_out` path.
+The documented console API accepts a host path and passes that filename to the
+recorder agent.
+
+The controller now creates and validates each exact owned `console_out` directory
+and passes its absolute WebM path to the console. The root, `avd`, side-specific
+AVD and output directory must be real directories rather than symlinks; an
+unknown parent, pre-existing output, wrong side/name or relative path fails before
+the recorder command. Before launching the product, a bounded eight-second check
+requires both exact paths to exist as regular non-symlink files; it does not
+require early non-empty content and proves neither codec nor duration. The
+terminal console response, final two regular non-empty WebM inventory, checksums,
+decoded duration, full event coverage and local visual review remain mandatory.
+This path correction does not qualify the prior run or change the app,
+`FLAG_SECURE`, scenario actions, deadlines or export policy.
+
 The first reviewed attempt, [40214942196](https://github.com/samouraiworld/wesh-bitchat-android/actions/runs/40214942196),
 failed during Java setup: `21.0.11+10` was not a matching Temurin setup selector.
 Canonical verification, signing, SDK/AVD setup, BLE and recording did not run;

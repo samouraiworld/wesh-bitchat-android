@@ -779,43 +779,137 @@ class EvidenceChecks(unittest.TestCase):
                     capture.require_host_recorder(capture.SERIALS[0], capture.time.monotonic()+1)
                 self.assertEqual(failure.exception.gate, "host_recorder_help_contract_a")
 
-    def test_host_recorder_start_is_console_scoped_and_webm_only(self):
-        output = Path("/tmp/wesh-fgs-a.avd/console_out/recording-a.webm")
-        with patch("capture.adb", return_value="OK\n") as command:
-            capture.start_host_recorder(capture.SERIALS[0], output, capture.time.monotonic()+1)
-        self.assertEqual(capture.RECORDING_LIMIT_SECONDS, 300)
-        self.assertEqual(command.call_args.args[:6], (
-            capture.SERIALS[0], "emu", "screenrecord", "start", "--time-limit",
-            str(capture.RECORDING_LIMIT_SECONDS)))
-        self.assertEqual(command.call_args.args[6], output.name)
-        self.assertNotIn("shell", command.call_args.args)
+    def test_host_recorder_start_passes_owned_absolute_path_to_console(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "avd" / "wesh-fgs-a.avd").mkdir(parents=True)
+            output = (root / "avd" / "wesh-fgs-a.avd" / "console_out" /
+                      "recording-a.webm")
+            fake_console_cwd = root / "fake-console-cwd"
+            fake_console_cwd.mkdir()
+
+            def fake_console(serial, *args, timeout=12):
+                self.assertEqual(serial, capture.SERIALS[0])
+                requested = Path(args[-1])
+                destination = requested if requested.is_absolute() else fake_console_cwd / requested
+                destination.write_bytes(b"synthetic console bytes")
+                return "OK\n"
+
+            fake_console(
+                capture.SERIALS[0], "emu", "screenrecord", "start",
+                "--time-limit", str(capture.RECORDING_LIMIT_SECONDS), output.name,
+            )
+            self.assertFalse(output.exists())
+            self.assertTrue((fake_console_cwd / output.name).is_file())
+            (fake_console_cwd / output.name).unlink()
+
+            with patch("capture.adb", side_effect=fake_console) as command:
+                capture.start_host_recorder(
+                    capture.SERIALS[0], output, root, capture.time.monotonic() + 1)
+            self.assertEqual(capture.RECORDING_LIMIT_SECONDS, 300)
+            self.assertEqual(command.call_args.args[:6], (
+                capture.SERIALS[0], "emu", "screenrecord", "start", "--time-limit",
+                str(capture.RECORDING_LIMIT_SECONDS)))
+            self.assertEqual(command.call_args.args[6], str(output))
+            self.assertTrue(output.is_file())
+            self.assertNotIn("shell", command.call_args.args)
 
     def test_host_recorder_start_requires_terminal_ok_without_ko(self):
-        output = Path("/tmp/wesh-fgs-a.avd/console_out/recording-a.webm")
-        for name, response in {
-                "ko_despite_ok": "KO: recorder unavailable\nOK\n",
-                "ok_not_terminal": "OK\ntruncated body\n",
-                "missing_ok": "recording started\n",
-        }.items():
-            with self.subTest(name=name), patch("capture.adb", return_value=response):
-                with self.assertRaises(capture.GateError) as failure:
-                    capture.start_host_recorder(
-                        capture.SERIALS[0], output, capture.time.monotonic()+1)
-                self.assertEqual(failure.exception.gate, "host_recorder_start_a")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "avd" / "wesh-fgs-a.avd").mkdir(parents=True)
+            output = (root / "avd" / "wesh-fgs-a.avd" / "console_out" /
+                      "recording-a.webm")
+            for name, response in {
+                    "ko_despite_ok": "KO: recorder unavailable\nOK\n",
+                    "ok_not_terminal": "OK\ntruncated body\n",
+                    "missing_ok": "recording started\n",
+            }.items():
+                with self.subTest(name=name), patch("capture.adb", return_value=response):
+                    with self.assertRaises(capture.GateError) as failure:
+                        capture.start_host_recorder(
+                            capture.SERIALS[0], output, root, capture.time.monotonic()+1)
+                    self.assertEqual(failure.exception.gate, "host_recorder_start_a")
 
     def test_host_recorder_rejects_wrong_or_relative_output_before_adb(self):
-        with patch("capture.adb") as command:
-            for path in (Path("recording-a.webm"), Path("/tmp/recording-a.mp4"),
-                         Path("/tmp/recording-b.webm"),
-                         Path("/tmp/other.avd/console_out/recording-a.webm")):
-                with self.subTest(path=path), self.assertRaises(capture.GateError):
-                    capture.start_host_recorder(capture.SERIALS[0], path, capture.time.monotonic()+1)
-        command.assert_not_called()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "avd" / "wesh-fgs-a.avd").mkdir(parents=True)
+            with patch("capture.adb") as command:
+                for path in (Path("recording-a.webm"), root / "recording-a.mp4",
+                             root / "recording-b.webm",
+                             root / "avd" / "other.avd" / "console_out" /
+                             "recording-a.webm"):
+                    with self.subTest(path=path), self.assertRaises(capture.GateError):
+                        capture.start_host_recorder(
+                            capture.SERIALS[0], path, root, capture.time.monotonic()+1)
+            command.assert_not_called()
+
+    def test_host_recorder_rejects_symlink_unknown_or_existing_owned_paths(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            unknown_root = root / "unknown-root"
+            unknown_root.mkdir()
+            unknown_output = (unknown_root / "avd" / "wesh-fgs-a.avd" /
+                              "console_out" / "recording-a.webm")
+            with patch("capture.adb") as command, self.assertRaises(capture.GateError):
+                capture.start_host_recorder(
+                    capture.SERIALS[0], unknown_output, unknown_root,
+                    capture.time.monotonic()+1)
+            command.assert_not_called()
+            avd = root / "avd" / "wesh-fgs-a.avd"
+            avd.mkdir(parents=True)
+            output = avd / "console_out" / "recording-a.webm"
+            foreign = root / "foreign"
+            foreign.mkdir()
+            (avd / "console_out").symlink_to(foreign, target_is_directory=True)
+            with patch("capture.adb") as command, self.assertRaises(capture.GateError):
+                capture.start_host_recorder(
+                    capture.SERIALS[0], output, root, capture.time.monotonic()+1)
+            command.assert_not_called()
+            (avd / "console_out").unlink()
+            (avd / "console_out").mkdir()
+            output.write_bytes(b"stale")
+            with patch("capture.adb") as command, self.assertRaises(capture.GateError):
+                capture.start_host_recorder(
+                    capture.SERIALS[0], output, root, capture.time.monotonic()+1)
+            command.assert_not_called()
 
     def test_controller_has_no_guest_screenrecord_fallback(self):
         source = Path(capture.__file__).read_text()
         self.assertNotIn('"shell", "screenrecord"', source)
         self.assertIn('"emu", "screenrecord"', source)
+
+    def test_host_recording_outputs_must_appear_before_product_launch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            recordings = [root / f"recording-{side}.webm" for side in ("a", "b")]
+            recordings[0].write_bytes(b"")
+
+            def create_second(_deadline, _cap):
+                recordings[1].write_bytes(b"")
+                return True
+
+            with patch("capture.bounded_sleep", side_effect=create_second), \
+                 patch("capture.time.monotonic", return_value=100.0):
+                capture.wait_host_recording_files_created(recordings, 108.0)
+            self.assertTrue(all(path.is_file() for path in recordings))
+
+    def test_host_recording_startup_refuses_missing_or_symlink_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            recordings = [root / f"recording-{side}.webm" for side in ("a", "b")]
+            recordings[0].write_bytes(b"")
+            with patch("capture.bounded_sleep", return_value=False), \
+                 patch("capture.time.monotonic", return_value=100.0):
+                with self.assertRaises(capture.GateError) as failure:
+                    capture.wait_host_recording_files_created(recordings, 108.0)
+            self.assertEqual(failure.exception.gate, "host_recording_file_b")
+            recordings[1].symlink_to(recordings[0])
+            with patch("capture.time.monotonic", return_value=100.0):
+                with self.assertRaises(capture.GateError) as failure:
+                    capture.wait_host_recording_files_created(recordings, 108.0)
+            self.assertEqual(failure.exception.gate, "host_recording_file_b")
 
     def test_host_recording_inventory_requires_both_nonempty_regular_webms(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1125,6 +1219,10 @@ class EvidenceChecks(unittest.TestCase):
         scenario_source = Path(capture.__file__).read_text().split(
             "def run_product_scenario", 1)[1].split("def main(root):", 1)[0]
         self.assertLess(main_source.index("start_host_recorder(serial"),
+                        main_source.index('event("recording_commands_started"'))
+        self.assertLess(main_source.index("prepare_host_recording_path(serial"),
+                        main_source.index("start_host_recorder(serial"))
+        self.assertLess(main_source.index("wait_host_recording_files_created("),
                         main_source.index('event("recording_commands_started"'))
         self.assertLess(main_source.index("configure_ui_reader(serial"),
                         main_source.index("require_host_recorder(serial"))
@@ -1448,7 +1546,7 @@ class EvidenceChecks(unittest.TestCase):
         def healthcheck(serial, _deadline):
             calls.append(("healthcheck", serial))
 
-        def start(serial, _path, deadline):
+        def start(serial, _path, _root, deadline):
             if not video_origin:
                 video_origin.append(clock[0])
             calls.append(("start", serial))
@@ -1485,7 +1583,9 @@ class EvidenceChecks(unittest.TestCase):
                 stack.enter_context(patch("capture.configure_ui_reader", side_effect=configure))
                 stack.enter_context(patch("capture.ui_reader_healthcheck", side_effect=healthcheck))
                 stack.enter_context(patch("capture.require_host_recorder", side_effect=capability))
+                stack.enter_context(patch("capture.prepare_host_recording_path"))
                 stack.enter_context(patch("capture.start_host_recorder", side_effect=start))
+                stack.enter_context(patch("capture.wait_host_recording_files_created"))
                 stack.enter_context(patch("capture.run_product_scenario", side_effect=scenario))
                 stack.enter_context(patch("capture.wait_host_recordings"))
                 stack.enter_context(patch("capture.cleanup_ui_reader", side_effect=cleanup_reader))
@@ -1547,6 +1647,7 @@ class EvidenceChecks(unittest.TestCase):
                  patch("capture.configure_ui_reader"), \
                  patch("capture.ui_reader_healthcheck"), \
                  patch("capture.require_host_recorder"), \
+                 patch("capture.prepare_host_recording_path"), \
                  patch("capture.start_host_recorder", start), \
                  patch("capture.onboarding", onboarding), \
                  patch("capture.wait_host_recordings", wait_recordings), \
@@ -1603,7 +1704,9 @@ class EvidenceChecks(unittest.TestCase):
                  patch("capture.configure_ui_reader"), \
                  patch("capture.ui_reader_healthcheck"), \
                  patch("capture.require_host_recorder"), \
+                 patch("capture.prepare_host_recording_path"), \
                  patch("capture.start_host_recorder"), \
+                 patch("capture.wait_host_recording_files_created"), \
                  patch("capture.run_product_scenario", side_effect=scenario), \
                  patch("capture.wait_host_recordings"), \
                  patch("capture.cleanup_ui_reader", side_effect=[
@@ -1673,7 +1776,9 @@ class EvidenceChecks(unittest.TestCase):
                      patch("capture.configure_ui_reader"), \
                      patch("capture.ui_reader_healthcheck"), \
                      patch("capture.require_host_recorder"), \
+                     patch("capture.prepare_host_recording_path"), \
                      patch("capture.start_host_recorder"), \
+                     patch("capture.wait_host_recording_files_created"), \
                      patch("capture.run_product_scenario", side_effect=scenario), \
                      patch("capture.wait_host_recordings", wait_recordings), \
                      patch("capture.cleanup_ui_reader"), \
