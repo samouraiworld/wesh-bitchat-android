@@ -185,6 +185,129 @@ class EvidenceChecks(unittest.TestCase):
         self.assertIs(capture.select_action([action, nested_heading], "Turn on Bluetooth"), action)
         self.assertIsNone(capture.select_action([heading], "Turn on Bluetooth"))
 
+    def notification_shade(self, include_wesh=True, expanded=False):
+        root = E.Element("node", {"package": capture.SYSTEM_UI_PACKAGE})
+        E.SubElement(root, "node", {
+            "content-desc": "Expand", "enabled": "true", "clickable": "true",
+            "bounds": "[0,0][10,10]", "package": capture.SYSTEM_UI_PACKAGE,
+            "resource-id": capture.NOTIFICATION_EXPAND_RESOURCE_ID,
+            "class": capture.NOTIFICATION_EXPAND_CLASS,
+        })
+        stack = E.SubElement(root, "node", {
+            "package": capture.SYSTEM_UI_PACKAGE,
+            "resource-id": capture.NOTIFICATION_STACK_RESOURCE_ID,
+        })
+        adb_card = E.SubElement(stack, "node", {
+            "package": capture.SYSTEM_UI_PACKAGE,
+            "resource-id": capture.NOTIFICATION_ROW_RESOURCE_ID,
+        })
+        E.SubElement(adb_card, "node", {
+            "text": "ADB debugging", "package": capture.SYSTEM_UI_PACKAGE,
+        })
+        E.SubElement(adb_card, "node", {
+            "content-desc": "Expand", "enabled": "true", "clickable": "true",
+            "bounds": "[0,0][20,20]", "package": capture.SYSTEM_UI_PACKAGE,
+            "resource-id": capture.NOTIFICATION_EXPAND_RESOURCE_ID,
+            "class": capture.NOTIFICATION_EXPAND_CLASS,
+        })
+        if expanded:
+            E.SubElement(adb_card, "node", {
+                "text": "Quit Wesh", "enabled": "true", "clickable": "true",
+                "bounds": "[0,20][20,40]", "package": capture.SYSTEM_UI_PACKAGE,
+            })
+        wesh_expand = None
+        wesh_quit = None
+        if include_wesh:
+            wesh_card = E.SubElement(stack, "node", {
+                "package": capture.SYSTEM_UI_PACKAGE,
+                "resource-id": capture.NOTIFICATION_ROW_RESOURCE_ID,
+            })
+            E.SubElement(wesh_card, "node", {
+                "text": "Mesh running — 1 peers", "package": capture.SYSTEM_UI_PACKAGE,
+            })
+            if expanded:
+                wesh_quit = E.SubElement(wesh_card, "node", {
+                    "text": "Quit Wesh", "enabled": "true", "clickable": "true",
+                    "bounds": "[40,40][80,80]", "package": capture.SYSTEM_UI_PACKAGE,
+                })
+            else:
+                wesh_expand = E.SubElement(wesh_card, "node", {
+                    "content-desc": "Expand", "enabled": "true", "clickable": "true",
+                    "bounds": "[20,20][40,40]", "package": capture.SYSTEM_UI_PACKAGE,
+                    "resource-id": capture.NOTIFICATION_EXPAND_RESOURCE_ID,
+                    "class": capture.NOTIFICATION_EXPAND_CLASS,
+                })
+        return list(root.iter("node")), wesh_expand, wesh_quit
+
+    def test_quit_scopes_expand_and_action_to_wesh_card_then_rechecks_open_shade(self):
+        collapsed, wesh_expand, _quit = self.notification_shade()
+        expanded, _expand, wesh_quit = self.notification_shade(expanded=True)
+        absent, _expand, _quit = self.notification_shade(include_wesh=False)
+        observed = []
+        with patch("capture.deadline_adb") as deadline_adb, \
+             patch("capture.fgs_active", side_effect=[True, False]), \
+             patch("capture.nodes", side_effect=[collapsed, expanded, absent]), \
+             patch("capture.tap") as tap, \
+             patch("capture.time.monotonic", return_value=100.0):
+            capture.quit_via_notification(
+                capture.SERIALS[0], 150.0,
+                observer=lambda *values: observed.append(values), trace_started=0.0,
+            )
+        self.assertEqual(deadline_adb.call_count, 3)
+        self.assertEqual([call.args[1] for call in tap.call_args_list], [
+            wesh_expand, wesh_quit,
+        ])
+        self.assertEqual([entry[0] for entry in observed], [
+            "quit_requested", "shade_opened", "notification_card_found",
+            "expand_tapped", "quit_action_found", "quit_tapped", "service_stopped",
+            "shade_opened", "notification_absent",
+        ])
+        self.assertTrue(all(entry[0] in capture.ONBOARDING_TRACE_EVENTS
+                            for entry in observed))
+
+    def test_quit_uses_scoped_action_without_expand_when_wesh_row_is_already_expanded(self):
+        expanded, _expand, wesh_quit = self.notification_shade(expanded=True)
+        absent, _expand, _quit = self.notification_shade(include_wesh=False)
+        observed = []
+        with patch("capture.deadline_adb") as deadline_adb, \
+             patch("capture.fgs_active", side_effect=[True, False]), \
+             patch("capture.nodes", side_effect=[expanded, absent]), \
+             patch("capture.tap") as tap, \
+             patch("capture.time.monotonic", return_value=100.0):
+            capture.quit_via_notification(
+                capture.SERIALS[0], 150.0,
+                observer=lambda *values: observed.append(values), trace_started=0.0,
+            )
+        self.assertEqual(deadline_adb.call_count, 3)
+        self.assertEqual([call.args[1] for call in tap.call_args_list], [wesh_quit])
+        phases = [entry[0] for entry in observed]
+        self.assertNotIn("expand_tapped", phases)
+        self.assertEqual(phases, [
+            "quit_requested", "shade_opened", "notification_card_found",
+            "quit_action_found", "quit_tapped", "service_stopped", "shade_opened",
+            "notification_absent",
+        ])
+
+    def test_quit_never_claims_notification_absent_when_shade_snapshot_is_collapsed(self):
+        collapsed, _wesh_expand, _quit = self.notification_shade()
+        expanded, _expand, _wesh_quit = self.notification_shade(expanded=True)
+        app_only = [E.Element("node", {
+            "package": capture.PACKAGE, "text": "Public room",
+        })]
+        observed = []
+        with patch("capture.deadline_adb"), \
+             patch("capture.fgs_active", side_effect=[True, False]), \
+             patch("capture.nodes", side_effect=[collapsed, expanded, app_only]), \
+             patch("capture.tap"), \
+             patch("capture.time.monotonic", return_value=100.0):
+            with self.assertRaises(capture.GateError) as failure:
+                capture.quit_via_notification(
+                    capture.SERIALS[0], 150.0,
+                    observer=lambda *values: observed.append(values), trace_started=0.0,
+                )
+        self.assertEqual(failure.exception.gate, "notification_expand_a")
+        self.assertNotIn("notification_absent", [entry[0] for entry in observed])
+
     def test_invalid_ui_bounds_never_tap(self):
         with patch("capture.adb") as command:
             with self.assertRaises(capture.GateError) as failure:

@@ -295,7 +295,16 @@ device FGS notification is shown, another real message is sent, the notification
 opens the app, and the message must be visible. This demonstrates sending while
 the other app is in background and visibility after resume, not the exact instant
 of background receipt. Finally the real **Quit Wesh** action must again stop the
-service and remove its notification. The scenario budget is 165 seconds; both OS
+service and remove its notification. The controller finds the Wesh notification
+inside SystemUI's `notification_stack_scroller`, scopes it to the matching
+`expandableNotificationRow`, expands only that row through Android's
+`expand_button` when its scoped Quit action is not already present, and accepts
+**Quit Wesh** only inside the same row. After the
+service stops it opens the shade again and requires a fresh stack
+snapshot with no matching Wesh notification; a collapsed or unavailable shade is
+not accepted as absence. Closed trace enums identify each Quit sub-phase without
+exporting notification text, hierarchy XML, identifiers or paths. The scenario
+budget is 165 seconds; both OS
 recorders retain their fixed 180-second limit for strict coverage and post-roll.
 
 ## Onboarding-only validation before any further recording

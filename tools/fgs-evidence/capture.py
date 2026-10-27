@@ -36,7 +36,9 @@ ONBOARDING_TRACE_EVENTS = frozenset({
     "ui_command", "ui_output", "ui_read", "ui_parse", "ui_complete", "room_open_tapped",
     "send_requested", "confirmation_tapped", "message_bubble", "remote_received",
     "background_requested", "notification_visible", "notification_open_tapped",
-    "activity_resumed_after_notification", "quit_completed",
+    "activity_resumed_after_notification", "quit_requested", "shade_opened",
+    "notification_card_found", "expand_tapped", "quit_action_found", "quit_tapped",
+    "service_stopped", "notification_absent", "quit_completed",
     "onboarding_completed", "fgs_active", "peers_visible", "messages_bidirectional",
     "background_send", "scenario_started",
 })
@@ -692,7 +694,78 @@ def boot_and_install(serial, apk):
         raise GateError("package_verify", serial)
 
 
-def quit_via_notification(serial, deadline):
+SYSTEM_UI_PACKAGE = "com.android.systemui"
+NOTIFICATION_STACK_RESOURCE_ID = f"{SYSTEM_UI_PACKAGE}:id/notification_stack_scroller"
+NOTIFICATION_ROW_RESOURCE_ID = f"{SYSTEM_UI_PACKAGE}:id/expandableNotificationRow"
+NOTIFICATION_EXPAND_RESOURCE_ID = "android:id/expand_button"
+NOTIFICATION_EXPAND_CLASS = "android.widget.Button"
+
+
+def notification_stack(items):
+    candidates = [node for node in items
+                  if node.get("package") == SYSTEM_UI_PACKAGE
+                  and node.get("resource-id") == NOTIFICATION_STACK_RESOURCE_ID]
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def notification_content_nodes(stack, content):
+    folded = content.casefold()
+    return [node for node in stack.iter("node")
+            if node.get("package") == SYSTEM_UI_PACKAGE
+            and any(folded in node.get(key, "").casefold()
+                    for key in ("text", "content-desc"))]
+
+
+def notification_row(items, content):
+    stack = notification_stack(items)
+    if stack is None:
+        return None
+    matches = []
+    for row in stack.iter("node"):
+        if (row.get("package") != SYSTEM_UI_PACKAGE
+                or row.get("resource-id") != NOTIFICATION_ROW_RESOURCE_ID):
+            continue
+        if notification_content_nodes(row, content):
+            matches.append(row)
+    return matches[0] if len(matches) == 1 else None
+
+
+def scoped_notification_action(items, content, action, resource_id=None):
+    """Find one action in the exact SystemUI row that contains the notification text."""
+    row = notification_row(items, content)
+    if row is None:
+        return None
+    scoped = [node for node in row.iter("node")
+              if node.get("package") == SYSTEM_UI_PACKAGE]
+    actions = action_candidates(scoped, action)
+    if resource_id is not None:
+        actions = [node for node in actions
+                   if node.get("resource-id") == resource_id
+                   and (resource_id != NOTIFICATION_EXPAND_RESOURCE_ID
+                        or node.get("class") == NOTIFICATION_EXPAND_CLASS)]
+    return (row, actions[0]) if len(actions) == 1 else None
+
+
+def wait_scoped_notification_action(serial, content, action, deadline, failure_phase,
+                                    resource_id=None):
+    while time.monotonic() < deadline:
+        match = scoped_notification_action(
+            nodes(serial, deadline), content, action, resource_id=resource_id)
+        if match is not None:
+            return match
+        if not bounded_sleep(deadline, 0.4):
+            break
+    raise GateError(failure_phase, serial)
+
+
+def quit_via_notification(serial, deadline, observer=None, trace_started=None):
+    def progress(event):
+        if observer is not None:
+            if trace_started is None:
+                raise ValueError("Trace start is required with an observer")
+            trace_scenario_progress(observer, event, trace_started, serial)
+
+    progress("quit_requested")
     deadline_adb(serial, "notification_expand", deadline, "shell", "input", "keyevent", "3")
     timeout = bounded_timeout(deadline, 8)
     if timeout is None or not fgs_active(serial, timeout):
@@ -700,13 +773,29 @@ def quit_via_notification(serial, deadline):
     deadline_adb(serial, "notification_expand", deadline,
                  "shell", "cmd", "statusbar", "expand-notifications")
     items = nodes(serial, deadline)
-    quit_action = select_action(items, "Quit Wesh")
-    if quit_action is None:
-        expand = select_action(items, "Expand")
-        if expand is not None:
-            tap(serial, expand, "notification_expand", deadline)
-        quit_action = wait_action(serial, "Quit Wesh", deadline, failure_phase="quit_action")
+    if notification_stack(items) is None:
+        raise GateError("notification_expand", serial)
+    progress("shade_opened")
+    card = notification_row(items, "Mesh running")
+    if card is None:
+        raise GateError("notification_expand", serial)
+    progress("notification_card_found")
+    scoped_quit = scoped_notification_action(items, "Mesh running", "Quit Wesh")
+    if scoped_quit is None:
+        collapsed = scoped_notification_action(
+            items, "Mesh running", "Expand", resource_id=NOTIFICATION_EXPAND_RESOURCE_ID)
+        if collapsed is None:
+            raise GateError("notification_expand", serial)
+        _card, expand = collapsed
+        tap(serial, expand, "notification_expand", deadline)
+        progress("expand_tapped")
+        _card, quit_action = wait_scoped_notification_action(
+            serial, "Mesh running", "Quit Wesh", deadline, "quit_action")
+    else:
+        _card, quit_action = scoped_quit
+    progress("quit_action_found")
     tap(serial, quit_action, "quit_action", deadline)
+    progress("quit_tapped")
     service_stopped = False
     while time.monotonic() < deadline:
         try:
@@ -720,8 +809,17 @@ def quit_via_notification(serial, deadline):
             break
     if not service_stopped:
         raise GateError("quit_timeout", serial)
-    if select(nodes(serial, deadline), "Mesh running", contains=True) is not None:
+    progress("service_stopped")
+    deadline_adb(serial, "notification_expand", deadline,
+                 "shell", "cmd", "statusbar", "expand-notifications")
+    final_items = nodes(serial, deadline)
+    final_stack = notification_stack(final_items)
+    if final_stack is None:
+        raise GateError("notification_expand", serial)
+    progress("shade_opened")
+    if notification_content_nodes(final_stack, "Mesh running"):
         raise GateError("quit_timeout", serial)
+    progress("notification_absent")
 
 
 def require_host_recorder(serial, deadline):
@@ -893,7 +991,7 @@ def run_product_scenario(deadline, event, observer=None):
         SERIALS[0], MESSAGE_BACKGROUND, deadline, observer, trace_started, remote=True)
     event("public_message_visible_after_resume_via_fgs_notification")
 
-    quit_via_notification(SERIALS[0], deadline)
+    quit_via_notification(SERIALS[0], deadline, observer, trace_started)
     trace_scenario_progress(observer, "quit_completed", trace_started, SERIALS[0])
     event("quit_action_stopped_service_and_removed_notification")
     if time.monotonic() >= deadline:
