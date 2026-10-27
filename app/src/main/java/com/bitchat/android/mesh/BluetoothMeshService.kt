@@ -907,8 +907,11 @@ class BluetoothMeshService(
 
     /** A Wesh public send succeeds only after a local BLE handoff, never on queueing alone. */
     suspend fun sendWeshPublicMessage(content: String, authorized: () -> Boolean): Boolean =
+        sendWeshPublicMessageOutcome(content, authorized) == BoundSendOutcome.SENT
+
+    suspend fun sendWeshPublicMessageOutcome(content: String, authorized: () -> Boolean): BoundSendOutcome =
         withContext(Dispatchers.IO) {
-            admitWeshPublicMessage(
+            admitWeshPublicMessageOutcome(
                 content = content,
                 ready = { isActive && !terminated && serviceScope.isActive && isBleTransportEnabled() && authorized() },
                 generation = publicSendGeneration::get,
@@ -925,7 +928,7 @@ class BluetoothMeshService(
                     ))
                 },
                 handoff = { packet, stillAuthorized ->
-                    connectionManager.broadcastPacketAndAwaitAcceptance(RoutedPacket(packet), stillAuthorized)
+                    connectionManager.broadcastPacketAndAwaitOutcome(RoutedPacket(packet), stillAuthorized)
                 },
                 recordAccepted = { packet ->
                     try { gossipSyncManager.onPublicPacketSeen(packet) } catch (_: Exception) { }
@@ -1633,20 +1636,42 @@ internal suspend fun <T> admitWeshPublicMessage(
     prepare: () -> T,
     handoff: suspend (T, () -> Boolean) -> Boolean,
     recordAccepted: (T) -> Unit
-): Boolean {
-    if (content.isBlank() || content.toByteArray(Charsets.UTF_8).size > 2000) return false
+): Boolean = admitWeshPublicMessageOutcome(content, ready, generation, prepare,
+    handoff = { packet, authorized ->
+        if (handoff(packet, authorized)) BoundSendOutcome.SENT else BoundSendOutcome.UNCONFIRMED
+    }, recordAccepted = recordAccepted) == BoundSendOutcome.SENT
+
+/** Preserve uncertainty across the transport effect and the final lifecycle fence. */
+internal suspend fun <T> admitWeshPublicMessageOutcome(
+    content: String,
+    ready: () -> Boolean,
+    generation: () -> Long,
+    prepare: () -> T,
+    handoff: suspend (T, () -> Boolean) -> BoundSendOutcome,
+    recordAccepted: (T) -> Unit
+): BoundSendOutcome {
+    if (content.isBlank() || content.toByteArray(Charsets.UTF_8).size > 2000) return BoundSendOutcome.NOT_SENT
     val capturedGeneration = generation()
     val authorized = { ready() && generation() == capturedGeneration }
-    if (!authorized()) return false
+    if (!authorized()) return BoundSendOutcome.NOT_SENT
+    var handoffStarted = false
     return try {
         val packet = prepare()
-        if (!authorized() || !handoff(packet, authorized) || !authorized()) false else {
-            recordAccepted(packet)
-            true
+        if (!authorized()) return BoundSendOutcome.NOT_SENT
+        handoffStarted = true
+        when (handoff(packet, authorized)) {
+            BoundSendOutcome.NOT_SENT -> BoundSendOutcome.NOT_SENT
+            BoundSendOutcome.UNCONFIRMED, BoundSendOutcome.AUTH_FAILED -> BoundSendOutcome.UNCONFIRMED
+            BoundSendOutcome.SENT -> {
+                if (!authorized()) BoundSendOutcome.UNCONFIRMED else {
+                    recordAccepted(packet)
+                    BoundSendOutcome.SENT
+                }
+            }
         }
     } catch (cancelled: CancellationException) {
         throw cancelled
     } catch (_: Exception) {
-        false
+        if (handoffStarted) BoundSendOutcome.UNCONFIRMED else BoundSendOutcome.NOT_SENT
     }
 }

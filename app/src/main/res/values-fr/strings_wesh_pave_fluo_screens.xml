@@ -60,6 +60,7 @@
     <string name="wesh_pave_fluo_destination_changed">La destination a changé. Votre texte est conservé.</string>
     <string name="wesh_pave_fluo_draft_changed">Le brouillon a changé. Relisez votre texte.</string>
     <string name="wesh_pave_fluo_public_failed">Envoi local interrompu ou indisponible. Votre texte est conservé.</string>
+    <string name="wesh_pave_fluo_public_unconfirmed">Envoi non confirmé. Le message peut déjà avoir été reçu. Le renvoyer peut créer un doublon. Votre texte est conservé.</string>
     <string name="wesh_pave_fluo_private_failed">Envoi indisponible. Vérifiez le contact et la connexion.</string>
     <string name="wesh_pave_fluo_draft_too_long">Brouillon trop long. Votre texte précédent est conservé.</string>
     <string name="wesh_pave_fluo_draft_error">Brouillon non enregistré sur ce téléphone. Ne fermez pas Wesh.</string>
