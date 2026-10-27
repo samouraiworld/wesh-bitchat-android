@@ -25,9 +25,9 @@ SERIALS = ("emulator-5554", "emulator-5556")
 SIDES = {SERIALS[0]: "a", SERIALS[1]: "b"}
 PACKAGE = "org.samouraiworld.wesh.android"
 COMPONENT = f"{PACKAGE}/com.bitchat.android.MainActivity"
-MESSAGE_A = "FGS-public-A-109"
-MESSAGE_B = "FGS-public-B-109"
-MESSAGE_BACKGROUND = "FGS-background-109"
+MESSAGE_A = "A109"
+MESSAGE_B = "B109"
+MESSAGE_BACKGROUND = "C109"
 SCENARIO_RESULT = "SCENARIO_PASS_RECORDINGS_AWAIT_LOCAL_VALIDATION"
 CAPTURE_SOURCE = "ANDROID_EMULATOR_HOST_PHYSICAL_DISPLAY_WEBM"
 RECORDING_LIMIT_SECONDS = 180
@@ -847,6 +847,11 @@ def trace_state_change(observer, states, category, event, started, serial):
     trace_scenario_progress(observer, event, started, serial)
 
 
+def replay_trace_states(observer, states, started, serial):
+    for event in dict.fromkeys(event for event in states.values() if event is not None):
+        trace_scenario_progress(observer, event, started, serial)
+
+
 def trace_send_snapshot(observer, states, items, message, started, serial):
     composer = composer_state(items, message)
     trace_state_change(
@@ -867,9 +872,7 @@ def scenario_nodes(serial, deadline, observer, trace_started, states=None):
         return nodes(serial, deadline, observer=observer)
     except GateError as failure:
         if states is not None:
-            for event in dict.fromkeys(
-                    event for event in states.values() if event is not None):
-                trace_scenario_progress(observer, event, trace_started, serial)
+            replay_trace_states(observer, states, trace_started, serial)
         if getattr(failure, "caller_deadline_reached", False):
             trace_scenario_progress(
                 observer, "failure_caller_deadline_reached", trace_started, serial)
@@ -934,9 +937,53 @@ def wait_composer_focus(serial, deadline, observer, trace_started, states):
             return
         if not bounded_sleep(deadline, 0.2):
             break
-    for event in dict.fromkeys(event for event in states.values() if event is not None):
-        trace_scenario_progress(observer, event, trace_started, serial)
+    replay_trace_states(observer, states, trace_started, serial)
     raise GateError("message_composer", serial)
+
+
+def type_message_one_pass(serial, message, deadline, observer, trace_started, states):
+    items = scenario_nodes(serial, deadline, observer, trace_started, states)
+    trace_send_snapshot(observer, states, items, message, trace_started, serial)
+    editors = [node for node in items
+               if node.get("package") == PACKAGE and is_editor(node)]
+    if (len(editors) != 1 or editors[0].get("focused") != "true"
+            or editors[0].get("text", "") != ""):
+        replay_trace_states(observer, states, trace_started, serial)
+        raise GateError("message_composer", serial)
+    confirmed = ""
+    for character in message:
+        trace_scenario_progress(
+            observer, "composer_character_requested", trace_started, serial)
+        deadline_adb(
+            serial, "message_composer", deadline,
+            "shell", "input", "text", character,
+        )
+        expected = confirmed + character
+        prefix_confirmed = False
+        while time.monotonic() < deadline:
+            items = scenario_nodes(serial, deadline, observer, trace_started, states)
+            trace_send_snapshot(observer, states, items, message, trace_started, serial)
+            editors = [node for node in items
+                       if node.get("package") == PACKAGE and is_editor(node)]
+            value = (editors[0].get("text", "")
+                     if len(editors) == 1 and editors[0].get("focused") == "true"
+                     else None)
+            if value == expected:
+                confirmed = expected
+                trace_scenario_progress(
+                    observer, "composer_prefix_confirmed", trace_started, serial)
+                prefix_confirmed = True
+                break
+            # The old prefix is an admissible asynchronous transition. Every other
+            # value fails closed without injecting another character or editing it.
+            if value != confirmed:
+                replay_trace_states(observer, states, trace_started, serial)
+                raise GateError("message_composer", serial)
+            if not bounded_sleep(deadline, 0.2):
+                break
+        if not prefix_confirmed:
+            replay_trace_states(observer, states, trace_started, serial)
+            raise GateError("message_composer", serial)
 
 
 def send(serial, message, deadline, observer=None, trace_started=None):
@@ -946,7 +993,7 @@ def send(serial, message, deadline, observer=None, trace_started=None):
     tap(serial, target, "message_composer", deadline)
     states = {}
     wait_composer_focus(serial, deadline, observer, trace_started, states)
-    deadline_adb(serial, "message_composer", deadline, "shell", "input", "text", message)
+    type_message_one_pass(serial, message, deadline, observer, trace_started, states)
     submit = None
     saw_expected_draft = False
     feedback_before_submit = None
@@ -965,6 +1012,7 @@ def send(serial, message, deadline, observer=None, trace_started=None):
         if not bounded_sleep(deadline, 0.2):
             break
     if submit is None:
+        replay_trace_states(observer, states, trace_started, serial)
         raise GateError("message_submit" if saw_expected_draft else "message_composer", serial)
     tap(serial, submit, "message_submit", deadline)
     trace_scenario_progress(observer, "send_requested", trace_started, serial)
@@ -981,6 +1029,7 @@ def send(serial, message, deadline, observer=None, trace_started=None):
                 trace_started, serial)
             confirmation = confirmation_action(items)
             if confirmation is None:
+                replay_trace_states(observer, states, trace_started, serial)
                 raise GateError("message_confirmation", serial)
             tap(serial, confirmation, "message_confirmation", deadline)
             confirmation_requested = True
@@ -1002,9 +1051,11 @@ def send(serial, message, deadline, observer=None, trace_started=None):
         if feedback is None:
             feedback_cleared_after_submit = True
         elif feedback != feedback_before_submit or feedback_cleared_after_submit:
+            replay_trace_states(observer, states, trace_started, serial)
             raise GateError("message_submit", serial)
         if not bounded_sleep(deadline, 0.2):
             break
+    replay_trace_states(observer, states, trace_started, serial)
     raise GateError("message_submit", serial)
 
 

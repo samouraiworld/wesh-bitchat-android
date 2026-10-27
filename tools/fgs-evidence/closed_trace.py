@@ -10,6 +10,7 @@ ONBOARDING_TRACE_EVENTS = frozenset({
     "notifications", "auxiliary", "home", "unknown", "ui_prepare", "ui_stale",
     "ui_command", "ui_output", "ui_read", "ui_parse", "ui_complete", "room_open_tapped",
     "send_requested", "composer_focus_requested", "composer_focused",
+    "composer_character_requested", "composer_prefix_confirmed",
     "composer_expected", "composer_empty", "composer_other", "composer_shorter",
     "composer_longer", "composer_same_length_other", "composer_ambiguous",
     "confirmation_visible", "confirmation_tap_requested",

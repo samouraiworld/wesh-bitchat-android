@@ -261,6 +261,28 @@ exports the value. A terminal snapshot failure re-emits those closed states so
 they survive the rolling tail. This correction does not change a reader, gate,
 budget, success criterion or media authorization.
 
+The consumed standard media run `40555857933` completed both real onboardings,
+foreground-service checks, peer discovery and both public-room opens. Its single
+bulk `input text` command returned successfully after the canonical editor was
+focused, but the closed trace then observed only a shorter draft on side A. No
+exact draft, Send request, confirmation or message bubble occurred; all 40 UI
+snapshots completed and the controller eventually ended at `message_composer_a`.
+The receipt does not reveal the draft and cannot establish whether Android input,
+Compose handling or persistence omitted a character.
+
+The controller now uses short, distinct synthetic tokens `A109`, `B109` and
+`C109` and types them once from left to right. Each character is injected exactly
+once; the next character is not requested until one unique focused Wesh editor
+equals the exact expected prefix. Seeing the unchanged previous prefix may wait
+under the existing deadline because UI admission is asynchronous. Any unrelated,
+longer, ambiguous or unfocused value fails closed without clear, Back, retap,
+repair or retry, and Send remains impossible until the complete token is exact.
+Only fixed `composer_character_requested` and `composer_prefix_confirmed` events
+are added to the trace; no character, prefix, length or UI value is exported.
+This is a controlled robustness experiment that removes the bulk-injection
+assumption. It does not establish the cause of the prior shorter draft and does
+not change the app, transport, gates or 165-second budget.
+
 The first reviewed attempt, [40214942196](https://github.com/samouraiworld/wesh-bitchat-android/actions/runs/40214942196),
 failed during Java setup: `21.0.11+10` was not a matching Temurin setup selector.
 Canonical verification, signing, SDK/AVD setup, BLE and recording did not run;
