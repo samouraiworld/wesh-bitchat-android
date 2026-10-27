@@ -2,6 +2,7 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -27,6 +28,30 @@ stability = load("wait_store_capture_stability")
 
 
 class CaptureEvidenceTests(unittest.TestCase):
+    def test_candidate_binding_and_capture_require_explicit_dispatch(self):
+        self.assertEqual(
+            capture.PRODUCTION_COMMIT,
+            "753769a07fa9e62c87afead88ea10ef42b823788",
+        )
+        workflow = (HERE.parents[1] / ".github/workflows/store-capture.yml").read_text()
+        for step in (
+            "Prepare isolated CI emulator",
+            "Capture fourteen synthetic product-view scenes",
+            "Retain only sanitized synthetic images and source manifest",
+        ):
+            self.assertRegex(
+                workflow,
+                rf"- name: {re.escape(step)}\n\s+if: \$\{{\{{ github\.event_name == 'workflow_dispatch' \}}\}}",
+            )
+        self.assertRegex(
+            workflow,
+            r"- name: Stop isolated emulator\n\s+if: \$\{\{ always\(\) && "
+            r"github\.event_name == 'workflow_dispatch' \}\}",
+        )
+        self.assertIn("name: android-store-candidate108-unbound", workflow)
+        self.assertIn("path: ${{ runner.temp }}/android-store-candidate108-unbound", workflow)
+        self.assertNotIn("android-store-candidate107-unbound", workflow)
+
     def test_sanitizer_removes_metadata_before_evidence_validation(self):
         with tempfile.TemporaryDirectory() as directory:
             folder = Path(directory)

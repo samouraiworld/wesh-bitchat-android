@@ -11,7 +11,7 @@ from pathlib import Path
 
 from PIL import Image
 
-PRODUCTION_COMMIT = "5008c95ae99933c180ee2ac6f767dd0e9c203a21"
+PRODUCTION_COMMIT = "753769a07fa9e62c87afead88ea10ef42b823788"
 SCENES = ("home", "public", "private", "exchange", "settings", "connection", "about")
 EXPECTED_ENVIRONMENT = {"emulator": True, "api": 35, "width": 1080, "height": 1920, "densityDpi": 420}
 ROOT_PATHS = (

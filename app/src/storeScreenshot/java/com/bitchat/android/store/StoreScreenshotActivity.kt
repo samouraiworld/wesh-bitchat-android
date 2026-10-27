@@ -154,27 +154,7 @@ private data class StoreFixture(
 @androidx.compose.runtime.Composable
 private fun StoreScene(scene: String, f: StoreFixture) {
     when (scene) {
-        "home" -> HomeScreen(
-            state = PaveHomeState(
-                phonesInReach = 3,
-                bluetoothOn = true,
-                publicPreviewSender = f.secondContact,
-                publicPreviewText = f.homePublic,
-                publicTime = "18:04",
-                contacts = listOf(
-                    PaveContactItem("synthetic-01", f.contact, FINGERPRINT_A, true, f.homePrivate, "18:06"),
-                    PaveContactItem("synthetic-02", f.secondContact, FINGERPRINT_B, true, null, null),
-                ),
-                requestCount = 1,
-                internetPill = null,
-            ),
-            onOpenPublicRoom = {},
-            onOpenContact = {},
-            onOpenRequests = {},
-            onExchange = {},
-            onOpenSettings = {},
-            onRetryContacts = {},
-        )
+        "home" -> StoreHomeScene(f, phonesInReach = 3, bluetoothOn = true, internetPill = null)
 
         "public" -> PublicRoomScreen(
             phonesInReach = 3,
@@ -229,12 +209,22 @@ private fun StoreScene(scene: String, f: StoreFixture) {
         )
 
         "connection" -> Box(Modifier.fillMaxSize()) {
-            StoreScene("home", f)
+            StoreHomeScene(
+                f,
+                phonesInReach = 0,
+                bluetoothOn = false,
+                internetPill = PaveInternetStatus.On(relays = 2),
+            )
             val internet = remember {
-                FakeWeshInternetModeState(enabled = false, status = PaveInternetStatus.Off)
+                FakeWeshInternetModeState(
+                    available = true,
+                    enabled = true,
+                    status = PaveInternetStatus.On(relays = 2),
+                    disclosureAccepted = true,
+                )
             }
             ConnexionSheet(
-                bluetooth = PaveBluetoothInfo(on = true, phonesInRange = 3),
+                bluetooth = PaveBluetoothInfo(on = false, phonesInRange = 0),
                 internet = internet,
                 onDismiss = {},
             )
@@ -242,6 +232,36 @@ private fun StoreScene(scene: String, f: StoreFixture) {
 
         "about" -> AboutScreen(versionName = "1.0.0", onBack = {}, onOpenLicenses = {})
     }
+}
+
+@androidx.compose.runtime.Composable
+private fun StoreHomeScene(
+    f: StoreFixture,
+    phonesInReach: Int,
+    bluetoothOn: Boolean,
+    internetPill: PaveInternetStatus?,
+) {
+    HomeScreen(
+        state = PaveHomeState(
+            phonesInReach = phonesInReach,
+            bluetoothOn = bluetoothOn,
+            publicPreviewSender = f.secondContact,
+            publicPreviewText = f.homePublic,
+            publicTime = "18:04",
+            contacts = listOf(
+                PaveContactItem("synthetic-01", f.contact, FINGERPRINT_A, true, f.homePrivate, "18:06"),
+                PaveContactItem("synthetic-02", f.secondContact, FINGERPRINT_B, true, null, null),
+            ),
+            requestCount = 1,
+            internetPill = internetPill,
+        ),
+        onOpenPublicRoom = {},
+        onOpenContact = {},
+        onOpenRequests = {},
+        onExchange = {},
+        onOpenSettings = {},
+        onRetryContacts = {},
+    )
 }
 
 private const val FINGERPRINT_SELF = "1020 3040 5060 7080"

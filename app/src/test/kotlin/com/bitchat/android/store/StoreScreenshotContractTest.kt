@@ -127,7 +127,12 @@ class StoreScreenshotContractTest {
         assertTrue(captureActivity.contains("ConnexionSheet("))
         assertFalse(captureActivity.contains("ConnexionSheetContent("))
         assertTrue(captureActivity.contains("withFrameNanos"))
-        assertTrue(captureActivity.contains("enabled = false, status = PaveInternetStatus.Off"))
+        assertTrue(captureActivity.contains("phonesInReach = 0"))
+        assertTrue(captureActivity.contains("bluetoothOn = false"))
+        assertTrue(captureActivity.contains("PaveBluetoothInfo(on = false, phonesInRange = 0)"))
+        assertTrue(captureActivity.contains("available = true"))
+        assertTrue(captureActivity.contains("enabled = true"))
+        assertTrue(captureActivity.contains("status = PaveInternetStatus.On(relays = 2)"))
     }
 
     @Test
