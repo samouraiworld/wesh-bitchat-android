@@ -1,4 +1,5 @@
 import contextlib
+from concurrent.futures import ThreadPoolExecutor
 import importlib.util
 import io
 import json
@@ -147,6 +148,40 @@ class OnboardingCheckTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             trace("unknown", 0, float("inf"), 0.0)
 
+    def test_trace_retains_late_closed_product_phase_when_ui_detail_is_full(self):
+        trace = onboarding_check.ClosedOnboardingTrace()
+        for index in range(onboarding_check.MAX_TRACE_EVENTS):
+            trace("ui_command", 1, 13.0, float(index))
+        trace("remote_received", 2, 0.0, 70.0)
+        payload = onboarding_check.validated_trace_payload(trace)
+        self.assertEqual(len(payload["events"]), onboarding_check.MAX_TRACE_EVENTS)
+        self.assertEqual(payload["droppedEvents"], 1)
+        self.assertEqual(payload["events"][-1]["event"], "remote_received")
+        self.assertEqual(payload["counts"]["ui_command"], onboarding_check.MAX_TRACE_EVENTS)
+        self.assertEqual(payload["counts"]["remote_received"], 1)
+
+    def test_trace_updates_are_thread_safe_and_keep_head_plus_tail(self):
+        trace = onboarding_check.ClosedOnboardingTrace()
+
+        def emit(worker):
+            for index in range(100):
+                trace("ui_command", 1 + worker % 2, 13.0, float(index))
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futures = [pool.submit(emit, worker) for worker in range(4)]
+            for future in futures:
+                future.result()
+        payload = onboarding_check.validated_trace_payload(trace)
+        self.assertEqual(payload["counts"]["ui_command"], 400)
+        self.assertEqual(len(payload["events"]), onboarding_check.MAX_TRACE_EVENTS)
+        self.assertEqual(payload["droppedEvents"], 400 - onboarding_check.MAX_TRACE_EVENTS)
+        head = list(payload["events"][:onboarding_check.TRACE_PREFIX_EVENTS])
+        trace("remote_received", 2, 0.0, 101.0)
+        payload = onboarding_check.validated_trace_payload(trace)
+        self.assertEqual(payload["events"][:onboarding_check.TRACE_PREFIX_EVENTS], head)
+        self.assertEqual(payload["events"][-1]["event"], "remote_received")
+        self.assertEqual(payload["counts"]["remote_received"], 1)
+
     def test_controller_and_runner_have_no_media_path(self):
         controller = (HERE / "onboarding_check.py").read_text()
         runner = (HERE / "run-onboarding.sh").read_text()
@@ -160,12 +195,8 @@ class OnboardingCheckTests(unittest.TestCase):
         self.assertIn("emulator-5554", runner)
         self.assertNotIn("emulator-5556", runner)
 
-        timeout_trace_line = next(
-            line for line in runner.splitlines()
-            if "ONBOARDING_TRACE {" in line
-        )
-        encoded = timeout_trace_line.split("ONBOARDING_TRACE ", 1)[1].split("'", 1)[0]
-        self.assertEqual(json.loads(encoded), onboarding_check.empty_trace_payload())
+        self.assertIn("from onboarding_check import empty_trace_payload", runner)
+        self.assertNotIn("'ONBOARDING_TRACE {", runner)
 
     def test_workflow_labels_are_exact_and_mutually_exclusive(self):
         workflow = (HERE.parents[1] / ".github/workflows/fgs-emulator-evidence.yml").read_text()

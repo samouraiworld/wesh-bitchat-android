@@ -22,6 +22,7 @@ jobs:
       - run: python3 -m unittest discover -s tools/fgs-evidence -p 'test_*.py'
       - run: bash -n tools/fgs-evidence/run.sh
       - run: bash -n tools/fgs-evidence/run-onboarding.sh
+      - run: bash -n tools/fgs-evidence/run-scenario.sh
 
   diagnostic:
     if: >-
@@ -80,6 +81,39 @@ jobs:
       - name: Remove disposable key, AVD, SDK logs and temporary data
         if: always()
         run: rm -rf -- "$RUNNER_TEMP/fgs-onboarding"
+
+  scenario:
+    if: >-
+      github.event.action == 'labeled' &&
+      github.event.label.name == 'fgs-scenario-reviewed' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      actions: read
+      attestations: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5
+        with:
+          distribution: temurin
+          java-version: '21.0.11+10.0.LTS'
+      - name: Verify canonical 108 and sign only for two disposable emulators
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/fgs-evidence/prepare.py "$RUNNER_TEMP/fgs-scenario"
+      - name: Check the real two-AVD product scenario without media
+        env:
+          EVIDENCE_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: bash tools/fgs-evidence/run-scenario.sh "$RUNNER_TEMP/fgs-scenario"
+      - name: Remove disposable keys, AVDs, SDK logs and temporary data
+        if: always()
+        run: rm -rf -- "$RUNNER_TEMP/fgs-scenario"
 
   evidence:
     if: >-

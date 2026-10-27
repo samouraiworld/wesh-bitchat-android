@@ -33,7 +33,12 @@ UI_FILE_COMMAND_SECONDS = 2
 ONBOARDING_TRACE_EVENTS = frozenset({
     "activity_resumed", "welcome_seen", "start_tapped", "bluetooth", "permission",
     "notifications", "auxiliary", "home", "unknown", "ui_prepare", "ui_stale",
-    "ui_command", "ui_output", "ui_read", "ui_parse", "ui_complete",
+    "ui_command", "ui_output", "ui_read", "ui_parse", "ui_complete", "room_open_tapped",
+    "send_requested", "confirmation_tapped", "message_bubble", "remote_received",
+    "background_requested", "notification_visible", "notification_open_tapped",
+    "activity_resumed_after_notification", "quit_completed",
+    "onboarding_completed", "fgs_active", "peers_visible", "messages_bidirectional",
+    "background_send", "scenario_started",
 })
 
 SERIAL_PHASES = frozenset({
@@ -346,8 +351,7 @@ def select(items, label, contains=False):
                  any(matches(n.get(key, "")) for key in ("text", "content-desc"))), None)
 
 
-def select_action(items, label, contains=False):
-    """Return a matching actionable node, or its actionable containing ancestor."""
+def action_candidates(items, label, contains=False):
     def matches(node):
         def value_matches(value):
             return (label.casefold() in value.casefold() if contains
@@ -361,15 +365,23 @@ def select_action(items, label, contains=False):
                 and (node.get("clickable") == "true"
                      or node.get("class", "").rsplit(".", 1)[-1] == "Button"))
 
-    direct = next((node for node in items if matches(node) and actionable(node)), None)
-    if direct is not None:
-        return direct
+    found = []
     for label_node in (node for node in items if matches(node)):
-        for candidate in items:
-            if (actionable(candidate)
-                    and any(descendant is label_node for descendant in candidate.iter("node"))):
-                return candidate
-    return None
+        candidate = label_node if actionable(label_node) else None
+        if candidate is None:
+            ancestors = [node for node in items if actionable(node)
+                         and any(descendant is label_node for descendant in node.iter("node"))]
+            if ancestors:
+                candidate = min(ancestors, key=lambda node: len(list(node.iter("node"))))
+        if candidate is not None and not any(existing is candidate for existing in found):
+            found.append(candidate)
+    return found
+
+
+def select_action(items, label, contains=False):
+    """Return one matching actionable node, or its actionable containing ancestor."""
+    candidates = action_candidates(items, label, contains)
+    return candidates[0] if candidates else None
 
 
 def tap(serial, node, phase="ui_action", deadline=None):
@@ -387,6 +399,16 @@ def tap(serial, node, phase="ui_action", deadline=None):
 def wait_ui(serial, label, deadline, contains=False, failure_phase="ui_action"):
     while time.monotonic() < deadline:
         target = select(nodes(serial, deadline), label, contains)
+        if target is not None:
+            return target
+        if not bounded_sleep(deadline, 0.4):
+            break
+    raise GateError(failure_phase, serial)
+
+
+def wait_action(serial, label, deadline, contains=False, failure_phase="ui_action"):
+    while time.monotonic() < deadline:
+        target = select_action(nodes(serial, deadline), label, contains)
         if target is not None:
             return target
         if not bounded_sleep(deadline, 0.4):
@@ -492,24 +514,103 @@ def onboarding(serial, deadline, observer=None):
     raise GateError(last_phase, serial)
 
 
-def send(serial, message, deadline):
-    target = wait_ui(serial, "Public message — everyone around", deadline,
-                     failure_phase="message_composer")
+def trace_scenario_progress(observer, event, started, serial=None):
+    if observer is None:
+        return
+    attempt = 0 if serial is None else (1 if SIDES[serial] == "a" else 2)
+    emit_onboarding_trace(
+        observer, event, attempt, 0.0,
+        max(0.0, time.monotonic() - started),
+    )
+
+
+def node_is_within(node, ancestor):
+    return any(descendant is node for descendant in ancestor.iter("node"))
+
+
+def is_editor(node):
+    return (node.get("class", "").casefold().endswith("edittext")
+            or node.get("editable") == "true")
+
+
+def message_bubble(items, message):
+    if select(items, "Send to the public room?") is not None:
+        return None
+    editors = [node for node in items if is_editor(node)]
+    for node in items:
+        if (node.get("package") != PACKAGE or is_editor(node)
+                or any(node_is_within(node, editor) or node_is_within(editor, node)
+                       for editor in editors)):
+            continue
+        text = node.get("text", "")
+        description = node.get("content-desc", "")
+        semantic_parts = [part.strip() for part in description.split(", ")]
+        if text == message or message in semantic_parts:
+            return node
+    return None
+
+
+def confirmation_action(items):
+    marker = select(items, "Send to the public room?")
+    if marker is None or marker.get("package") != PACKAGE:
+        return None
+    scopes = []
+    for scope in items:
+        if not node_is_within(marker, scope):
+            continue
+        scoped = [node for node in scope.iter("node") if node.get("package") == PACKAGE]
+        if any(is_editor(node) for node in scoped):
+            continue
+        if (select(scoped, "Anyone around can read, relay and keep your message. "
+                          "A nickname does not prove an identity.") is None
+                or select_action(scoped, "Cancel") is None):
+            continue
+        scopes.append((len(scoped), scoped))
+    if not scopes:
+        return None
+    minimum = min(size for size, _scoped in scopes)
+    minimal_scopes = [scoped for size, scoped in scopes if size == minimum]
+    if len(minimal_scopes) != 1:
+        return None
+    candidates = action_candidates(minimal_scopes[0], "Send in public")
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def wait_message_bubble(serial, message, deadline, observer=None, trace_started=None,
+                        remote=False):
+    while time.monotonic() < deadline:
+        if message_bubble(nodes(serial, deadline), message) is not None:
+            trace_scenario_progress(
+                observer, "remote_received" if remote else "message_bubble",
+                trace_started, serial,
+            )
+            return
+        if not bounded_sleep(deadline, 0.2):
+            break
+    raise GateError("message_receive" if remote else "message_submit", serial)
+
+
+def send(serial, message, deadline, observer=None, trace_started=None):
+    target = wait_action(serial, "Public message — everyone around", deadline,
+                         failure_phase="message_composer")
     tap(serial, target, "message_composer", deadline)
     deadline_adb(serial, "message_composer", deadline, "shell", "input", "text", message)
-    submit = wait_ui(serial, "Send in public", deadline, failure_phase="message_submit")
+    submit = wait_action(serial, "Send in public", deadline, failure_phase="message_submit")
     tap(serial, submit, "message_submit", deadline)
+    trace_scenario_progress(observer, "send_requested", trace_started, serial)
     confirmed = False
     while time.monotonic() < deadline:
         items = nodes(serial, deadline)
         state = public_send_state(items, message)
         if state == "confirm" and not confirmed:
-            confirmation = select(items, "Send in public")
+            confirmation = confirmation_action(items)
             if confirmation is None:
                 raise GateError("message_confirmation", serial)
             tap(serial, confirmation, "message_confirmation", deadline)
             confirmed = True
+            trace_scenario_progress(observer, "confirmation_tapped", trace_started, serial)
         elif state == "submitted":
+            trace_scenario_progress(observer, "message_bubble", trace_started, serial)
             return
         if not bounded_sleep(deadline, 0.2):
             break
@@ -519,8 +620,7 @@ def send(serial, message, deadline):
 def public_send_state(items, message):
     if select(items, "Send to the public room?") is not None:
         return "confirm"
-    editable = [n for n in items if n.get("class") == "android.widget.EditText"]
-    if editable and all(not n.get("text", "") for n in editable) and message in labels(items):
+    if message_bubble(items, message) is not None:
         return "submitted"
     return "pending"
 
@@ -600,12 +700,12 @@ def quit_via_notification(serial, deadline):
     deadline_adb(serial, "notification_expand", deadline,
                  "shell", "cmd", "statusbar", "expand-notifications")
     items = nodes(serial, deadline)
-    quit_action = select(items, "Quit Wesh")
+    quit_action = select_action(items, "Quit Wesh")
     if quit_action is None:
-        expand = select(items, "Expand")
+        expand = select_action(items, "Expand")
         if expand is not None:
             tap(serial, expand, "notification_expand", deadline)
-        quit_action = wait_ui(serial, "Quit Wesh", deadline, failure_phase="quit_action")
+        quit_action = wait_action(serial, "Quit Wesh", deadline, failure_phase="quit_action")
     tap(serial, quit_action, "quit_action", deadline)
     service_stopped = False
     while time.monotonic() < deadline:
@@ -724,6 +824,82 @@ def export_host_recordings(root, recordings, receipt, failure_elapsed_seconds=No
     remove_owned(backup)
 
 
+def run_product_scenario(deadline, event, observer=None):
+    """Run the real product flow shared by media and non-media controllers."""
+    trace_started = time.monotonic()
+    onboarding_deadline = min(deadline, time.monotonic() + 90)
+    with ThreadPoolExecutor(2) as pool:
+        futures = [pool.submit(onboarding, serial, onboarding_deadline, observer)
+                   for serial in SERIALS]
+        for future in futures:
+            future.result()
+    event("actual_onboarding_permissions_completed")
+    trace_scenario_progress(observer, "onboarding_completed", trace_started)
+
+    service_deadline = min(deadline, time.monotonic() + 35)
+    with ThreadPoolExecutor(2) as pool:
+        futures = [pool.submit(wait_fgs_active, serial, service_deadline) for serial in SERIALS]
+        for future in futures:
+            future.result()
+    event("foreground_services_active")
+    trace_scenario_progress(observer, "fgs_active", trace_started)
+
+    peer_deadline = min(deadline, time.monotonic() + 90)
+    with ThreadPoolExecutor(2) as pool:
+        futures = [pool.submit(wait_ui, serial, "1 phone in range", peer_deadline, True,
+                               "peer_discovery_timeout") for serial in SERIALS]
+        for future in futures:
+            future.result()
+    event("both_apps_display_real_peer")
+    trace_scenario_progress(observer, "peers_visible", trace_started)
+
+    for serial in SERIALS:
+        room = wait_action(serial, "Public room", deadline, failure_phase="public_room_open")
+        tap(serial, room, "public_room_open", deadline)
+        trace_scenario_progress(observer, "room_open_tapped", trace_started, serial)
+    send(SERIALS[0], MESSAGE_A, deadline, observer, trace_started)
+    wait_activity_resumed(SERIALS[1], min(deadline, time.monotonic() + 8))
+    wait_message_bubble(
+        SERIALS[1], MESSAGE_A, deadline, observer, trace_started, remote=True)
+    send(SERIALS[1], MESSAGE_B, deadline, observer, trace_started)
+    wait_activity_resumed(SERIALS[0], min(deadline, time.monotonic() + 8))
+    wait_message_bubble(
+        SERIALS[0], MESSAGE_B, deadline, observer, trace_started, remote=True)
+    event("public_messages_received_in_both_directions")
+    trace_scenario_progress(observer, "messages_bidirectional", trace_started)
+
+    deadline_adb(SERIALS[0], "notification_expand", deadline,
+                 "shell", "input", "keyevent", "3")
+    trace_scenario_progress(observer, "background_requested", trace_started, SERIALS[0])
+    wait_fgs_active(SERIALS[0], min(deadline, time.monotonic() + 8))
+    deadline_adb(SERIALS[0], "notification_expand", deadline,
+                 "shell", "cmd", "statusbar", "expand-notifications")
+    wait_ui(SERIALS[0], "Mesh running", deadline, contains=True,
+            failure_phase="notification_visible")
+    trace_scenario_progress(observer, "notification_visible", trace_started, SERIALS[0])
+    event("background_connected_device_notification_visible")
+
+    send(SERIALS[1], MESSAGE_BACKGROUND, deadline, observer, trace_started)
+    event("public_message_sent_while_other_app_in_background")
+    trace_scenario_progress(observer, "background_send", trace_started, SERIALS[1])
+    notification = wait_action(SERIALS[0], "Mesh running", deadline, contains=True,
+                               failure_phase="notification_visible")
+    tap(SERIALS[0], notification, "notification_open", deadline)
+    trace_scenario_progress(observer, "notification_open_tapped", trace_started, SERIALS[0])
+    wait_activity_resumed(SERIALS[0], min(deadline, time.monotonic() + 8))
+    trace_scenario_progress(
+        observer, "activity_resumed_after_notification", trace_started, SERIALS[0])
+    wait_message_bubble(
+        SERIALS[0], MESSAGE_BACKGROUND, deadline, observer, trace_started, remote=True)
+    event("public_message_visible_after_resume_via_fgs_notification")
+
+    quit_via_notification(SERIALS[0], deadline)
+    trace_scenario_progress(observer, "quit_completed", trace_started, SERIALS[0])
+    event("quit_action_stopped_service_and_removed_notification")
+    if time.monotonic() >= deadline:
+        raise GateError("scenario_budget")
+
+
 def main(root):
     if os.environ.get("GITHUB_ACTIONS") != "true":
         raise RuntimeError("Disposable GitHub runner only")
@@ -771,57 +947,7 @@ def main(root):
 
         # The first product launch, onboarding, permission prompts, service start and peer setup are
         # all real actions inside the two host recordings, before the declared device interaction.
-        onboarding_deadline = min(deadline, time.monotonic() + 90)
-        with ThreadPoolExecutor(2) as pool:
-            futures = [pool.submit(onboarding, serial, onboarding_deadline) for serial in SERIALS]
-            for future in futures:
-                future.result()
-        event("actual_onboarding_permissions_completed")
-
-        service_deadline = min(deadline, time.monotonic() + 35)
-        with ThreadPoolExecutor(2) as pool:
-            futures = [pool.submit(wait_fgs_active, serial, service_deadline) for serial in SERIALS]
-            for future in futures:
-                future.result()
-        event("foreground_services_active")
-
-        peer_deadline = min(deadline, time.monotonic() + 90)
-        with ThreadPoolExecutor(2) as pool:
-            futures = [pool.submit(wait_ui, serial, "1 phone in range", peer_deadline, True,
-                                   "peer_discovery_timeout") for serial in SERIALS]
-            for future in futures:
-                future.result()
-        event("both_apps_display_real_peer")
-
-        for serial in SERIALS:
-            room = wait_ui(serial, "Public room", deadline, failure_phase="public_room_open")
-            tap(serial, room, "public_room_open", deadline)
-        send(SERIALS[0], MESSAGE_A, deadline)
-        wait_ui(SERIALS[1], MESSAGE_A, deadline, contains=True, failure_phase="message_receive")
-        send(SERIALS[1], MESSAGE_B, deadline)
-        wait_ui(SERIALS[0], MESSAGE_B, deadline, contains=True, failure_phase="message_receive")
-        event("public_messages_received_in_both_directions")
-
-        deadline_adb(SERIALS[0], "notification_expand", deadline,
-                     "shell", "input", "keyevent", "3")
-        wait_fgs_active(SERIALS[0], min(deadline, time.monotonic() + 8))
-        deadline_adb(SERIALS[0], "notification_expand", deadline,
-                     "shell", "cmd", "statusbar", "expand-notifications")
-        wait_ui(SERIALS[0], "Mesh running", deadline, contains=True, failure_phase="notification_visible")
-        event("background_connected_device_notification_visible")
-
-        send(SERIALS[1], MESSAGE_BACKGROUND, deadline)
-        event("public_message_sent_while_other_app_in_background")
-        notification = wait_ui(SERIALS[0], "Mesh running", deadline, contains=True,
-                               failure_phase="notification_visible")
-        tap(SERIALS[0], notification, "notification_open", deadline)
-        wait_ui(SERIALS[0], MESSAGE_BACKGROUND, deadline, contains=True, failure_phase="message_receive")
-        event("public_message_visible_after_resume_via_fgs_notification")
-
-        quit_via_notification(SERIALS[0], deadline)
-        event("quit_action_stopped_service_and_removed_notification")
-        if time.monotonic() >= deadline:
-            raise GateError("scenario_budget")
+        run_product_scenario(deadline, event)
         receipt["result"] = SCENARIO_RESULT
     except GateError as error:
         receipt["failureGate"] = error.gate

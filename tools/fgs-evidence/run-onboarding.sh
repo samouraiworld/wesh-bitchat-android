@@ -84,6 +84,8 @@ status=$?
 set -e
 if [[ "$status" == 124 || "$status" == 137 ]]; then
   printf 'FAIL gate=controller_timeout elapsedSeconds=420.0\n' >&2
-  printf '%s\n' 'ONBOARDING_TRACE {"counts":{"activity_resumed":0,"auxiliary":0,"bluetooth":0,"home":0,"notifications":0,"permission":0,"start_tapped":0,"ui_command":0,"ui_complete":0,"ui_output":0,"ui_parse":0,"ui_prepare":0,"ui_read":0,"ui_stale":0,"unknown":0,"welcome_seen":0},"droppedEvents":0,"events":[],"schemaVersion":1}' >&2
+  PYTHONPATH=tools/fgs-evidence python3 -c \
+    'import json; from onboarding_check import empty_trace_payload; print("ONBOARDING_TRACE "+json.dumps(empty_trace_payload(),sort_keys=True,separators=(",",":")))' \
+    >&2
 fi
 exit "$status"

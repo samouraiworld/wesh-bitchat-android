@@ -39,9 +39,20 @@ SDK logs and temporary data. Completion qualifies only the canonical first-launc
 onboarding path on that synthetic CI image. It is not physical evidence, FGS
 evidence, store media or permission for a later capture.
 
-The onboarding, read-only diagnostic and video jobs compare three distinct label
-names by exact equality. Adding `fgs-onboarding-reviewed` cannot activate either
-`fgs-emulator-diagnose` or `fgs-emulator-reviewed`; tests enforce that separation.
+The onboarding, full-scenario, read-only diagnostic and video jobs compare four
+distinct label names by exact equality. Adding `fgs-onboarding-reviewed` cannot
+activate any other job; tests enforce that separation.
+
+`fgs-scenario-reviewed` is a fourth exact, manually applied label for a separate
+two-AVD non-media check. It verifies the same canonical Android 108 APK and runs
+the shared real product flow—first onboarding, foreground services, real peer
+discovery, bidirectional public messages, background notification, background
+delivery, resume and Quit—inside the unchanged 165-second scenario budget. Its
+zero point is named `scenario_started`; it never emits the media-only
+`recording_commands_started` event. The job has no recorder, assembler, artifact
+upload or `GITHUB_OUTPUT`, and always removes its disposable APK, keys, AVDs and
+SDK logs. A PASS qualifies only this synthetic two-AVD non-media scenario; it is
+not physical-device, Play-signing, video or public-release evidence.
 
 The first non-media run, `40496918526`, verified canonical preparation and then
 ended after 168.1 seconds at `ui_dump_command_timeout_a`. Cleanup passed, the
@@ -66,6 +77,20 @@ because the onboarding caller deadline was already reached when that failure
 was observed, the controller preserves its last onboarding phase; an earlier
 dump timeout remains a strict dump failure even if retry delay later crosses the
 caller deadline.
+
+The consumed media run `40501825753` reached real onboarding, foreground-service
+and peer-discovery milestones, then ended at `ui_dump_command_timeout_a` before
+the bidirectional-message milestone. It exported no WebM and therefore provided
+no video to review or qualify. The shared scenario now requires actionable
+composer/submit/confirmation controls, scopes the confirmation CTA to its dialog,
+and accepts send/receive completion only when the synthetic message is an exact
+component of a canonical-app bubble semantic, outside editors (including their
+ancestors/descendants), dialog prompts and System UI. Remote reads also require the app
+to be foreground, including an explicit resumed-activity check after opening the
+foreground-service notification. The optional closed trace records only fixed
+phase enums and finite timings; its 64-event bound preserves the first eight
+records plus a rolling tail of 56 so late post-peer timings remain diagnostic,
+while locked aggregate counters remain complete across both onboarding threads.
 
 The first reviewed attempt, [40214942196](https://github.com/samouraiworld/wesh-bitchat-android/actions/runs/40214942196),
 failed during Java setup: `21.0.11+10` was not a matching Temurin setup selector.

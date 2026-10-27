@@ -675,14 +675,17 @@ class EvidenceChecks(unittest.TestCase):
             "recording_commands_started", "actual_onboarding_permissions_completed",
             "foreground_services_active", "both_apps_display_real_peer"))
         main_source = Path(capture.__file__).read_text().split("def main(root):", 1)[1]
+        scenario_source = Path(capture.__file__).read_text().split(
+            "def run_product_scenario", 1)[1].split("def main(root):", 1)[0]
         self.assertLess(main_source.index("start_host_recorder(serial"),
                         main_source.index('event("recording_commands_started"'))
         self.assertLess(main_source.index('event("recording_commands_started"'),
-                        main_source.index("pool.submit(onboarding"))
+                        main_source.index("run_product_scenario(deadline, event)"))
         self.assertNotIn("recorded_relaunch", main_source)
-        self.assertIn("onboarding_deadline = min(deadline", main_source)
-        self.assertIn("service_deadline = min(deadline", main_source)
-        self.assertIn("peer_deadline = min(deadline", main_source)
+        self.assertIn("onboarding_deadline = min(deadline", scenario_source)
+        self.assertIn("service_deadline = min(deadline", scenario_source)
+        self.assertIn("peer_deadline = min(deadline", scenario_source)
+        self.assertNotIn("recording_commands_started", scenario_source)
 
     def test_scenario_clock_has_explicit_zero_then_real_positive_onboarding(self):
         receipt = {"events": []}
@@ -913,36 +916,13 @@ class EvidenceChecks(unittest.TestCase):
             scenario_deadlines.append(deadline)
             advance(1)
 
-        def onboard(serial, deadline):
-            calls.append(("onboarding", serial))
+        def scenario(deadline, event, observer=None):
+            self.assertIsNone(observer)
+            calls.append(("scenario",))
             scenario_deadlines.append(deadline)
-            advance(10)
-
-        def fgs(serial, deadline):
-            calls.append(("fgs", serial))
-            scenario_deadlines.append(deadline)
-            advance(1)
-
-        def wait_ui(serial, label, deadline, *_args, **_kwargs):
-            calls.append(("wait_ui", serial, label))
-            scenario_deadlines.append(deadline)
-            advance(0.5 if label != "1 phone in range" else 1)
-            return node
-
-        def send(serial, _message, deadline):
-            calls.append(("send", serial))
-            scenario_deadlines.append(deadline)
-            advance(1)
-
-        def deadline_adb(_serial, _phase, deadline, *_args, **_kwargs):
-            scenario_deadlines.append(deadline)
-            advance(0.2)
-            return ""
-
-        def quit_action(serial, deadline):
-            calls.append(("quit", serial))
-            scenario_deadlines.append(deadline)
-            advance(1)
+            for step in capture.SCENARIO_STEPS[1:]:
+                advance(1)
+                event(step)
 
         def export(_root, _recordings, receipt, **_kwargs):
             exported.update(json.loads(json.dumps(receipt)))
@@ -960,25 +940,17 @@ class EvidenceChecks(unittest.TestCase):
                 stack.enter_context(patch("capture.boot_and_install", side_effect=boot))
                 stack.enter_context(patch("capture.require_host_recorder", side_effect=capability))
                 stack.enter_context(patch("capture.start_host_recorder", side_effect=start))
-                stack.enter_context(patch("capture.onboarding", side_effect=onboard))
-                stack.enter_context(patch("capture.wait_fgs_active", side_effect=fgs))
-                stack.enter_context(patch("capture.wait_ui", side_effect=wait_ui))
-                stack.enter_context(patch("capture.send", side_effect=send))
-                stack.enter_context(patch("capture.deadline_adb", side_effect=deadline_adb))
-                stack.enter_context(patch("capture.tap"))
-                stack.enter_context(patch("capture.quit_via_notification", side_effect=quit_action))
+                stack.enter_context(patch("capture.run_product_scenario", side_effect=scenario))
                 stack.enter_context(patch("capture.wait_host_recordings"))
                 stack.enter_context(patch("capture.export_host_recordings", side_effect=export))
                 stack.enter_context(patch("capture.adb", side_effect=OSError("private sweep spawn")))
                 capture.main(root)
 
         starts = [index for index, call in enumerate(calls) if call[0] == "start"]
-        onboardings = [index for index, call in enumerate(calls) if call[0] == "onboarding"]
+        scenarios = [index for index, call in enumerate(calls) if call[0] == "scenario"]
         self.assertEqual(len(starts), 2)
-        self.assertEqual(len(onboardings), 2)
-        self.assertLess(max(starts), min(onboardings))
-        self.assertEqual([call for call in calls if call[0] == "quit"],
-                         [("quit", capture.SERIALS[0])])
+        self.assertEqual(len(scenarios), 1)
+        self.assertLess(max(starts), min(scenarios))
         self.assertTrue(all(deadline <= video_origin[0] + capture.SCENARIO_BUDGET_SECONDS
                             for deadline in scenario_deadlines))
         self.assertEqual([event["step"] for event in exported["preflightEvents"]],
@@ -1026,18 +998,199 @@ class EvidenceChecks(unittest.TestCase):
         self.assertGreaterEqual(attempt["failureElapsedSeconds"], 0)
 
     def test_real_first_public_disclosure_requires_confirmation(self):
-        title = E.Element("node", {"text": "Send to the public room?", "enabled": "true"})
+        title = E.Element("node", {
+            "text": "Send to the public room?", "enabled": "true",
+            "package": capture.PACKAGE,
+        })
         self.assertEqual(capture.public_send_state([title], "synthetic"), "confirm")
 
-    def test_outgoing_bubble_alone_does_not_prove_send_completion(self):
-        bubble = E.Element("node", {"text": "synthetic", "enabled": "true"})
-        field = E.Element("node", {"class": "android.widget.EditText", "text": "synthetic"})
-        self.assertEqual(capture.public_send_state([bubble, field], "synthetic"), "pending")
+    def test_editor_and_hint_descendants_never_count_as_message_bubbles(self):
+        field = E.Element("node", {
+            "class": "androidx.compose.ui.EditText", "package": capture.PACKAGE,
+        })
+        hint = E.SubElement(field, "node", {
+            "content-desc": "draft synthetic decoration", "package": capture.PACKAGE,
+        })
+        self.assertEqual(capture.public_send_state([field, hint], "synthetic"), "pending")
 
-    def test_completed_public_send_requires_draft_clear_and_bubble(self):
-        bubble = E.Element("node", {"text": "synthetic", "enabled": "true"})
-        field = E.Element("node", {"class": "android.widget.EditText", "text": ""})
+    def test_completed_public_send_requires_app_message_bubble_not_empty_draft(self):
+        bubble = E.Element("node", {
+            "content-desc": "You, fp, synthetic, now", "enabled": "true",
+            "package": capture.PACKAGE,
+        })
+        field = E.Element("node", {
+            "class": "android.widget.EditText", "text": "hint remains",
+            "package": capture.PACKAGE,
+        })
         self.assertEqual(capture.public_send_state([bubble, field], "synthetic"), "submitted")
+
+    def test_message_bubble_rejects_substring_and_ancestor_containing_editor(self):
+        substring = E.Element("node", {
+            "content-desc": "You, fp, synthetic-extra, now", "package": capture.PACKAGE,
+        })
+        self.assertIsNone(capture.message_bubble([substring], "synthetic"))
+
+        ancestor = E.Element("node", {
+            "content-desc": "You, fp, synthetic, now", "package": capture.PACKAGE,
+        })
+        editor = E.SubElement(ancestor, "node", {
+            "class": "androidx.appcompat.widget.AppCompatEditText",
+            "content-desc": "synthetic", "package": capture.PACKAGE,
+        })
+        child = E.SubElement(editor, "node", {
+            "content-desc": "synthetic", "package": capture.PACKAGE,
+        })
+        self.assertIsNone(capture.message_bubble([ancestor, editor, child], "synthetic"))
+        self.assertTrue(capture.is_editor(editor))
+
+        editable = E.Element("node", {
+            "editable": "true", "content-desc": "synthetic", "package": capture.PACKAGE,
+        })
+        self.assertIsNone(capture.message_bubble([editable], "synthetic"))
+
+    def test_system_notification_and_dialog_text_never_count_as_message_bubbles(self):
+        notification = E.Element("node", {
+            "content-desc": "synthetic", "package": "com.android.systemui",
+        })
+        self.assertIsNone(capture.message_bubble([notification], "synthetic"))
+
+        dialog = E.Element("node", {"package": capture.PACKAGE})
+        marker = E.SubElement(dialog, "node", {
+            "text": "Send to the public room?", "enabled": "true",
+            "package": capture.PACKAGE,
+        })
+        message = E.SubElement(dialog, "node", {
+            "content-desc": "synthetic", "package": capture.PACKAGE,
+        })
+        self.assertIsNone(capture.message_bubble([dialog, marker, message], "synthetic"))
+
+    def test_confirmation_action_is_scoped_to_dialog_without_editor(self):
+        root = E.Element("node", {"package": capture.PACKAGE})
+        editor = E.SubElement(root, "node", {
+            "class": "android.widget.EditText", "package": capture.PACKAGE,
+        })
+        background = E.SubElement(root, "node", {
+            "text": "Send in public", "enabled": "true", "clickable": "true",
+            "package": capture.PACKAGE,
+        })
+        dialog = E.SubElement(root, "node", {"package": capture.PACKAGE})
+        marker = E.SubElement(dialog, "node", {
+            "text": "Send to the public room?", "enabled": "true",
+            "package": capture.PACKAGE,
+        })
+        E.SubElement(dialog, "node", {
+            "text": "Anyone around can read, relay and keep your message. "
+                    "A nickname does not prove an identity.",
+            "enabled": "true", "package": capture.PACKAGE,
+        })
+        E.SubElement(dialog, "node", {
+            "text": "Cancel", "enabled": "true", "clickable": "true",
+            "package": capture.PACKAGE,
+        })
+        confirmation = E.SubElement(dialog, "node", {
+            "text": "Send in public", "enabled": "true", "clickable": "true",
+            "package": capture.PACKAGE,
+        })
+        items = list(root.iter("node"))
+        self.assertIs(capture.confirmation_action(items), confirmation)
+        duplicate = E.SubElement(dialog, "node", {
+            "text": "Send in public", "enabled": "true", "clickable": "true",
+            "package": capture.PACKAGE,
+        })
+        self.assertIsNone(capture.confirmation_action(list(root.iter("node"))))
+        dialog.remove(duplicate)
+        dialog.remove(confirmation)
+        items = list(root.iter("node"))
+        self.assertIsNone(capture.confirmation_action(items))
+
+        root.remove(editor)
+        exterior = E.SubElement(root, "node", {
+            "text": "Send in public", "enabled": "true", "clickable": "true",
+            "package": capture.PACKAGE,
+        })
+        self.assertIsNone(capture.confirmation_action(list(root.iter("node"))))
+
+    def test_send_uses_actionable_controls_scoped_confirmation_and_real_bubble(self):
+        control = E.Element("node", {
+            "enabled": "true", "clickable": "true", "bounds": "[0,0][20,20]",
+            "package": capture.PACKAGE,
+        })
+        dialog = E.Element("node", {"package": capture.PACKAGE})
+        marker = E.SubElement(dialog, "node", {
+            "text": "Send to the public room?", "enabled": "true",
+            "package": capture.PACKAGE,
+        })
+        E.SubElement(dialog, "node", {
+            "text": "Anyone around can read, relay and keep your message. "
+                    "A nickname does not prove an identity.",
+            "enabled": "true", "package": capture.PACKAGE,
+        })
+        E.SubElement(dialog, "node", {
+            "text": "Cancel", "enabled": "true", "clickable": "true",
+            "package": capture.PACKAGE,
+        })
+        confirmation = E.SubElement(dialog, "node", {
+            "text": "Send in public", "enabled": "true", "clickable": "true",
+            "bounds": "[0,0][20,20]", "package": capture.PACKAGE,
+        })
+        bubble = E.Element("node", {
+            "content-desc": "You, fp, synthetic, now", "package": capture.PACKAGE,
+        })
+        observed = []
+        with patch("capture.wait_action", side_effect=[control, control]) as action, \
+             patch("capture.deadline_adb"), \
+             patch("capture.nodes", side_effect=[list(dialog.iter("node")), [bubble]]), \
+             patch("capture.tap") as tap, \
+             patch("capture.bounded_sleep", return_value=True), \
+             patch("capture.time.monotonic", return_value=1.0):
+            capture.send(
+                capture.SERIALS[0], "synthetic", 10.0,
+                observer=lambda *values: observed.append(values), trace_started=0.0,
+            )
+        self.assertEqual(action.call_count, 2)
+        self.assertEqual([call.args[2] for call in tap.call_args_list], [
+            "message_composer", "message_submit", "message_confirmation",
+        ])
+        self.assertIs(tap.call_args_list[-1].args[1], confirmation)
+        self.assertEqual([entry[0] for entry in observed], [
+            "send_requested", "confirmation_tapped", "message_bubble",
+        ])
+
+    def test_shared_product_scenario_requires_foreground_and_remote_bubbles(self):
+        events = []
+        observed = []
+        target = E.Element("node", {
+            "enabled": "true", "clickable": "true", "bounds": "[0,0][20,20]",
+        })
+        with patch("capture.ThreadPoolExecutor", ImmediateExecutor), \
+             patch("capture.onboarding") as onboarding, \
+             patch("capture.wait_fgs_active") as fgs, \
+             patch("capture.wait_ui", return_value=target) as wait_ui, \
+             patch("capture.wait_action", return_value=target) as wait_action, \
+             patch("capture.tap"), patch("capture.send") as send, \
+             patch("capture.wait_activity_resumed") as resumed, \
+             patch("capture.wait_message_bubble") as remote, \
+             patch("capture.deadline_adb"), \
+             patch("capture.quit_via_notification"), \
+             patch("capture.time.monotonic", return_value=1.0):
+            capture.run_product_scenario(
+                100.0, events.append,
+                observer=lambda *values: observed.append(values),
+            )
+        self.assertEqual(onboarding.call_count, 2)
+        self.assertEqual(fgs.call_count, 3)
+        self.assertEqual([call.args[1] for call in wait_ui.call_args_list], [
+            "1 phone in range", "1 phone in range", "Mesh running",
+        ])
+        self.assertEqual(wait_action.call_count, 3)
+        self.assertEqual(send.call_count, 3)
+        self.assertEqual(resumed.call_count, 3)
+        self.assertEqual(remote.call_count, 3)
+        self.assertTrue(all(call.kwargs["remote"] for call in remote.call_args_list))
+        self.assertEqual(events, list(capture.SCENARIO_STEPS[1:]))
+        self.assertIn("room_open_tapped", [entry[0] for entry in observed])
+        self.assertIn("activity_resumed_after_notification", [entry[0] for entry in observed])
+        self.assertIn("quit_completed", [entry[0] for entry in observed])
 
     def test_diagnostic_identifies_missing_commands_without_paths(self):
         commands = {"sdkmanager": False}

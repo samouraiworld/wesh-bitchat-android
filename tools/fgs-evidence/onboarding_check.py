@@ -6,6 +6,7 @@ import os
 import math
 from pathlib import Path
 import sys
+from threading import Lock
 import time
 
 from capture import (
@@ -25,6 +26,7 @@ APK_NAME = "wesh108-test-signed.apk"
 ONBOARDING_LIMIT_SECONDS = 120
 CONTROLLER_LIMIT_SECONDS = 390
 MAX_TRACE_EVENTS = 64
+TRACE_PREFIX_EVENTS = 8
 TRACE_PREFIX = "ONBOARDING_TRACE "
 LOCAL_GATES = frozenset({
     "controller_timeout", "ui_cleanup_incomplete_a", "unclassified_controller_failure",
@@ -45,6 +47,7 @@ def empty_trace_payload():
 class ClosedOnboardingTrace:
     def __init__(self):
         self.payload = empty_trace_payload()
+        self.lock = Lock()
 
     def __call__(self, event, attempt, allocated, elapsed):
         values = (allocated, elapsed)
@@ -53,17 +56,20 @@ class ClosedOnboardingTrace:
                 or not all(type(value) in (int, float) and math.isfinite(value)
                            and 0 <= value <= CONTROLLER_LIMIT_SECONDS for value in values)):
             raise ValueError("Invalid closed onboarding trace event")
-        self.payload["counts"][event] += 1
         record = {
             "event": event,
             "attempt": attempt,
             "allocatedSeconds": round(float(allocated), 3),
             "elapsedSeconds": round(float(elapsed), 3),
         }
-        if len(self.payload["events"]) < MAX_TRACE_EVENTS:
-            self.payload["events"].append(record)
-        else:
-            self.payload["droppedEvents"] += 1
+        with self.lock:
+            self.payload["counts"][event] += 1
+            if len(self.payload["events"]) < MAX_TRACE_EVENTS:
+                self.payload["events"].append(record)
+            else:
+                self.payload["droppedEvents"] += 1
+                self.payload["events"].pop(TRACE_PREFIX_EVENTS)
+                self.payload["events"].append(record)
 
 
 def validated_trace_payload(trace):
