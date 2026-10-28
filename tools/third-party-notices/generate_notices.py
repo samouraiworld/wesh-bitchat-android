@@ -3,7 +3,8 @@
 
 The notices cover what the release APK ships:
   * the Android libraries on the release runtime classpath, with the licences their Maven POMs
-    declare and the licence or notice files packaged in the artifact;
+    declare, the licence or notice files packaged in the artifact, and the Apache-2.0 NOTICE
+    file of its upstream repository when the artifact does not package it;
   * the fonts in res/raw;
   * the Arti (Tor) native library: every crate of tools/arti-build/Cargo.lock that the Android
     build compiles, found by walking the lock from the JNI wrapper and keeping only the
@@ -49,6 +50,23 @@ LICENSE_FILE = re.compile(r"(?i)^(licen[cs]e|copying|notice|unlicense|copyright)
 #     the submodule commit of ACINQ/secp256k1-kmp v0.24.0
 #   spdx/*.txt: spdx/license-list-data v3.27.0, text/<id>.txt
 MAVEN_LICENSE_FILES = {"no.nordicsemi.android:ble": "no.nordicsemi.android-ble-2.11.0-LICENSE"}
+# Apache-2.0 NOTICE files (section 4(d)) that the upstream repository ships but the artifact does
+# not, copied verbatim into licenses/ from the repository at the tag of the version shipped:
+#   zxing-3.5.4-NOTICE: zxing/zxing, NOTICE at tag zxing-3.5.4
+#   kotlinx.coroutines-1.11.0-NOTICE.txt: Kotlin/kotlinx.coroutines, license/NOTICE.txt at tag 1.11.0
+#   kotlinx.serialization-1.7.3-NOTICE.txt: Kotlin/kotlinx.serialization, license/NOTICE.txt at tag v1.7.3
+#   kotlinx-atomicfu-0.28.0-NOTICE.txt: Kotlin/kotlinx-atomicfu, license/NOTICE.txt at tag 0.28.0
+#   kotlin-2.4.10-NOTICE.txt: JetBrains/kotlin, license/NOTICE.txt at tag v2.4.10
+MAVEN_NOTICE_FILES = {
+    ("com.google.zxing", "core", "3.5.4"): "zxing-3.5.4-NOTICE",
+    **{("org.jetbrains.kotlinx", a, "1.11.0"): "kotlinx.coroutines-1.11.0-NOTICE.txt"
+       for a in ("kotlinx-coroutines-core", "kotlinx-coroutines-core-jvm", "kotlinx-coroutines-android")},
+    **{("org.jetbrains.kotlinx", a, "1.7.3"): "kotlinx.serialization-1.7.3-NOTICE.txt"
+       for a in ("kotlinx-serialization-core", "kotlinx-serialization-core-jvm")},
+    **{("org.jetbrains.kotlinx", a, "0.28.0"): "kotlinx-atomicfu-0.28.0-NOTICE.txt" for a in ("atomicfu", "atomicfu-jvm")},
+    **{("org.jetbrains.kotlin", a, "2.4.10"): "kotlin-2.4.10-NOTICE.txt"
+       for a in ("kotlin-stdlib", "kotlin-stdlib-common", "kotlin-parcelize-runtime")},
+}
 EMBEDDED = [
     ("libsecp256k1 (native code inside fr.acinq.secp256k1:secp256k1-kmp-jni-android)", "MIT",
      "libsecp256k1-6e2c8bc4-COPYING"),
@@ -374,10 +392,14 @@ def packaged_license_texts(path, scratch):
 
 def android_components(args, texts, scratch):
     lines = []
+    notice_artifacts = {(group, artifact) for group, artifact, _ in MAVEN_NOTICE_FILES}
     for group, artifact, version in runtime_coordinates(args.gradle_deps):
         label = f"{group}:{artifact} {version}"
         if artifact.endswith("-bom"):
             continue  # A platform: version constraints only, nothing ships.
+        notice = MAVEN_NOTICE_FILES.get((group, artifact, version))
+        if notice is None and (group, artifact) in notice_artifacts:
+            sys.exit(f"{label}: vendor the upstream NOTICE file of this version in licenses/")
         if find_file(args.gradle_cache, group, artifact, version, [".pom"]) is None:
             sys.exit(f"{label} is not in the Gradle cache: build the release once first")
         names = pom_licenses(args.gradle_cache, group, artifact, version)
@@ -389,15 +411,16 @@ def android_components(args, texts, scratch):
         packaged = packaged_license_texts(binary, scratch)
         for leaf, file in packaged:
             texts.add(leaf, file, label)
-        if packaged:
-            continue
         vendored = MAVEN_LICENSE_FILES.get(f"{group}:{artifact}")
-        if vendored:
-            texts.add(vendored, os.path.join(VENDORED, vendored), label)
-        elif "apache" in " ".join(names).lower():
-            texts.add_spdx("Apache-2.0", label)
-        else:
-            sys.exit(f"no licence file for {label} ({licence}): vendor its upstream file in licenses/")
+        if not packaged:
+            if vendored:
+                texts.add(vendored, os.path.join(VENDORED, vendored), label)
+            elif "apache" in " ".join(names).lower():
+                texts.add_spdx("Apache-2.0", label)
+            else:
+                sys.exit(f"no licence file for {label} ({licence}): vendor its upstream file in licenses/")
+        if notice:
+            texts.add(notice, os.path.join(VENDORED, notice), label)
     for name, licence, file in EMBEDDED:
         lines.append(f"{name} — {licence}")
         texts.add(file, os.path.join(VENDORED, file), name)
