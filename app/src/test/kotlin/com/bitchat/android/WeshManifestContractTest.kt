@@ -121,7 +121,11 @@ class WeshManifestContractTest {
 
     @Test
     fun `no app data leaves the phone by backup or device transfer`() {
-        val domains = listOf("root", "sharedpref", "database", "file", "external")
+        // The device_* domains are device-protected (direct boot) storage, which the wipe also clears.
+        val domains = listOf(
+            "root", "sharedpref", "database", "file", "external",
+            "device_root", "device_sharedpref", "device_database", "device_file"
+        )
         fun excludesAll(rules: String) = domains.forEach { domain ->
             assertTrue("$domain must be excluded whole", rules.contains("""<exclude domain="$domain" path="."/>"""))
         }
