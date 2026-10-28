@@ -154,6 +154,8 @@ class SeenMessageStore private constructor(
     }
 
     private data class StorePayload(
+        // Builds 108 and 109 had no annotation here and R8 stored the field as "a"; read both.
+        @SerializedName(value = "delivered", alternate = ["a"])
         val delivered: List<String> = emptyList(),
         // Keep the existing JSON field name for backward-compatible secure-store migration.
         @SerializedName("read")
