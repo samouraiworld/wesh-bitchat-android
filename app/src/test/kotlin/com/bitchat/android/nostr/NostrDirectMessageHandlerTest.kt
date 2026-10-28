@@ -104,8 +104,7 @@ class NostrDirectMessageHandlerTest {
             content = requireNotNull(
                 NostrEmbeddedBitChat.encodePMForNostrNoRecipient(
                     content = "first",
-                    messageID = firstId,
-                    senderPeerID = "0011223344556677"
+                    messageID = firstId
                 )
             ),
             sender = sender,
@@ -117,8 +116,7 @@ class NostrDirectMessageHandlerTest {
             content = requireNotNull(
                 NostrEmbeddedBitChat.encodePMForNostrNoRecipient(
                     content = "second",
-                    messageID = secondId,
-                    senderPeerID = "0011223344556677"
+                    messageID = secondId
                 )
             ),
             sender = sender,
@@ -190,8 +188,7 @@ class NostrDirectMessageHandlerTest {
                 content = requireNotNull(
                     NostrEmbeddedBitChat.encodePMForNostrNoRecipient(
                         content = "text",
-                        messageID = textId,
-                        senderPeerID = "0011223344556677"
+                        messageID = textId
                     )
                 ),
                 sender = sender,

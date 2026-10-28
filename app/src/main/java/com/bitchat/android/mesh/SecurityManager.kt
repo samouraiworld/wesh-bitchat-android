@@ -102,8 +102,10 @@ class SecurityManager(private val encryptionService: EncryptionService, private 
         // Record only authenticated packets. Recording an attacker-controlled
         // invalid packet first would let it poison duplicate detection for a
         // later legitimate packet with the same timestamp and payload.
-        processedMessages.add(messageID)
-        messageTimestamps[messageID] = currentTime
+        synchronized(messageTimestamps) {
+            processedMessages.add(messageID)
+            messageTimestamps[messageID] = currentTime
+        }
 
         return true
     }
@@ -141,8 +143,10 @@ class SecurityManager(private val encryptionService: EncryptionService, private 
             // flow and reports whether this exact frame completed authentication. Never infer that
             // from ambient session state: a rejected replacement may leave the old session active.
             val result = encryptionService.processHandshakeMessageWithResult(packet.payload, peerID)
-            processedKeyExchanges.add(exchangeKey)
-            keyExchangeTimestamps[exchangeKey] = System.currentTimeMillis()
+            synchronized(keyExchangeTimestamps) {
+                processedKeyExchanges.add(exchangeKey)
+                keyExchangeTimestamps[exchangeKey] = System.currentTimeMillis()
+            }
             
             if (result.response != null) {
                 // Send handshake response through delegate
@@ -354,7 +358,7 @@ class SecurityManager(private val encryptionService: EncryptionService, private 
             
             if (processedKeyExchanges.isNotEmpty()) {
                 appendLine("Key Exchange History:")
-                processedKeyExchanges.take(10).forEach { exchange ->
+                synchronized(processedKeyExchanges) { processedKeyExchanges.take(10) }.forEach { exchange ->
                     appendLine("  - $exchange")
                 }
                 if (processedKeyExchanges.size > 10) {
@@ -383,8 +387,10 @@ class SecurityManager(private val encryptionService: EncryptionService, private 
     fun forgetForRedelivery(packet: BitchatPacket, peerID: String, nowMs: Long = System.currentTimeMillis()) {
         val messageID = generateMessageID(packet, peerID)
         relaySuppressed[messageID] = nowMs
-        processedMessages.remove(messageID)
-        messageTimestamps.remove(messageID)
+        synchronized(messageTimestamps) {
+            processedMessages.remove(messageID)
+            messageTimestamps.remove(messageID)
+        }
     }
 
     /** True for a packet already relayed once before its local delivery was deferred. */
@@ -404,41 +410,46 @@ class SecurityManager(private val encryptionService: EncryptionService, private 
                 .forEach { relaySuppressed.remove(it.key) }
         }
 
-        val messagesToRemove = messageTimestamps.entries.filter { (_, timestamp) ->
-            timestamp < cutoffTime
-        }.map { it.key }
-
-        messagesToRemove.forEach { messageId ->
-            messageTimestamps.remove(messageId)
-            processedMessages.remove(messageId)
+        // Synchronized collection wrappers protect single operations, not iteration. Hold each
+        // timestamp/set pair through expiry and capacity eviction so cleanup cannot traverse a
+        // set that the receive path is writing, or drop an entry recorded meanwhile.
+        synchronized(messageTimestamps) {
+            synchronized(processedMessages) {
+                val messagesToRemove = messageTimestamps.entries.filter { (_, timestamp) ->
+                    timestamp < cutoffTime
+                }.map { it.key }
+                messagesToRemove.forEach { messageId ->
+                    messageTimestamps.remove(messageId)
+                    processedMessages.remove(messageId)
+                }
+                if (processedMessages.size > MAX_PROCESSED_MESSAGES) {
+                    val excess = processedMessages.size - MAX_PROCESSED_MESSAGES
+                    val toRemove = processedMessages.take(excess)
+                    processedMessages.removeAll(toRemove.toSet())
+                    removeFromMessageTimestamps(toRemove)
+                }
+            }
         }
 
-        // Limit the size of processed messages set
-        if (processedMessages.size > MAX_PROCESSED_MESSAGES) {
-            val excess = processedMessages.size - MAX_PROCESSED_MESSAGES
-            val toRemove = processedMessages.take(excess)
-            processedMessages.removeAll(toRemove.toSet())
-            removeFromMessageTimestamps(toRemove)
-        }
-
-        // Expire handshake dedup entries by time so a delayed same-ephemeral delivery
-        // (e.g. a re-handshake retry after a failed attempt) is not blocked forever.
-        val keyExchangeCutoff = nowMs - KEY_EXCHANGE_DEDUP_TIMEOUT
-        val keyExchangesToRemove = keyExchangeTimestamps.entries.filter { (_, timestamp) ->
-            timestamp < keyExchangeCutoff
-        }.map { it.key }
-
-        keyExchangesToRemove.forEach { exchangeKey ->
-            keyExchangeTimestamps.remove(exchangeKey)
-            processedKeyExchanges.remove(exchangeKey)
-        }
-
-        // Limit the size of processed key exchanges set
-        if (processedKeyExchanges.size > MAX_PROCESSED_KEY_EXCHANGES) {
-            val excess = processedKeyExchanges.size - MAX_PROCESSED_KEY_EXCHANGES
-            val toRemove = processedKeyExchanges.take(excess)
-            processedKeyExchanges.removeAll(toRemove.toSet())
-            toRemove.forEach { keyExchangeTimestamps.remove(it) }
+        synchronized(keyExchangeTimestamps) {
+            synchronized(processedKeyExchanges) {
+                // Expire handshake dedup entries by time so a delayed same-ephemeral delivery
+                // (e.g. a re-handshake retry after a failed attempt) is not blocked forever.
+                val keyExchangeCutoff = nowMs - KEY_EXCHANGE_DEDUP_TIMEOUT
+                val keyExchangesToRemove = keyExchangeTimestamps.entries.filter { (_, timestamp) ->
+                    timestamp < keyExchangeCutoff
+                }.map { it.key }
+                keyExchangesToRemove.forEach { exchangeKey ->
+                    keyExchangeTimestamps.remove(exchangeKey)
+                    processedKeyExchanges.remove(exchangeKey)
+                }
+                if (processedKeyExchanges.size > MAX_PROCESSED_KEY_EXCHANGES) {
+                    val excess = processedKeyExchanges.size - MAX_PROCESSED_KEY_EXCHANGES
+                    val toRemove = processedKeyExchanges.take(excess)
+                    processedKeyExchanges.removeAll(toRemove.toSet())
+                    toRemove.forEach { keyExchangeTimestamps.remove(it) }
+                }
+            }
         }
     }
     
@@ -456,10 +467,14 @@ class SecurityManager(private val encryptionService: EncryptionService, private 
      */
     fun clearAllData() {
         relaySuppressed.clear()
-        processedMessages.clear()
-        processedKeyExchanges.clear()
-        messageTimestamps.clear()
-        keyExchangeTimestamps.clear()
+        synchronized(messageTimestamps) {
+            processedMessages.clear()
+            messageTimestamps.clear()
+        }
+        synchronized(keyExchangeTimestamps) {
+            processedKeyExchanges.clear()
+            keyExchangeTimestamps.clear()
+        }
     }
     
     /**
