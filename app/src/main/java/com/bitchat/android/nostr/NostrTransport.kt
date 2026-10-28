@@ -310,8 +310,7 @@ class NostrTransport(
             try {
                 val embedded = NostrEmbeddedBitChat.encodeAckForNostrNoRecipient(
                     type = NoisePayloadType.DELIVERED,
-                    messageID = messageID,
-                    senderPeerID = senderPeerID
+                    messageID = messageID
                 )
                 
                 if (embedded == null) return@launch
@@ -343,8 +342,7 @@ class NostrTransport(
             try {
                 val embedded = NostrEmbeddedBitChat.encodeAckForNostrNoRecipient(
                     type = NoisePayloadType.READ_RECEIPT,
-                    messageID = messageID,
-                    senderPeerID = senderPeerID
+                    messageID = messageID
                 )
                 
                 if (embedded == null) return@launch
