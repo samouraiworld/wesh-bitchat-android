@@ -86,13 +86,19 @@ internal enum class BluetoothRefusal { None, Once, Permanent }
 internal enum class BluetoothStepAction { Ask, OpenSettings }
 
 /**
- * Actions offered on the Bluetooth step, primary first. After any refusal both stay reachable:
- * Android also reports a dismissed dialog as permanent, and Settings is the way to allow it later.
+ * Actions offered on the Bluetooth step, primary first. Settings is the way to allow it later.
+ * Android also reports a dismissed dialog as permanent, so a permanent refusal keeps one more
+ * "Continuer"; once Android answers that retry without a dialog, only Settings remains.
  */
-internal fun bluetoothStepActions(refusal: BluetoothRefusal): List<BluetoothStepAction> = when (refusal) {
+internal fun bluetoothStepActions(
+    refusal: BluetoothRefusal,
+    askedAgainAfterPermanent: Boolean = false,
+): List<BluetoothStepAction> = when (refusal) {
     BluetoothRefusal.None -> listOf(BluetoothStepAction.Ask)
     BluetoothRefusal.Once -> listOf(BluetoothStepAction.Ask, BluetoothStepAction.OpenSettings)
-    BluetoothRefusal.Permanent -> listOf(BluetoothStepAction.OpenSettings, BluetoothStepAction.Ask)
+    BluetoothRefusal.Permanent ->
+        if (askedAgainAfterPermanent) listOf(BluetoothStepAction.OpenSettings)
+        else listOf(BluetoothStepAction.OpenSettings, BluetoothStepAction.Ask)
 }
 
 /** Where to allow it later, naming the permission as Android's settings show it. */
@@ -152,6 +158,7 @@ fun OnboardingFlow(
     }
     val context = LocalContext.current
     var refusal by rememberSaveable { mutableStateOf(BluetoothRefusal.None) }
+    var askedAgainAfterPermanent by rememberSaveable { mutableStateOf(false) }
     var bluetoothGranted by rememberSaveable { mutableStateOf(start == OnboardingStart.Notifications) }
     val permissions = paveBluetoothRuntimePermissions(sdkInt)
 
@@ -171,10 +178,14 @@ fun OnboardingFlow(
         val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
             val missing = permissions.filter { result[it] != true && ContextCompat.checkSelfPermission(context, it) != PackageManager.PERMISSION_GRANTED }
             val activity = context.findActivity()
+            val previous = refusal
             refusal = bluetoothRefusal(
                 granted = missing.isEmpty(),
                 shouldShowRationale = activity != null && missing.any { ActivityCompat.shouldShowRequestPermissionRationale(activity, it) },
             )
+            if (previous == BluetoothRefusal.Permanent && refusal == BluetoothRefusal.Permanent) {
+                askedAgainAfterPermanent = true
+            }
             if (refusal == BluetoothRefusal.None) afterBluetooth(true)
         };
         {
@@ -215,6 +226,7 @@ fun OnboardingFlow(
             OnboardingStep.Bluetooth -> BluetoothStep(
                 legacyLocation = sdkInt < Build.VERSION_CODES.S,
                 refusal = refusal,
+                askedAgainAfterPermanent = askedAgainAfterPermanent,
                 onBack = if (canGoBack) ({ step = OnboardingStep.Welcome }) else null,
                 onContinue = request,
                 onOpenSettings = {
@@ -347,6 +359,7 @@ private fun TermsLine() {
 private fun BluetoothStep(
     legacyLocation: Boolean,
     refusal: BluetoothRefusal,
+    askedAgainAfterPermanent: Boolean = false,
     onBack: (() -> Unit)?,
     onContinue: () -> Unit,
     onOpenSettings: () -> Unit,
@@ -382,7 +395,7 @@ private fun BluetoothStep(
             )
             Text(stringResource(bluetoothGrantLaterHint(legacyLocation)), style = WeshType.body, color = c.ink)
         }
-        bluetoothStepActions(refusal).forEachIndexed { index, action ->
+        bluetoothStepActions(refusal, askedAgainAfterPermanent).forEachIndexed { index, action ->
             val label = stringResource(
                 if (action == BluetoothStepAction.Ask) R.string.wesh_pave_continue else R.string.wesh_pave_open_settings
             )

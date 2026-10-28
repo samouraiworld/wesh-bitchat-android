@@ -60,10 +60,20 @@ class WeshWelcomeTest {
             listOf(BluetoothStepAction.Ask, BluetoothStepAction.OpenSettings),
             bluetoothStepActions(BluetoothRefusal.Once)
         )
-        // A dismissed system dialog also reads as permanent: asking again stays possible.
+        // A dismissed system dialog also reads as permanent: asking again stays possible once.
         assertEquals(
             listOf(BluetoothStepAction.OpenSettings, BluetoothStepAction.Ask),
             bluetoothStepActions(BluetoothRefusal.Permanent)
+        )
+        // If Android answers that retry without a dialog, "Continuer" would do nothing: only
+        // Settings remains, so the tap visibly changes the screen.
+        assertEquals(
+            listOf(BluetoothStepAction.OpenSettings),
+            bluetoothStepActions(BluetoothRefusal.Permanent, askedAgainAfterPermanent = true)
+        )
+        assertEquals(
+            listOf(BluetoothStepAction.Ask, BluetoothStepAction.OpenSettings),
+            bluetoothStepActions(BluetoothRefusal.Once, askedAgainAfterPermanent = true)
         )
         val flow = File("src/main/java/com/bitchat/android/ui/pave/OnboardingFlow.kt").readText()
         val activity = File("src/main/java/com/bitchat/android/MainActivity.kt").readText()
