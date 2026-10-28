@@ -13,7 +13,9 @@ class BootCompletedReceiver : BroadcastReceiver() {
         try { MeshServicePreferences.init(context.applicationContext) } catch (_: Exception) { }
 
         if (MeshServicePreferences.isAutoStartEnabled()) {
-            MeshForegroundService.start(context.applicationContext)
+            ForegroundPromotion.attempt("BootCompletedReceiver") {
+                MeshForegroundService.start(context.applicationContext)
+            }
         }
     }
 }

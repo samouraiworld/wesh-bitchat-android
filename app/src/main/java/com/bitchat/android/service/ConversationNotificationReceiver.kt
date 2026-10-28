@@ -45,7 +45,9 @@ class ConversationNotificationReceiver : BroadcastReceiver() {
                         // A notification can outlive the process/service that posted it. Promote
                         // the mesh runtime before dispatch so Android keeps the transport alive
                         // after this short-lived receiver finishes.
-                        MeshForegroundService.start(context.applicationContext)
+                        ForegroundPromotion.attempt("ConversationNotificationReceiver") {
+                            MeshForegroundService.start(context.applicationContext)
+                        }
                         val mesh = MeshServiceHolder.getUnifiedOrCreate(
                             context.applicationContext
                         )
