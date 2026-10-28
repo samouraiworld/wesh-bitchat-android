@@ -78,7 +78,7 @@ object PaveShortcuts {
 internal enum class PaveRoute(val parent: PaveRoute?) {
     Home(null), Public(Home), Private(Home), Requests(Home), Exchange(Home), Settings(Home),
     Profile(Settings), Discretion(Settings), Meeting(Settings), Blocked(Settings), Appearance(Settings),
-    About(Settings), Licenses(About), Erase(Settings),
+    About(Settings), Licenses(About), Notices(Licenses), Erase(Settings),
 }
 
 internal enum class PrivateOpenFollowUp { None, ReturnHome, EndSession, ReturnHomeAndEndSession }
@@ -577,7 +577,8 @@ private fun PaveNavHost(viewModel: ChatViewModel, appearance: WeshAppearance, on
             )
             PaveRoute.Appearance -> AppearanceScreen(appearance, onAppearance, onBack = { go(PaveRoute.Settings) })
             PaveRoute.About -> AboutScreen(BuildConfig.VERSION_NAME, onBack = { go(PaveRoute.Settings) }, onOpenLicenses = { go(PaveRoute.Licenses) })
-            PaveRoute.Licenses -> LicensesScreen(onBack = { go(PaveRoute.About) })
+            PaveRoute.Licenses -> LicensesScreen(onBack = { go(PaveRoute.About) }, onOpenNotices = { go(PaveRoute.Notices) })
+            PaveRoute.Notices -> ThirdPartyNoticesScreen(onBack = { go(PaveRoute.Licenses) })
             PaveRoute.Erase -> HoldToEraseScreen(onErase = { viewModel.panicClearAllData() }, onClose = { go(PaveRoute.Settings) })
         }
     }

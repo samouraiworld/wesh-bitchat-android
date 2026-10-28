@@ -76,12 +76,11 @@
     <string name="wesh_pave_appearance_jour">Day</string>
     <string name="wesh_pave_appearance_auto">Automatic</string>
     <string name="wesh_pave_settings_about">About</string>
-    <string name="wesh_pave_settings_about_value">Source code, licenses, donations</string>
+    <string name="wesh_pave_settings_about_value">Source code, licenses, privacy</string>
     <string name="wesh_pave_settings_footer">Wesh is a free, non-profit app published by Samouraï Coop.</string>
     <string name="wesh_pave_about_version">Version %s</string>
     <string name="wesh_pave_about_source">Source code</string>
     <string name="wesh_pave_about_licenses">Licenses and notices</string>
-    <string name="wesh_pave_about_donate">Donate</string>
     <string name="wesh_pave_about_privacy">Privacy policy</string>
     <string name="wesh_pave_about_terms">Terms of use</string>
     <string name="wesh_pave_opens_browser">Opens in the browser</string>
@@ -89,6 +88,8 @@
     <string name="wesh_pave_licenses_intro">Wesh is free software, under the GPLv3 license.</string>
     <string name="wesh_pave_licenses_full">Read the GPLv3 license</string>
     <string name="wesh_pave_licenses_components">Components used</string>
+    <string name="wesh_pave_licenses_notices">Read the full notices</string>
+    <string name="wesh_pave_licenses_notices_title">Third-party notices</string>
     <string name="wesh_pave_exchange_success">Exchange done</string>
     <string name="wesh_pave_exchange_open_chat">Open the chat</string>
     <string name="wesh_pave_internet_disclosure_full">Internet mode goes through Tor and public Nostr relays that Wesh does not run. Relays see neither your IP address nor the content, but they see the recipient’s Internet key, the time and size of messages, and can link what you send to your key. They may keep the encrypted messages. Anyone with your QR code knows your Internet key. Off by default; emergency erase turns it off.</string>
