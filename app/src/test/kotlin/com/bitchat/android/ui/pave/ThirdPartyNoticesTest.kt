@@ -1,14 +1,23 @@
 package com.bitchat.android.ui.pave
 
 import android.app.Application
+import android.content.Context
+import android.content.ContextWrapper
+import android.content.res.Resources
 import android.content.pm.ActivityInfo
 import androidx.activity.ComponentActivity
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.test.core.app.ApplicationProvider
+import com.bitchat.android.R
 import java.io.File
+import java.io.InputStream
 import java.security.MessageDigest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -80,15 +89,43 @@ class ThirdPartyNoticesTest {
         assertTrue(notices.contains("Permission is hereby granted, free of charge"))
     }
 
-    @Test fun `the licences screen opens the full notices`() {
+    @Test fun `the licences screen opens the full notices in both shipped languages`() {
+        assertEquals("Read the full notices", PaveStringResources.strings("values").getValue("wesh_pave_licenses_notices"))
+        assertEquals("Lire les mentions complètes", PaveStringResources.strings("values-fr").getValue("wesh_pave_licenses_notices"))
         var opened = 0
-        compose.setContent { WeshPaveTheme { LicensesScreen(onBack = {}, onOpenNotices = { opened++ }) } }
-        compose.onNodeWithText("Read the full notices").performScrollTo().performClick()
+        setContent { LicensesScreen(onBack = {}, onOpenNotices = { opened++ }) }
+        compose.onNodeWithText("label-${R.string.wesh_pave_licenses_notices}").performScrollTo().performClick()
         compose.runOnIdle { assertEquals(1, opened) }
     }
 
     @Test fun `the full notices screen shows the shipped file`() {
-        compose.setContent { WeshPaveTheme { ThirdPartyNoticesScreen(onBack = {}) } }
+        setContent { ThirdPartyNoticesScreen(onBack = {}) }
         compose.onNodeWithText("Wesh — third-party notices", substring = true).assertExists()
+    }
+
+    private fun setContent(content: @Composable () -> Unit) {
+        compose.setContent {
+            val shipped = ShippedResources(LocalContext.current)
+            CompositionLocalProvider(LocalContext provides shipped, LocalResources provides shipped.resources) {
+                WeshPaveTheme { content() }
+            }
+        }
+    }
+
+    /** Labels strings by id, as the other Pavé screen tests do, and serves the shipped notices file. */
+    private class ShippedResources(base: Context) : ContextWrapper(base) {
+        @Suppress("DEPRECATION")
+        private val labels = object : Resources(base.assets, base.resources.displayMetrics, base.resources.configuration) {
+            override fun getText(id: Int): CharSequence = "label-$id"
+            override fun getString(id: Int): String = "label-$id"
+            override fun getString(id: Int, vararg formatArgs: Any?): String =
+                (listOf("label-$id") + formatArgs).joinToString(" ")
+            override fun openRawResource(id: Int): InputStream {
+                check(id == R.raw.third_party_notices)
+                return File("src/main/res/raw/third_party_notices.txt").inputStream()
+            }
+        }
+
+        override fun getResources(): Resources = labels
     }
 }

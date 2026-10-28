@@ -194,13 +194,17 @@ def rust_components(args, texts):
 def runtime_coordinates(path):
     coordinates = set()
     for line in read(path).splitlines():
-        match = re.search(r"[+\\]--- ([\w.\-]+):([\w.\-]+):(\S+)(.*)$", line)
+        # "group:artifact:version", "group:artifact:version -> resolved" or, for versions a
+        # platform sets, "group:artifact -> resolved".
+        match = re.search(r"[+\\]--- ([\w.\-]+):([\w.\-]+)(?::([^\s:]+))?(.*)$", line)
         if not match or "(c)" in match.group(4) or "(n)" in match.group(4):
             continue
         group, artifact, version = match.group(1), match.group(2), match.group(3)
         resolved = re.search(r"-> (\S+)", match.group(4))
         if resolved:
             version = resolved.group(1)
+        if version is None:
+            sys.exit(f"unresolved version in dependency report line: {line}")
         coordinates.add((group, artifact, version))
     return sorted(coordinates)
 

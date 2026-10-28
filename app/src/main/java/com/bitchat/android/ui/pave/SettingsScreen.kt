@@ -28,7 +28,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
@@ -229,7 +229,7 @@ fun LicensesScreen(onBack: () -> Unit, onOpenNotices: () -> Unit, modifier: Modi
 @Composable
 fun ThirdPartyNoticesScreen(onBack: () -> Unit, modifier: Modifier = Modifier) {
     val c = WeshPave.colors
-    val resources = LocalContext.current.resources
+    val resources = LocalResources.current
     val paragraphs = remember(resources) {
         resources.openRawResource(R.raw.third_party_notices).bufferedReader().use { it.readText() }
             .split("\n\n").filter { it.isNotBlank() }
