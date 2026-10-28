@@ -36,6 +36,8 @@
     <string name="wesh_pave_bt_legacy_no_gps">Wesh n’utilise pas votre position.</string>
     <string name="wesh_pave_continue">Continuer</string>
     <string name="wesh_pave_bt_denied">Sans Bluetooth, Wesh ne trouve personne autour.</string>
+    <string name="wesh_pave_bt_grant_later">Vous pourrez l’autoriser plus tard : dans les réglages de Wesh, ouvrez Autorisations, puis autorisez « Appareils à proximité ».</string>
+    <string name="wesh_pave_bt_grant_later_legacy">Vous pourrez l’autoriser plus tard : dans les réglages de Wesh, ouvrez Autorisations, puis autorisez « Position ».</string>
     <string name="wesh_pave_connexion_title">Connexion</string>
     <string name="wesh_pave_bt_active">Bluetooth actif</string>
     <string name="wesh_pave_bt_off_body">Vérifiez le Bluetooth et les autorisations. Sous Android 11 ou antérieur, activez aussi la localisation pour détecter les téléphones autour. Le mode Internet reste accessible.</string>
