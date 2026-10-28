@@ -121,10 +121,39 @@ class BluetoothGattClientCallbacksTest {
     )
 
     private class RecordingWakeLock : ScanWindowWakeLock {
+        class Window { var held = true }
         val events = mutableListOf<String>()
-        var held = false
-        override fun acquire(timeoutMs: Long) { events += "acquire:$timeoutMs"; held = true }
-        override fun release() { if (held) events += "release"; held = false }
+        val windows = mutableListOf<Window>()
+        val held get() = windows.any { it.held }
+        override fun acquire(timeoutMs: Long): ScanWindowWakeLock.Held {
+            events += "acquire:$timeoutMs"
+            val window = Window().also { windows += it }
+            return ScanWindowWakeLock.Held {
+                if (window.held) events += "release"
+                window.held = false
+            }
+        }
+    }
+
+    @Test fun `a replaced duty schedule releases its own window and leaves the new one held`() {
+        whenever(power.profile).thenReturn(MutableStateFlow(PowerProfileResolver.resolve(100, false, true, false)))
+        val wake = RecordingWakeLock()
+        val modern = clientForSdk(Build.VERSION_CODES.S, scanWindowWakeLock = wake)
+        try {
+            assertTrue(modern.start())
+            scope.runCurrent()
+            assertEquals(1, wake.windows.size)
+
+            modern.applyPowerProfile(PowerProfileResolver.resolve(100, false, true, true))
+            scope.runCurrent()
+            assertEquals(2, wake.windows.size)
+            assertFalse("the replaced window is released", wake.windows[0].held)
+            assertTrue("the new window stays held", wake.windows[1].held)
+        } finally {
+            modern.stop()
+        }
+        scope.runCurrent()
+        assertFalse(wake.held)
     }
 
     @Test fun `background duty window holds a bounded wake lock until its scan stops`() {

@@ -649,13 +649,13 @@ class BluetoothGattClientManager(
         while (true) {
             // The CPU stays awake for the ON window only, so its stop runs on time with the
             // screen off. The off window sleeps normally.
-            scanWindowWakeLock.acquire(ScanWindowWakeLock.timeoutFor(schedule.scanOnMs))
+            val window = scanWindowWakeLock.acquire(ScanWindowWakeLock.timeoutFor(schedule.scanOnMs))
             try {
                 if (!applyScanState(true, ownerGeneration)) break
                 delay(schedule.scanOnMs)
                 if (!applyScanState(false, ownerGeneration)) break
             } finally {
-                scanWindowWakeLock.release()
+                window.release()
             }
             delay(schedule.scanOffMs)
         }
