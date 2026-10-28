@@ -28,6 +28,7 @@ import kotlinx.coroutines.launch
 class MeshForegroundService : Service() {
 
     companion object {
+        private const val TAG = "MeshForegroundService"
         private const val CHANNEL_ID = "bitchat_mesh_service"
         private const val NOTIFICATION_ID = 10001
         internal const val FOREGROUND_SERVICE_TYPE = ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
@@ -195,7 +196,7 @@ class MeshForegroundService : Service() {
                 if (backgroundRequested() && hasAllRequiredPermissions() && !isInForeground) {
                     val count = getUnifiedActivePeerCount()
                     val n = buildNotification(count)
-                    startForegroundCompat(n)
+                    if (!startForegroundCompat(n)) return stopAfterRefusedPromotion()
                     isInForeground = true
                     lastNotifiedPeerCount = count
                 } else {
@@ -224,7 +225,7 @@ class MeshForegroundService : Service() {
         if (backgroundRequested() && hasAllRequiredPermissions() && !isInForeground) {
             val count = getUnifiedActivePeerCount()
             val notification = buildNotification(count)
-            startForegroundCompat(notification)
+            if (!startForegroundCompat(notification)) return stopAfterRefusedPromotion()
             isInForeground = true
             lastNotifiedPeerCount = count
         }
@@ -270,8 +271,7 @@ class MeshForegroundService : Service() {
         }
         val count = getUnifiedActivePeerCount()
         if (backgroundRequested() && hasAllRequiredPermissions()) {
-            if (lastNotifiedPeerCount != count) {
-                startForegroundCompat(buildNotification(count))
+            if (lastNotifiedPeerCount != count && startForegroundCompat(buildNotification(count))) {
                 lastNotifiedPeerCount = count
             }
         } else if (force) {
@@ -367,13 +367,29 @@ class MeshForegroundService : Service() {
         }
     }
 
-    private fun startForegroundCompat(notification: Notification) {
-        if (Build.VERSION.SDK_INT >= 34) {
-            // BLE mesh only: the manifest declares connectedDevice and nothing else.
-            startForeground(NOTIFICATION_ID, notification, FOREGROUND_SERVICE_TYPE)
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
+    /** False when Android refuses the promotion; the caller must not claim the foreground state. */
+    private fun startForegroundCompat(notification: Notification): Boolean =
+        ForegroundPromotion.attempt(TAG) {
+            if (Build.VERSION.SDK_INT >= 34) {
+                // BLE mesh only: the manifest declares connectedDevice and nothing else.
+                startForeground(NOTIFICATION_ID, notification, FOREGROUND_SERVICE_TYPE)
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
         }
+
+    /**
+     * A refused promotion leaves no foreground service to run: stop this one before Android stops
+     * it. The mesh stays with the app process; the next app launch promotes the service again.
+     */
+    private fun stopAfterRefusedPromotion(): Int {
+        startupJob?.cancel()
+        startupJob = null
+        isInForeground = false
+        lastNotifiedPeerCount = null
+        clearMeshNotifications()
+        stopSelf()
+        return START_NOT_STICKY
     }
 
     override fun onDestroy() {
