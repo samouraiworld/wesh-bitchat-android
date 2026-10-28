@@ -39,6 +39,15 @@ class WeshLinksTest {
     }
 
     @Test
+    fun `the app links to no donation page`() {
+        // The site keeps its donation page; the app itself does not ask for money.
+        val sources = File("src/main/java").walkTopDown().filter { it.extension == "kt" }.toList()
+        assertEquals(emptyList<String>(), sources.filter { Regex("(?i)donat|/dons\\b").containsMatchIn(it.readText()) }.map { it.name })
+        val strings = File("src/main/res").walkTopDown().filter { it.name.startsWith("strings") && it.extension == "xml" }.toList()
+        assertEquals(emptyList<String>(), strings.filter { Regex("(?i)donat|\\bdons\\b|faire un don").containsMatchIn(it.readText()) }.map { it.path })
+    }
+
+    @Test
     fun `the report address is defined once`() {
         assertEquals("support@samourai.coop", WeshLinks.REPORT_EMAIL)
         val sources = File("src/main/java").walkTopDown().filter { it.extension == "kt" }.toList()

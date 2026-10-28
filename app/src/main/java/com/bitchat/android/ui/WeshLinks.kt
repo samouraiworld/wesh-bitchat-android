@@ -5,7 +5,6 @@ internal object WeshLinks {
     const val TERMS_URL = "https://wesh.samourai.app/conditions"
     const val PRIVACY_URL_FR = "https://wesh.samourai.app/confidentialite"
     const val PRIVACY_URL_EN = "https://wesh.samourai.app/en/privacy"
-    const val DONATIONS_URL = "https://wesh.samourai.app/dons"
     const val SOURCE_URL = "https://github.com/samouraiworld/wesh-bitchat-android"
     const val GPL3_URL = "https://www.gnu.org/licenses/gpl-3.0.html"
 

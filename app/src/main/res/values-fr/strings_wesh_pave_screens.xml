@@ -77,12 +77,11 @@
     <string name="wesh_pave_appearance_jour">Jour</string>
     <string name="wesh_pave_appearance_auto">Automatique</string>
     <string name="wesh_pave_settings_about">À propos</string>
-    <string name="wesh_pave_settings_about_value">Code source, licences, dons</string>
+    <string name="wesh_pave_settings_about_value">Code source, licences, confidentialité</string>
     <string name="wesh_pave_settings_footer">Wesh est une app libre et à but non lucratif, éditée par Samouraï Coop.</string>
     <string name="wesh_pave_about_version">Version %s</string>
     <string name="wesh_pave_about_source">Code source</string>
     <string name="wesh_pave_about_licenses">Licences et mentions</string>
-    <string name="wesh_pave_about_donate">Faire un don</string>
     <string name="wesh_pave_about_privacy">Confidentialité</string>
     <string name="wesh_pave_about_terms">Conditions d’utilisation</string>
     <string name="wesh_pave_opens_browser">S’ouvre dans le navigateur</string>
@@ -90,6 +89,8 @@
     <string name="wesh_pave_licenses_intro">Wesh est un logiciel libre, sous licence GPLv3.</string>
     <string name="wesh_pave_licenses_full">Lire la licence GPLv3</string>
     <string name="wesh_pave_licenses_components">Composants utilisés</string>
+    <string name="wesh_pave_licenses_notices">Lire les mentions complètes</string>
+    <string name="wesh_pave_licenses_notices_title">Mentions des composants</string>
     <string name="wesh_pave_exchange_success">Échange réussi</string>
     <string name="wesh_pave_exchange_open_chat">Ouvrir la discussion</string>
     <string name="wesh_pave_internet_disclosure_full">Le mode Internet passe par Tor et par des relais Nostr publics que Wesh n\'exploite pas. Les relais ne voient ni votre adresse IP ni le contenu, mais voient la clé Internet du destinataire, l\'heure et la taille des messages, et peuvent relier vos envois à votre clé. Ils peuvent conserver les messages chiffrés. Quiconque a votre QR connaît votre clé Internet. Désactivé par défaut ; l\'effacement d\'urgence le désactive.</string>
