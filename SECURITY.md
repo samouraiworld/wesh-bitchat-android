@@ -4,7 +4,7 @@ Wesh is an emergency messenger built on a fork of [BitChat Android](https://gith
 
 ## Reporting a vulnerability
 
-**Email [security@samourai.coop](mailto:security@samourai.coop).** Do not report security issues through the upstream BitChat project: it does not ship Wesh and cannot fix it.
+**Email [security@samourai.coop](mailto:security@samourai.coop)**, or use GitHub's private vulnerability reporting: [Report a vulnerability](https://github.com/samouraiworld/wesh-bitchat-android/security/advisories/new). Do not report security issues through the upstream BitChat project: it does not ship Wesh and cannot fix it.
 
 Please do not open a public issue for anything that could put people at risk before a fix ships. Wesh is meant for people in emergencies and hostile network environments; a public proof-of-concept can be acted on faster than a patch can reach them.
 
@@ -12,7 +12,7 @@ A useful report says what an attacker can do, against which build (Google Play v
 
 ## What to expect
 
-Wesh is maintained by a small team. The aim is to acknowledge reports within a week and to move on confirmed vulnerabilities immediately. You'll be kept in the loop by email, and credited in the fix unless you'd rather not be. There is no bug bounty.
+Wesh is maintained by a small team. The aim is to acknowledge reports within a week and to move on confirmed vulnerabilities immediately. You'll be kept in the loop by email or in the advisory thread, and credited in the fix unless you'd rather not be. There is no bug bounty.
 
 If the issue also affects upstream BitChat, we will coordinate disclosure with its maintainers, and tell you before we do.
 
