@@ -100,7 +100,9 @@ class BluetoothGattClientCallbacksTest {
         afterScanScheduleOwnerCheck: ((Boolean) -> Unit)? = null,
         onRoleFailure: (Long, String, BluetoothRoleFailureAction) -> Unit = { owner, reason, action ->
             roleFailures += Triple(owner, reason, action)
-        }
+        },
+        scanWindowWakeLock: ScanWindowWakeLock = RecordingWakeLock(),
+        clock: () -> Long = { scanTime }
     ) = BluetoothGattClientManager(
         context = context,
         connectionScope = scope,
@@ -114,8 +116,89 @@ class BluetoothGattClientCallbacksTest {
         afterScanCallbackPreflight = afterScanCallbackPreflight,
         afterScanScheduleOwnerCheck = afterScanScheduleOwnerCheck,
         roleFailure = onRoleFailure,
-        elapsedRealtimeMillis = { scanTime }
+        elapsedRealtimeMillis = clock,
+        scanWindowWakeLock = scanWindowWakeLock
     )
+
+    private class RecordingWakeLock : ScanWindowWakeLock {
+        val events = mutableListOf<String>()
+        var held = false
+        override fun acquire(timeoutMs: Long) { events += "acquire:$timeoutMs"; held = true }
+        override fun release() { if (held) events += "release"; held = false }
+    }
+
+    @Test fun `background duty window holds a bounded wake lock until its scan stops`() {
+        whenever(power.profile).thenReturn(MutableStateFlow(PowerProfileResolver.resolve(100, false, true, false)))
+        val wake = RecordingWakeLock()
+        val modern = clientForSdk(Build.VERSION_CODES.S, scanWindowWakeLock = wake)
+        try {
+            assertTrue(modern.start())
+            scope.runCurrent()
+            val first = scanCallbacks.single()
+            assertTrue("the one-second scan window must keep the CPU awake", wake.held)
+            assertEquals(listOf("acquire:6000"), wake.events)
+
+            scope.advanceTimeBy(1_000)
+            scope.runCurrent()
+            verify(scanner).stopScan(first)
+            assertFalse("the off window must not hold the CPU", wake.held)
+
+            scope.advanceTimeBy(30_000)
+            scope.runCurrent()
+            assertEquals(listOf("acquire:6000", "release"), wake.events)
+        } finally {
+            modern.stop()
+        }
+    }
+
+    @Test fun `stopping inside a duty window releases its wake lock`() {
+        whenever(power.profile).thenReturn(MutableStateFlow(PowerProfileResolver.resolve(100, false, true, false)))
+        val wake = RecordingWakeLock()
+        val modern = clientForSdk(Build.VERSION_CODES.S, scanWindowWakeLock = wake)
+        assertTrue(modern.start())
+        scope.runCurrent()
+        assertTrue(wake.held)
+
+        modern.stop()
+        scope.runCurrent()
+        assertFalse(wake.held)
+    }
+
+    @Test fun `continuous scanning never takes the scan window wake lock`() {
+        whenever(power.profile).thenReturn(MutableStateFlow(PowerProfileResolver.resolve(100, true, false, false)))
+        val wake = RecordingWakeLock()
+        val modern = clientForSdk(Build.VERSION_CODES.S, scanWindowWakeLock = wake)
+        try {
+            assertTrue(modern.start())
+            scope.runCurrent()
+            scope.advanceTimeBy(60_000)
+            scope.runCurrent()
+            assertEquals(1, scanCallbacks.size)
+            assertTrue(wake.events.isEmpty())
+        } finally {
+            modern.stop()
+        }
+    }
+
+    @Test fun `scan starts stay below the Android limit of five per thirty seconds`() {
+        val fastDuty = PowerProfileResolver.resolve(100, false, false, false).copy(
+            ble = PowerManager.BleSchedule(scanOnMs = 1_000L, scanOffMs = 4_000L, continuousScan = false)
+        )
+        whenever(power.profile).thenReturn(MutableStateFlow(fastDuty))
+        val modern = clientForSdk(
+            Build.VERSION_CODES.S,
+            clock = { 1_000_000L + scope.testScheduler.currentTime }
+        )
+        try {
+            assertTrue(modern.start())
+            scope.runCurrent()
+            scope.advanceTimeBy(29_999)
+            scope.runCurrent()
+            assertEquals(4, scanCallbacks.size)
+        } finally {
+            modern.stop()
+        }
+    }
 
     @After fun tearDown() { client.stop(); scope.cancel() }
 

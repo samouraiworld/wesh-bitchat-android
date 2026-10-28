@@ -96,6 +96,7 @@ class PowerManager private constructor(context: Context) : LifecycleEventObserve
         )
     )
     val profile: StateFlow<RuntimePerformanceProfile> = _profile.asStateFlow()
+    private val profilePublisher = PowerProfilePublisher(_profile)
 
     private val batteryReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -242,20 +243,19 @@ class PowerManager private constructor(context: Context) : LifecycleEventObserve
 
     private fun refreshProfile() {
         if (shutdown) return
-        val next = PowerProfileResolver.resolve(
-            batteryLevel = batteryLevel,
-            isCharging = isCharging,
-            isBackground = isAppInBackground,
-            hasDirectPeers = hasDirectPeers
-        )
-        if (_profile.value != next) {
-            Log.i(
-                TAG,
-                "Profile changed: mode=${next.mode}, battery=${next.batteryBand}, " +
-                    "background=${next.isBackground}, directPeers=${next.hasDirectPeers}"
+        val next = profilePublisher.publish {
+            PowerProfileResolver.resolve(
+                batteryLevel = batteryLevel,
+                isCharging = isCharging,
+                isBackground = isAppInBackground,
+                hasDirectPeers = hasDirectPeers
             )
-            _profile.value = next
-        }
+        } ?: return
+        Log.i(
+            TAG,
+            "Profile changed: mode=${next.mode}, battery=${next.batteryBand}, " +
+                "background=${next.isBackground}, directPeers=${next.hasDirectPeers}"
+        )
     }
 
     private fun registerBatteryReceiver() {
@@ -269,6 +269,22 @@ class PowerManager private constructor(context: Context) : LifecycleEventObserve
         } catch (e: Exception) {
             Log.w(TAG, "Failed to register battery receiver: ${e.message}")
         }
+    }
+}
+
+/**
+ * Publishes a profile computed from the latest inputs. Battery and lifecycle inputs change on the
+ * main thread and direct peers on a background dispatcher; reading them and publishing the result
+ * under one lock keeps a slower, stale computation from overwriting a newer profile.
+ */
+internal class PowerProfilePublisher<T>(private val flow: MutableStateFlow<T>) {
+    /** The newly published value, or null when it equals the current one. */
+    @Synchronized
+    fun publish(compute: () -> T): T? {
+        val next = compute()
+        if (flow.value == next) return null
+        flow.value = next
+        return next
     }
 }
 
