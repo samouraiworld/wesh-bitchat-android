@@ -24,7 +24,7 @@ Fixes ship to the latest Google Play release and `main`. Older releases are not 
 
 In scope — the properties the app promises:
 
-- Confidentiality and integrity of private messages and media (Noise sessions over BLE; Nostr direct messages to verified contacts in Internet mode)
+- Confidentiality and integrity of private messages and media (Noise sessions over BLE; Nostr direct messages in Internet mode)
 - Identity: key handling, verification, impersonation, session binding
 - The panic wipe actually destroying what it claims to destroy
 - Metadata exposure beyond what the documentation already discloses (see `PRIVACY_POLICY.md`)
