@@ -67,6 +67,7 @@ import android.content.ContextWrapper
 import androidx.core.app.ActivityCompat
 import androidx.compose.material.icons.rounded.Notifications
 import androidx.lifecycle.compose.LifecycleResumeEffect
+import androidx.annotation.StringRes
 import com.bitchat.android.R
 import com.bitchat.android.ui.WeshLinks
 
@@ -78,14 +79,26 @@ internal fun onboardingCanGoBack(step: OnboardingStep, start: OnboardingStart): 
 
 internal enum class OnboardingStep { Welcome, Bluetooth, Notifications }
 
-/** How the person answered the Bluetooth prompt. A simple refusal keeps "Continuer"; only a permanent one sends to Settings. */
+/** How the person answered the Bluetooth prompt. A simple refusal leads with "Continuer", a permanent one with Settings. */
 internal enum class BluetoothRefusal { None, Once, Permanent }
 
-/** The one way forward on the Bluetooth step: ask again (with the explanation) or open Settings. */
+/** The ways forward on the Bluetooth step: ask again (with the explanation) or open Settings. */
 internal enum class BluetoothStepAction { Ask, OpenSettings }
 
-internal fun bluetoothStepAction(refusal: BluetoothRefusal): BluetoothStepAction =
-    if (refusal == BluetoothRefusal.Permanent) BluetoothStepAction.OpenSettings else BluetoothStepAction.Ask
+/**
+ * Actions offered on the Bluetooth step, primary first. After any refusal both stay reachable:
+ * Android also reports a dismissed dialog as permanent, and Settings is the way to allow it later.
+ */
+internal fun bluetoothStepActions(refusal: BluetoothRefusal): List<BluetoothStepAction> = when (refusal) {
+    BluetoothRefusal.None -> listOf(BluetoothStepAction.Ask)
+    BluetoothRefusal.Once -> listOf(BluetoothStepAction.Ask, BluetoothStepAction.OpenSettings)
+    BluetoothRefusal.Permanent -> listOf(BluetoothStepAction.OpenSettings, BluetoothStepAction.Ask)
+}
+
+/** Where to allow it later, naming the permission as Android's settings show it. */
+@StringRes
+internal fun bluetoothGrantLaterHint(legacyLocation: Boolean): Int =
+    if (legacyLocation) R.string.wesh_pave_bt_grant_later_legacy else R.string.wesh_pave_bt_grant_later
 
 internal fun bluetoothRefusal(granted: Boolean, shouldShowRationale: Boolean): BluetoothRefusal = when {
     granted -> BluetoothRefusal.None
@@ -367,10 +380,14 @@ private fun BluetoothStep(
                 style = WeshType.body,
                 color = c.warning,
             )
+            Text(stringResource(bluetoothGrantLaterHint(legacyLocation)), style = WeshType.body, color = c.ink)
         }
-        when (bluetoothStepAction(refusal)) {
-            BluetoothStepAction.Ask -> PrimaryButton(stringResource(R.string.wesh_pave_continue), onContinue)
-            BluetoothStepAction.OpenSettings -> PrimaryButton(stringResource(R.string.wesh_pave_open_settings), onOpenSettings)
+        bluetoothStepActions(refusal).forEachIndexed { index, action ->
+            val label = stringResource(
+                if (action == BluetoothStepAction.Ask) R.string.wesh_pave_continue else R.string.wesh_pave_open_settings
+            )
+            val onClick = if (action == BluetoothStepAction.Ask) onContinue else onOpenSettings
+            if (index == 0) PrimaryButton(label, onClick) else SecondaryButton(label, onClick, Modifier.fillMaxWidth())
         }
     }
     }
