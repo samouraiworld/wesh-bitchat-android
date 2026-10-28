@@ -47,7 +47,8 @@ class BluetoothGattClientManager(
         reason: String,
         action: BluetoothRoleFailureAction
     ) -> Unit = { _, _, _ -> },
-    private val elapsedRealtimeMillis: () -> Long = SystemClock::elapsedRealtime
+    private val elapsedRealtimeMillis: () -> Long = SystemClock::elapsedRealtime,
+    private val scanWindowWakeLock: ScanWindowWakeLock = AndroidScanWindowWakeLock(context)
 ) {
     
     companion object {
@@ -121,9 +122,9 @@ class BluetoothGattClientManager(
     @Volatile private var activeScan: ActiveScan? = null
     
     // Scan rate limiting to prevent "scanning too frequently" errors
-    private val scanRateLimit = 5000L // Minimum 5 seconds between scan start attempts
+    private val scanStartLimiter = ScanStartLimiter()
     // A monotonic clock begins at boot, so the sentinel must still allow the first immediate scan.
-    private var lastScanStartTime = -scanRateLimit
+    private var lastScanStartTime = -30_000L
     private var lastScanStopTime = 0L
     @Volatile private var isCurrentlyScanning = false
 
@@ -360,9 +361,8 @@ class BluetoothGattClientManager(
             return
         }
 
-        val timeSinceLastStart = currentTime - lastScanStartTime
-        if (timeSinceLastStart < scanRateLimit) {
-            val remainingWait = scanRateLimit - timeSinceLastStart
+        val remainingWait = scanStartLimiter.delayBeforeStart(currentTime)
+        if (remainingWait > 0L) {
             val intentGeneration = synchronized(scanLock) { scanIntentGeneration }
             Log.d(TAG, "Scan rate limited: waiting ${remainingWait}ms before starting scan")
             
@@ -462,6 +462,7 @@ class BluetoothGattClientManager(
                 dialableScan = ScanAdmission(callback, scan.generation)
             }
             lastScanStartTime = elapsedRealtimeMillis()
+            scanStartLimiter.recordStart(lastScanStartTime)
             isCurrentlyScanning = true
             scan
         }
@@ -645,9 +646,17 @@ class BluetoothGattClientManager(
         ownerGeneration: Long,
         schedule: PowerManager.BleSchedule
     ) {
-        while (applyScanState(true, ownerGeneration)) {
-            delay(schedule.scanOnMs)
-            if (!applyScanState(false, ownerGeneration)) break
+        while (true) {
+            // The CPU stays awake for the ON window only, so its stop runs on time with the
+            // screen off. The off window sleeps normally.
+            val window = scanWindowWakeLock.acquire(ScanWindowWakeLock.timeoutFor(schedule.scanOnMs))
+            try {
+                if (!applyScanState(true, ownerGeneration)) break
+                delay(schedule.scanOnMs)
+                if (!applyScanState(false, ownerGeneration)) break
+            } finally {
+                window.release()
+            }
             delay(schedule.scanOffMs)
         }
     }
