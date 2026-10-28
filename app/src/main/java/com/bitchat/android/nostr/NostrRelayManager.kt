@@ -288,7 +288,9 @@ class NostrRelayManager internal constructor(
         stopSubscriptionValidation()
         reconnectJobs.values.forEach(Job::cancel)
         reconnectJobs.clear()
-        val sockets = connections.values.toList()
+        // A concurrent view can shrink between size() and next(): build by iteration instead of
+        // Kotlin's size-based toList() fast path.
+        val sockets = buildList { connections.values.forEach { add(it) } }
         connections.clear()
         subscriptions.clear()
         relaysList.forEach {
@@ -426,7 +428,8 @@ class NostrRelayManager internal constructor(
 
         scope.launch {
             if (!isNetworkActionAllowed()) return@launch
-            val targetRelays = subscriptionInfo.targetRelayUrls?.toList() ?: connections.keys.toList()
+            val targetRelays = subscriptionInfo.targetRelayUrls?.toList()
+                ?: buildList { connections.keys.forEach { add(it) } }
             
             targetRelays.forEach { relayUrl ->
                 val webSocket = connections[relayUrl]
