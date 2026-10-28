@@ -1,9 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- API 30 and below. Nothing leaves the phone: identity, keys, conversations, settings, Tor state. -->
+<!-- API 30 and below. Nothing leaves the phone: identity, keys, conversations, settings, Tor state,
+     in credential-protected and device-protected (direct boot) storage alike. -->
 <full-backup-content>
     <exclude domain="root" path="."/>
     <exclude domain="sharedpref" path="."/>
     <exclude domain="database" path="."/>
     <exclude domain="file" path="."/>
     <exclude domain="external" path="."/>
+    <exclude domain="device_root" path="."/>
+    <exclude domain="device_sharedpref" path="."/>
+    <exclude domain="device_database" path="."/>
+    <exclude domain="device_file" path="."/>
 </full-backup-content>
