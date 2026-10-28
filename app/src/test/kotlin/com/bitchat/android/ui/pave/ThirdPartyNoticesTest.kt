@@ -88,13 +88,39 @@ class ThirdPartyNoticesTest {
         assertTrue(titles.isNotEmpty())
         assertEquals(emptyList<String>(), titles.filterNot { Regex("""[\w.+-]+|SPDX [\w.+-]+""").matches(it) })
         val vendored = File("../tools/third-party-notices/licenses")
-        for (name in listOf("no.nordicsemi.android-ble-2.11.0-LICENSE", "libsecp256k1-6e2c8bc4-COPYING")) {
-            val words = { text: String -> text.split(Regex("\\s+")).filter(String::isNotEmpty).joinToString(" ") }
+        val files = vendored.listFiles().orEmpty().filter(File::isFile).map(File::getName)
+        assertTrue(files.containsAll(listOf("no.nordicsemi.android-ble-2.11.0-LICENSE", "libsecp256k1-6e2c8bc4-COPYING")))
+        for (name in files) {
             assertTrue(name, words(notices).contains(words(File(vendored, name).readText())))
         }
         // A crate without a licence file of its own takes the one its repository ships.
         val asn1Impl = notices.split("\n--- Text ").filter { it.substringBefore("\n\n").contains("asn1-rs-impl 0.2.0") }
         assertTrue(asn1Impl.any { it.contains("Copyright (c) 2017 Pierre Chifflier") })
+    }
+
+    @Test fun `the Apache NOTICE files of upstream repositories are shipped with the libraries built from them`() {
+        val expected = mapOf(
+            "zxing-3.5.4-NOTICE" to listOf("com.google.zxing:core 3.5.4"),
+            "kotlinx.coroutines-1.11.0-NOTICE.txt" to listOf(
+                "org.jetbrains.kotlinx:kotlinx-coroutines-android 1.11.0",
+                "org.jetbrains.kotlinx:kotlinx-coroutines-core-jvm 1.11.0",
+            ),
+            "kotlinx.serialization-1.7.3-NOTICE.txt" to listOf("org.jetbrains.kotlinx:kotlinx-serialization-core-jvm 1.7.3"),
+            "kotlinx-atomicfu-0.28.0-NOTICE.txt" to listOf("org.jetbrains.kotlinx:atomicfu-jvm 0.28.0"),
+            "kotlin-2.4.10-NOTICE.txt" to listOf(
+                "org.jetbrains.kotlin:kotlin-stdlib 2.4.10",
+                "org.jetbrains.kotlin:kotlin-parcelize-runtime 2.4.10",
+            ),
+        )
+        val vendored = File("../tools/third-party-notices/licenses")
+        for ((name, components) in expected) {
+            val entry = notices.split("\n--- Text ").singleOrNull { it.substringBefore("\n").endsWith(": $name ---") }
+            assertTrue(name, entry != null)
+            val appliesTo = entry!!.substringAfter("Applies to: ").substringBefore("\n")
+            components.forEach { assertTrue("$name: $it", appliesTo.split(", ").contains(it)) }
+            assertTrue(name, words(entry).contains(words(File(vendored, name).readText())))
+        }
+        assertTrue(notices.contains("NOTICES FOR BARCODE4J"))
     }
 
     @Test fun `crates that ship no licence file are listed with the SPDX text and no invented copyright`() {
@@ -125,6 +151,8 @@ class ThirdPartyNoticesTest {
         setContent { ThirdPartyNoticesScreen(onBack = {}) }
         compose.onNodeWithText("Wesh — third-party notices", substring = true).assertExists()
     }
+
+    private fun words(text: String) = text.split(Regex("\\s+")).filter(String::isNotEmpty).joinToString(" ")
 
     private fun setContent(content: @Composable () -> Unit) {
         compose.setContent {
