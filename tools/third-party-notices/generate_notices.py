@@ -3,91 +3,72 @@
 
 The notices cover what the release APK ships:
   * the Android libraries on the release runtime classpath, with the licences their Maven POMs
-    declare and any licence or notice file packaged in the artifact;
-  * the fonts in res/font;
-  * the Arti (Tor) native library: every Arti crate and every crates.io crate of
-    tools/arti-build/Cargo.lock whose sources the native build extracted, with the licence
-    files those crates ship.
+    declare and the licence or notice files packaged in the artifact;
+  * the fonts in res/raw;
+  * the Arti (Tor) native library: every crate of tools/arti-build/Cargo.lock that the Android
+    build compiles, found by walking the lock from the JNI wrapper and keeping only the
+    dependencies an Android target (or the Linux build host, for build scripts) enables.
 
-Inputs are local only; nothing is downloaded.
+Licence texts are always copied from a file: the crate's or artifact's own licence file, the
+licence file of the same repository, an upstream file vendored in licenses/, or the SPDX text in
+licenses/spdx/. No copyright line is ever written by this script. Inputs are local only; nothing
+is downloaded. Any crate the walk reaches but the local cargo cache lacks stops the script.
 
   python3 -I tools/third-party-notices/generate_notices.py \
     --gradle-deps <output of ./gradlew :app:dependencies --configuration releaseRuntimeClasspath> \
     --gradle-cache "$GRADLE_USER_HOME/caches/modules-2/files-2.1" \
     --cargo-src <CARGO_HOME of the native build>/registry/src/index.crates.io-<hash> \
-    --arti-source <Arti checkout at the tag in tools/arti-build/TOOLCHAIN.env>
+    --arti-source <Arti checkout at ARTI_COMMIT of tools/arti-build/TOOLCHAIN.env>
 """
 import argparse
 import hashlib
 import io
 import os
 import re
+import subprocess
 import sys
+import tomllib
 import xml.etree.ElementTree as ET
 import zipfile
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 LOCK = os.path.join(REPO, "tools", "arti-build", "Cargo.lock")
+WRAPPER = os.path.join(REPO, "tools", "arti-build", "Cargo.toml")
+TOOLCHAIN = os.path.join(REPO, "tools", "arti-build", "TOOLCHAIN.env")
+VENDORED = os.path.join(REPO, "tools", "third-party-notices", "licenses")
 OUT = os.path.join(REPO, "app", "src", "main", "res", "raw", "third_party_notices.txt")
 FONTS = [
     ("Archivo", "app/src/main/res/raw/archivo_ofl.txt"),
     ("Geist Mono", "app/src/main/res/raw/geist_mono_ofl.txt"),
 ]
 LICENSE_FILE = re.compile(r"(?i)^(licen[cs]e|copying|notice|unlicense|copyright)([-_.].*)?$")
-MIT_TEMPLATE = """Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-"""
-
-
-BSD3_TEMPLATE = """Redistribution and use in source and binary forms, with or without modification,
-are permitted provided that the following conditions are met:
-
-1. Redistributions of source code must retain the above copyright notice, this
-   list of conditions and the following disclaimer.
-
-2. Redistributions in binary form must reproduce the above copyright notice,
-   this list of conditions and the following disclaimer in the documentation
-   and/or other materials provided with the distribution.
-
-3. Neither the name of the copyright holder nor the names of its contributors
-   may be used to endorse or promote products derived from this software without
-   specific prior written permission.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
-ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
-WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR
-ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
-(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
-LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
-ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
-SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-"""
-# Copyright holders of BSD-licensed artifacts whose POM and archive do not name one.
-BSD_HOLDERS = {
-    "no.nordicsemi.android:ble": "Nordic Semiconductor ASA",
-}
-# Native code bundled inside an artifact, under its own licence.
+# Upstream licence files that an artifact does not package, copied verbatim into licenses/:
+#   no.nordicsemi.android-ble-2.11.0-LICENSE: NordicSemiconductor/Android-BLE-Library, LICENSE at tag 2.11.0
+#   libsecp256k1-6e2c8bc4-COPYING: bitcoin-core/secp256k1, COPYING at 6e2c8bc4ecdc6e71dbe7a368f360d8d453ce435d,
+#     the submodule commit of ACINQ/secp256k1-kmp v0.24.0
+#   spdx/*.txt: spdx/license-list-data v3.27.0, text/<id>.txt
+MAVEN_LICENSE_FILES = {"no.nordicsemi.android:ble": "no.nordicsemi.android-ble-2.11.0-LICENSE"}
 EMBEDDED = [
     ("libsecp256k1 (native code inside fr.acinq.secp256k1:secp256k1-kmp-jni-android)", "MIT",
-     "Copyright (c) 2013 Pieter Wuille"),
+     "libsecp256k1-6e2c8bc4-COPYING"),
 ]
+SPDX_TEXTS = {"MIT": "MIT.txt", "Apache-2.0": "Apache-2.0.txt", "MPL-2.0": "MPL-2.0.txt"}
+# Arti's own licence files, at the root of its repository.
+ARTI_ROOT_TEXTS = {"MIT": ["LICENSE-MIT"], "Apache-2.0": ["LICENSE-APACHE"], "LGPL-3.0-only": ["LGPL-3", "GPL-3"]}
+
+# Targets the native library is built for, and the Linux host that runs build scripts.
+_ANDROID = {"target_os": "android", "target_family": "unix", "unix": True, "target_endian": "little",
+            "target_env": "", "target_vendor": "unknown", "panic": "abort",
+            "target_has_atomic": {"8", "16", "32", "64", "ptr"}}
+TARGETS = [
+    dict(_ANDROID, triple="aarch64-linux-android", target_arch="aarch64", target_pointer_width="64", target_abi=""),
+    dict(_ANDROID, triple="armv7-linux-androideabi", target_arch="arm", target_pointer_width="32", target_abi="eabi"),
+    dict(_ANDROID, triple="i686-linux-android", target_arch="x86", target_pointer_width="32", target_abi=""),
+    dict(_ANDROID, triple="x86_64-linux-android", target_arch="x86_64", target_pointer_width="64", target_abi=""),
+]
+HOST = dict(_ANDROID, triple="x86_64-unknown-linux-gnu", target_os="linux", target_env="gnu",
+            target_arch="x86_64", target_pointer_width="64", target_abi="", panic="unwind")
 
 
 def read(path):
@@ -104,89 +85,226 @@ class Texts:
 
     def __init__(self):
         self.order = []
-        self.by_hash = {}
+        self.by_key = {}
 
-    def add(self, title, text, component):
-        text = normalise(text)
+    def add(self, title, path, component):
+        text = normalise(read(path))
         # Copies of one licence often differ only in wrapping or indentation: print one of them.
         key = hashlib.sha256(" ".join(text.split()).encode()).hexdigest()
-        if key not in self.by_hash:
-            self.by_hash[key] = {"title": title, "text": text, "components": []}
+        if key not in self.by_key:
+            self.by_key[key] = {"title": title, "text": text, "components": []}
             self.order.append(key)
-        if component not in self.by_hash[key]["components"]:
-            self.by_hash[key]["components"].append(component)
+        if component not in self.by_key[key]["components"]:
+            self.by_key[key]["components"].append(component)
+
+    def add_spdx(self, spdx_id, component):
+        self.add(f"SPDX {spdx_id}", os.path.join(VENDORED, "spdx", SPDX_TEXTS[spdx_id]), component)
 
     def render(self):
         out = []
         for number, key in enumerate(self.order, 1):
-            entry = self.by_hash[key]
-            out.append(f"--- Text {number}: {entry['title']} ---")
-            out.append("Applies to: " + ", ".join(entry["components"]))
-            out.append("")
-            out.append(entry["text"])
+            entry = self.by_key[key]
+            out += [f"--- Text {number}: {entry['title']} ---", "Applies to: " + ", ".join(entry["components"]), "",
+                    entry["text"]]
         return "\n".join(out)
+
+
+def licence_files(directory):
+    return sorted(f for f in os.listdir(directory)
+                  if LICENSE_FILE.match(f) and os.path.isfile(os.path.join(directory, f)))
+
+
+def spdx_ids(expression):
+    tokens = re.findall(r"[A-Za-z0-9.+-]+", expression.replace("/", " OR "))
+    return [token for token in tokens if token not in ("OR", "AND", "WITH")]
+
+
+# ---------------------------------------------------------------- cfg() for Cargo target tables
+
+def cfg_holds(spec, target):
+    spec = spec.strip()
+    if not spec.startswith("cfg("):
+        return spec == target["triple"]
+    tokens = re.findall(r'"[^"]*"|[A-Za-z_][A-Za-z0-9_]*|[(),=]', spec[4:-1])
+    position = 0
+
+    def expression():
+        nonlocal position
+        name = tokens[position]
+        position += 1
+        if name in ("all", "any", "not") and position < len(tokens) and tokens[position] == "(":
+            position += 1
+            values = []
+            while tokens[position] != ")":
+                values.append(expression())
+                if tokens[position] == ",":
+                    position += 1
+            position += 1
+            if name == "all":
+                return all(values)
+            if name == "any":
+                return any(values)
+            return not values[0]
+        if position < len(tokens) and tokens[position] == "=":
+            value = tokens[position + 1].strip('"')
+            position += 2
+            actual = target.get(name)
+            return value in actual if isinstance(actual, set) else actual == value
+        return bool(target.get(name, False))  # Unknown flags (custom cfgs, test, ...) are off.
+
+    return expression()
+
+
+def dependency_kinds(manifest):
+    """Package name -> [(kind, cfg)] from every dependency table of a manifest."""
+    kinds = {}
+    sections = [("normal", "dependencies"), ("build", "build-dependencies"), ("build", "build_dependencies"),
+                ("dev", "dev-dependencies"), ("dev", "dev_dependencies")]
+
+    def add(table, kind, cfg):
+        for key, value in (table or {}).items():
+            name = value.get("package", key) if isinstance(value, dict) else key
+            kinds.setdefault(name, []).append((kind, cfg))
+
+    for kind, section in sections:
+        add(manifest.get(section), kind, None)
+    for cfg, table in (manifest.get("target") or {}).items():
+        for kind, section in sections:
+            add(table.get(section), kind, cfg)
+    return kinds
+
+
+def edge_enabled(entries):
+    for kind, cfg in entries:
+        if kind == "dev":
+            continue
+        targets = TARGETS + [HOST] if kind == "build" else TARGETS
+        if cfg is None or any(cfg_holds(cfg, target) for target in targets):
+            return True
+    return False
 
 
 # ---------------------------------------------------------------- Rust (Arti native library)
 
 def lock_packages():
-    packages = []
+    packages = {}
     for block in read(LOCK).split("[[package]]")[1:]:
         name = re.search(r'^name = "([^"]+)"', block, re.M).group(1)
         version = re.search(r'^version = "([^"]+)"', block, re.M).group(1)
         source = re.search(r'^source = "([^"]+)"', block, re.M)
-        packages.append((name, version, source.group(1) if source else None))
+        deps = re.search(r"^dependencies = \[(.*?)\]", block, re.M | re.S)
+        packages[(name, version)] = {
+            "source": source.group(1) if source else None,
+            "deps": re.findall(r'"([^"]+)"', deps.group(1)) if deps else [],
+        }
     return packages
 
 
-def crate_license(manifest):
-    match = re.search(r'^license\s*=\s*"([^"]+)"', manifest, re.M)
-    return match.group(1).replace("/", " OR ").replace("  ", " ") if match else "see licence file"
-
-
-def crate_authors(manifest):
-    match = re.search(r"^authors\s*=\s*\[(.*?)\]", manifest, re.M | re.S)
-    names = re.findall(r'"([^"]+)"', match.group(1)) if match else []
-    return ", ".join(re.sub(r"\s*<[^>]*>", "", n) for n in names) or "the authors"
+def arti_manifests(arti_source):
+    found = {}
+    for root, dirs, files in os.walk(arti_source):
+        dirs[:] = [d for d in dirs if d not in (".git", "target")]
+        if "Cargo.toml" in files and root != arti_source:
+            manifest = tomllib.loads(read(os.path.join(root, "Cargo.toml")))
+            if "package" in manifest:
+                found[manifest["package"]["name"]] = root
+    return found
 
 
 def rust_components(args, texts):
-    arti_mit = read(os.path.join(args.arti_source, "LICENSE-MIT"))
-    arti_apache = read(os.path.join(args.arti_source, "LICENSE-APACHE"))
-    lines = []
-    for name, version, source in sorted(lock_packages()):
-        label = f"{name} {version}"
+    pinned = re.search(r"^ARTI_COMMIT=(\w+)", read(TOOLCHAIN), re.M).group(1)
+    actual = subprocess.run(["git", "-C", args.arti_source, "rev-parse", "HEAD"],
+                            capture_output=True, text=True, check=True).stdout.strip()
+    if actual != pinned:
+        sys.exit(f"--arti-source is at {actual}, TOOLCHAIN.env pins {pinned}")
+    workspace = tomllib.loads(read(os.path.join(args.arti_source, "Cargo.toml"))).get("workspace", {})
+    arti_dirs = arti_manifests(args.arti_source)
+    packages = lock_packages()
+    by_name = {}
+    for name, version in packages:
+        by_name.setdefault(name, []).append(version)
+
+    def directory(key):
+        name, version = key
+        source = packages[key]["source"]
+        if name == "arti-android-wrapper":
+            return os.path.dirname(WRAPPER)
         if source is None:
-            if name == "arti-android-wrapper":
-                continue  # Wesh's own JNI wrapper, GPL-3.0 with the app.
-            lines.append(f"{label} — MIT OR Apache-2.0 (Arti, The Tor Project)")
-            texts.add("MIT licence (Arti)", arti_mit, label)
-            texts.add("Apache License 2.0", arti_apache, label)
-            continue
+            if name not in arti_dirs:
+                sys.exit(f"{name} {version} is a path crate missing from --arti-source")
+            return arti_dirs[name]
         if not source.startswith("registry+"):
-            sys.exit(f"unsupported Cargo source for {label}: {source}")
-        directory = os.path.join(args.cargo_src, f"{name}-{version}")
-        if not os.path.isdir(directory):
-            continue  # Not built for Android: cargo never extracted it.
-        manifest = read(os.path.join(directory, "Cargo.toml"))
-        spdx = crate_license(manifest)
-        lines.append(f"{label} — {spdx}")
-        files = sorted(f for f in os.listdir(directory)
-                       if LICENSE_FILE.match(f) and os.path.isfile(os.path.join(directory, f)))
-        for file in files:
-            texts.add(f"{file}", read(os.path.join(directory, file)), label)
-        if not files:
-            if "Apache-2.0" in spdx:
-                texts.add("Apache License 2.0", arti_apache, label)
-            if "MIT" in spdx:
-                texts.add(f"MIT licence ({name})",
-                          f"Copyright (c) {crate_authors(manifest)}\n\n{MIT_TEMPLATE}", label)
-            if "MPL-2.0" in spdx:
-                # Same canonical text as the MPL-2.0 crate that ships it (option-ext).
-                texts.add("LICENSE.txt", read(os.path.join(args.cargo_src, "option-ext-0.2.0", "LICENSE.txt")), label)
-            if not any(known in spdx for known in ("Apache-2.0", "MIT", "MPL-2.0")):
-                sys.exit(f"no licence file and no known licence text for {label} ({spdx})")
-    return lines
+            sys.exit(f"unsupported Cargo source for {name} {version}: {source}")
+        path = os.path.join(args.cargo_src, f"{name}-{version}")
+        if not os.path.isdir(path):
+            sys.exit(f"{name} {version} is built for Android but missing from the cargo cache {args.cargo_src}")
+        return path
+
+    def resolve(reference):
+        parts = reference.split(" ")
+        versions = by_name[parts[0]]
+        return parts[0], parts[1] if len(parts) > 1 else versions[0]
+
+    # Walk from the JNI wrapper, following only dependencies an Android build compiles.
+    root = ("arti-android-wrapper", by_name["arti-android-wrapper"][0])
+    reached, queue = {root}, [root]
+    while queue:
+        key = queue.pop()
+        kinds = dependency_kinds(tomllib.loads(read(os.path.join(directory(key), "Cargo.toml"))))
+        for reference in packages[key]["deps"]:
+            dep = resolve(reference)
+            if dep not in reached and edge_enabled(kinds.get(dep[0], [("normal", None)])):
+                reached.add(dep)
+                queue.append(dep)
+
+    lines, without_files = [], []
+    for key in sorted(reached - {root}):
+        name, version = key
+        label = f"{name} {version}"
+        path = directory(key)
+        package = tomllib.loads(read(os.path.join(path, "Cargo.toml")))["package"]
+        licence = package.get("license")
+        if isinstance(licence, dict) and licence.get("workspace"):
+            licence = workspace.get("package", {}).get("license")
+        if not licence:
+            sys.exit(f"{label} declares no licence")
+        lines.append(f"{label} — {licence}" + (" (Arti, The Tor Project)" if packages[key]["source"] is None else ""))
+        files = licence_files(path)
+        if files:
+            for file in files:
+                texts.add(file, os.path.join(path, file), label)
+            continue
+        if packages[key]["source"] is None:
+            ids = [i for i in spdx_ids(licence) if i in ARTI_ROOT_TEXTS]
+            if not ids:
+                sys.exit(f"no Arti licence file for {label} ({licence})")
+            for spdx_id in ids:
+                for file in ARTI_ROOT_TEXTS[spdx_id]:
+                    texts.add(file, os.path.join(args.arti_source, file), label)
+            continue
+        # The same repository's licence file, from another of its crates in the cache.
+        repository = (package.get("repository") or "").rstrip("/").removesuffix(".git").lower()
+        siblings = []
+        for other in sorted(os.listdir(args.cargo_src)):
+            other_path = os.path.join(args.cargo_src, other)
+            if other_path == path or not licence_files(other_path):
+                continue
+            other_package = tomllib.loads(read(os.path.join(other_path, "Cargo.toml"))).get("package", {})
+            other_repository = (other_package.get("repository") or "").rstrip("/").removesuffix(".git").lower()
+            if repository and other_repository == repository:
+                siblings.append((other_package.get("version") != version, other, other_path))
+        if siblings:
+            _, _, sibling = sorted(siblings)[0]
+            for file in licence_files(sibling):
+                texts.add(file, os.path.join(sibling, file), label)
+            continue
+        ids = [i for i in spdx_ids(licence) if i in SPDX_TEXTS]
+        if not ids:
+            sys.exit(f"{label} ships no licence file and no SPDX text is vendored for {licence}")
+        without_files.append(label)
+        for spdx_id in ids:
+            texts.add_spdx(spdx_id, label)
+    return lines, without_files
 
 
 # ---------------------------------------------------------------- Android libraries (Maven)
@@ -224,36 +342,37 @@ def find_file(cache, group, artifact, version, suffixes):
 def pom_licenses(cache, group, artifact, version, depth=0):
     pom = find_file(cache, group, artifact, version, [".pom"])
     if pom is None or depth > 5:
-        return [], None
+        return []
     root = ET.fromstring(re.sub(r'\sxmlns="[^"]+"', "", read(pom), count=1))
     names = [(lic.findtext("name") or "").strip() for lic in root.findall("./licenses/license")]
-    organisation = (root.findtext("./organization/name") or "").strip() or None
     if not names and root.find("parent") is not None:
         parent = root.find("parent")
-        names, inherited = pom_licenses(cache, parent.findtext("groupId"), parent.findtext("artifactId"),
-                                        parent.findtext("version"), depth + 1)
-        organisation = organisation or inherited
-    return [n for n in names if n], organisation
+        names = pom_licenses(cache, parent.findtext("groupId"), parent.findtext("artifactId"),
+                             parent.findtext("version"), depth + 1)
+    return [n for n in names if n]
 
 
-def packaged_license_texts(path):
+def packaged_license_texts(path, scratch):
     """Licence and notice files inside a jar or aar (including the aar's classes.jar)."""
     found = []
 
-    def scan(archive):
+    def scan(archive, prefix):
         for item in archive.namelist():
             leaf = item.rsplit("/", 1)[-1]
             if item.endswith(".jar") and "/" not in item:
-                scan(zipfile.ZipFile(io.BytesIO(archive.read(item))))
+                scan(zipfile.ZipFile(io.BytesIO(archive.read(item))), prefix + item + "!")
             elif LICENSE_FILE.match(leaf) and not item.endswith("/") and not item.endswith(".class"):
-                found.append((item, archive.read(item).decode("utf-8", "replace")))
+                target = os.path.join(scratch, hashlib.sha256((path + prefix + item).encode()).hexdigest())
+                with open(target, "wb") as handle:
+                    handle.write(archive.read(item))
+                found.append((leaf, target))
 
     with zipfile.ZipFile(path) as archive:
-        scan(archive)
+        scan(archive, "")
     return found
 
 
-def android_components(args, texts, apache):
+def android_components(args, texts, scratch):
     lines = []
     for group, artifact, version in runtime_coordinates(args.gradle_deps):
         label = f"{group}:{artifact} {version}"
@@ -261,30 +380,27 @@ def android_components(args, texts, apache):
             continue  # A platform: version constraints only, nothing ships.
         if find_file(args.gradle_cache, group, artifact, version, [".pom"]) is None:
             sys.exit(f"{label} is not in the Gradle cache: build the release once first")
-        names, organisation = pom_licenses(args.gradle_cache, group, artifact, version)
+        names = pom_licenses(args.gradle_cache, group, artifact, version)
         licence = " / ".join(names) if names else "see licence text"
         lines.append(f"{label} — {licence}")
         binary = find_file(args.gradle_cache, group, artifact, version, [".aar", ".jar"])
         if binary is None:
             continue  # A multiplatform root: its Android variant is listed with its own files.
-        packaged = packaged_license_texts(binary)
-        for item, text in packaged:
-            texts.add(item.rsplit("/", 1)[-1], text, label)
+        packaged = packaged_license_texts(binary, scratch)
+        for leaf, file in packaged:
+            texts.add(leaf, file, label)
         if packaged:
             continue
-        joined = " ".join(names).lower()
-        if "apache" in joined:
-            texts.add("Apache License 2.0", apache, label)
-        if "bsd" in joined:
-            holder = BSD_HOLDERS.get(f"{group}:{artifact}") or organisation
-            if holder is None:
-                sys.exit(f"name the BSD copyright holder of {label} in BSD_HOLDERS")
-            texts.add(f"BSD 3-Clause licence ({holder})", f"Copyright (c) {holder}\n\n{BSD3_TEMPLATE}", label)
-        if "apache" not in joined and "bsd" not in joined:
-            sys.exit(f"no licence text for {label} ({licence})")
-    for name, licence, copyright_line in EMBEDDED:
+        vendored = MAVEN_LICENSE_FILES.get(f"{group}:{artifact}")
+        if vendored:
+            texts.add(vendored, os.path.join(VENDORED, vendored), label)
+        elif "apache" in " ".join(names).lower():
+            texts.add_spdx("Apache-2.0", label)
+        else:
+            sys.exit(f"no licence file for {label} ({licence}): vendor its upstream file in licenses/")
+    for name, licence, file in EMBEDDED:
         lines.append(f"{name} — {licence}")
-        texts.add(f"MIT licence ({name.split(' ')[0]})", f"{copyright_line}\n\n{MIT_TEMPLATE}", name)
+        texts.add(file, os.path.join(VENDORED, file), name)
     return lines
 
 
@@ -294,16 +410,19 @@ def main():
     parser.add_argument("--gradle-cache", required=True)
     parser.add_argument("--cargo-src", required=True)
     parser.add_argument("--arti-source", required=True)
+    parser.add_argument("--scratch", default=os.environ.get("TMPDIR", "/tmp"))
+    parser.add_argument("--out", default=OUT)
     args = parser.parse_args()
 
     texts = Texts()
-    apache = read(os.path.join(args.arti_source, "LICENSE-APACHE"))
-    android = android_components(args, texts, apache)
+    scratch = os.path.join(args.scratch, "wesh-notices")
+    os.makedirs(scratch, exist_ok=True)
+    android = android_components(args, texts, scratch)
     fonts = []
     for name, path in FONTS:
         fonts.append(f"{name} — SIL Open Font License 1.1")
-        texts.add("SIL Open Font License 1.1", read(os.path.join(REPO, path)), name)
-    rust = rust_components(args, texts)
+        texts.add(os.path.basename(path), os.path.join(REPO, path), name)
+    rust, without_files = rust_components(args, texts)
     lock_hash = hashlib.sha256(open(LOCK, "rb").read()).hexdigest()
 
     body = [
@@ -328,14 +447,19 @@ def main():
         "Source of every component: https://crates.io and https://gitlab.torproject.org/tpo/core/arti",
         *rust,
         "",
+        "== Rust components that ship no licence file ==",
+        "Their published package has no licence file; the SPDX text of their declared licence applies.",
+        *without_files,
+        "",
         "== Licence texts ==",
         "",
         texts.render(),
     ]
-    with open(OUT, "w", encoding="utf-8") as handle:
+    with open(args.out, "w", encoding="utf-8") as handle:
         handle.write("\n".join(body))
-    print(f"{OUT}: {len(android)} Android libraries, {len(rust)} Rust components, "
-          f"{len(texts.order)} distinct texts, {os.path.getsize(OUT)} bytes")
+    print(f"{args.out}: {len(android)} Android libraries, {len(rust)} Rust components "
+          f"({len(without_files)} without licence file), {len(texts.order)} distinct texts, "
+          f"{os.path.getsize(args.out)} bytes")
 
 
 if __name__ == "__main__":

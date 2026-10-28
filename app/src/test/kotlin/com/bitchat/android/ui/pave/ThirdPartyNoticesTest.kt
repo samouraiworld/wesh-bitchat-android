@@ -82,10 +82,33 @@ class ThirdPartyNoticesTest {
         assertEquals(emptyList<String>(), missing)
     }
 
+    @Test fun `licence texts are upstream files, never assembled from a template`() {
+        // Every text is titled by the file it was copied from, or by its SPDX identifier.
+        val titles = Regex("""^--- Text \d+: (.+) ---$""", RegexOption.MULTILINE).findAll(notices).map { it.groupValues[1] }.toList()
+        assertTrue(titles.isNotEmpty())
+        assertEquals(emptyList<String>(), titles.filterNot { Regex("""[\w.+-]+|SPDX [\w.+-]+""").matches(it) })
+        val vendored = File("../tools/third-party-notices/licenses")
+        for (name in listOf("no.nordicsemi.android-ble-2.11.0-LICENSE", "libsecp256k1-6e2c8bc4-COPYING")) {
+            val words = { text: String -> text.split(Regex("\\s+")).filter(String::isNotEmpty).joinToString(" ") }
+            assertTrue(name, words(notices).contains(words(File(vendored, name).readText())))
+        }
+        // A crate without a licence file of its own takes the one its repository ships.
+        val asn1Impl = notices.split("\n--- Text ").filter { it.substringBefore("\n\n").contains("asn1-rs-impl 0.2.0") }
+        assertTrue(asn1Impl.any { it.contains("Copyright (c) 2017 Pierre Chifflier") })
+    }
+
+    @Test fun `crates that ship no licence file are listed with the SPDX text and no invented copyright`() {
+        val section = notices.substringAfter("== Rust components that ship no licence file ==").substringBefore("\n\n")
+        listOf("anes 0.1.6", "void 1.0.2", "cookie-factory 0.3.3").forEach { assertTrue(it, section.contains(it)) }
+        val mit = notices.split("\n--- Text ").single { Regex("""^\d+: SPDX MIT ---""").containsMatchIn(it) }
+        assertTrue(mit.contains("void 1.0.2"))
+        assertTrue(mit.contains("Copyright (c) <year> <copyright holders>"))
+    }
+
     @Test fun `fonts and the licence texts are shipped, not only their names`() {
         assertTrue(notices.contains("Archivo — SIL Open Font License 1.1"))
         assertTrue(notices.contains("Geist Mono — SIL Open Font License 1.1"))
-        assertTrue(notices.contains("Apache License\n                           Version 2.0, January 2004"))
+        assertTrue(Regex("""Apache License\s+Version 2.0, January 2004""").containsMatchIn(notices))
         assertTrue(notices.contains("Permission is hereby granted, free of charge"))
     }
 
