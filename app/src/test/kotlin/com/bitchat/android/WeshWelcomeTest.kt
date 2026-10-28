@@ -4,7 +4,8 @@ import com.bitchat.android.ui.pave.BluetoothRefusal
 import com.bitchat.android.ui.pave.OnboardingStart
 import com.bitchat.android.ui.pave.BluetoothStepAction
 import com.bitchat.android.ui.pave.bluetoothRefusal
-import com.bitchat.android.ui.pave.bluetoothStepAction
+import com.bitchat.android.ui.pave.bluetoothGrantLaterHint
+import com.bitchat.android.ui.pave.bluetoothStepActions
 import com.bitchat.android.ui.pave.OnboardingStep
 import com.bitchat.android.ui.pave.onboardingCanGoBack
 import java.io.File
@@ -19,6 +20,12 @@ class WeshWelcomeTest {
         assertEquals(BluetoothRefusal.None, bluetoothRefusal(granted = true, shouldShowRationale = false))
         assertEquals(BluetoothRefusal.Once, bluetoothRefusal(granted = false, shouldShowRationale = true))
         assertEquals(BluetoothRefusal.Permanent, bluetoothRefusal(granted = false, shouldShowRationale = false))
+    }
+
+    @Test
+    fun `a refusal says where to allow Bluetooth later, naming the permission Android shows`() {
+        assertEquals(R.string.wesh_pave_bt_grant_later, bluetoothGrantLaterHint(legacyLocation = false))
+        assertEquals(R.string.wesh_pave_bt_grant_later_legacy, bluetoothGrantLaterHint(legacyLocation = true))
     }
 
     @Test
@@ -46,10 +53,18 @@ class WeshWelcomeTest {
 
     @Test
     fun `no Bluetooth refusal leads to the error screen or loops without an action`() {
-        // Every refusal keeps one action forward on the Pavé step itself.
-        assertEquals(BluetoothStepAction.Ask, bluetoothStepAction(BluetoothRefusal.None))
-        assertEquals(BluetoothStepAction.Ask, bluetoothStepAction(BluetoothRefusal.Once))
-        assertEquals(BluetoothStepAction.OpenSettings, bluetoothStepAction(BluetoothRefusal.Permanent))
+        // Every refusal keeps a way forward on the Pavé step itself: ask again, or allow it in
+        // Settings. The first action is the primary button.
+        assertEquals(listOf(BluetoothStepAction.Ask), bluetoothStepActions(BluetoothRefusal.None))
+        assertEquals(
+            listOf(BluetoothStepAction.Ask, BluetoothStepAction.OpenSettings),
+            bluetoothStepActions(BluetoothRefusal.Once)
+        )
+        // A dismissed system dialog also reads as permanent: asking again stays possible.
+        assertEquals(
+            listOf(BluetoothStepAction.OpenSettings, BluetoothStepAction.Ask),
+            bluetoothStepActions(BluetoothRefusal.Permanent)
+        )
         val flow = File("src/main/java/com/bitchat/android/ui/pave/OnboardingFlow.kt").readText()
         val activity = File("src/main/java/com/bitchat/android/MainActivity.kt").readText()
         // V1 has no way around Bluetooth, so nothing completes onboarding without it.
