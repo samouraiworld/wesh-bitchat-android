@@ -5,13 +5,26 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
+import re
 import struct
 import subprocess
 from pathlib import Path
 
 from PIL import Image
 
-PRODUCTION_COMMIT = "753769a07fa9e62c87afead88ea10ef42b823788"
+# Include native binaries/provenance and dependency resolution, not just visible UI.
+PRODUCTION_PATHS = (
+    "app/src/main", "app/src/release", "app/build.gradle.kts", "app/proguard-rules.pro",
+    "app/gradle.lockfile", "app/libs", "build.gradle.kts", "settings.gradle.kts",
+    "settings-gradle.lockfile", "gradle.properties", "gradle", "gradlew", "gradlew.bat",
+    "tools/arti-build",
+)
+# Ignored source files can still enter compilation; native build caches cannot.
+UNTRACKED_SOURCE_PATHS = (
+    "app/src/main", "app/src/release", "app/src/storeScreenshot", "app/libs", "gradle",
+    "tools/arti-build/src", "tools/arti-build/patches",
+)
 SCENES = ("home", "public", "private", "exchange", "settings", "connection", "about")
 EXPECTED_ENVIRONMENT = {"emulator": True, "api": 35, "width": 1080, "height": 1920, "densityDpi": 420}
 ROOT_PATHS = (
@@ -45,24 +58,44 @@ def git(root: Path, *args: str) -> str:
     return subprocess.check_output(["git", "-C", str(root), *args], text=True).strip()
 
 
-def source_proof(root: Path) -> dict:
-    # Includes staged and unstaged changes, unlike comparing HEAD tree IDs alone.
+def resolve_production_commit(root: Path, candidate: str | None) -> str:
+    if candidate is None:
+        candidate = os.environ.get("WESH_STORE_PRODUCTION_COMMIT")
+    if candidate is None:
+        raise ValueError("an explicit production commit is required")
+    if not re.fullmatch(r"[0-9a-f]{40}", candidate):
+        raise ValueError("production commit must be a full lowercase 40-character commit SHA")
+    resolved = git(root, "rev-parse", "--verify", f"{candidate}^{{commit}}")
+    if resolved != candidate:
+        raise ValueError("production commit must identify a commit, not a tag object")
+    return resolved
+
+
+def source_proof(root: Path, production_candidate: str | None = None) -> dict:
+    candidate = resolve_production_commit(root, production_candidate)
+    checked_paths = (*PRODUCTION_PATHS, *CAPTURE_PATHS, "app/src/storeScreenshot", "tools/store-assets")
+    # HEAD provenance is meaningful only when both staged and unstaged inputs are clean.
+    if git(root, "status", "--porcelain", "--untracked-files=all", "--", *checked_paths):
+        raise ValueError("uncommitted production or capture input prevents candidate binding")
+    if git(root, "ls-files", "--others", "--", *UNTRACKED_SOURCE_PATHS):
+        raise ValueError("untracked or ignored source prevents candidate binding")
     subprocess.run(["git", "-C", str(root), "diff", "--exit-code", "--quiet",
-                    PRODUCTION_COMMIT, "--", "app/src/main", "app/build.gradle.kts"], check=True)
-    if git(root, "ls-files", "--others", "--exclude-standard", "--", "app/src/main"):
-        raise ValueError("untracked production source prevents candidate binding")
-    subprocess.run(["git", "-C", str(root), "diff", "--exit-code", "--quiet", "HEAD", "--", *CAPTURE_PATHS], check=True)
-    if git(root, "ls-files", "--others", "--exclude-standard", "--", *CAPTURE_PATHS):
-        raise ValueError("capture inputs must be committed before recording their source")
+                    candidate, "--", *PRODUCTION_PATHS], check=True)
     files = {}
     for relative in ROOT_PATHS:
-        expected = subprocess.check_output(["git", "-C", str(root), "show", f"{PRODUCTION_COMMIT}:{relative}"])
+        expected = subprocess.check_output(["git", "-C", str(root), "show", f"{candidate}:{relative}"])
         if (root / relative).read_bytes() != expected:
             raise ValueError(f"production source changed: {relative}")
         files[relative] = hashlib.sha256(expected).hexdigest()
+    input_tree = subprocess.check_output(
+        ["git", "-C", str(root), "ls-tree", "-rz", candidate, "--", *PRODUCTION_PATHS]
+    )
     return {
-        "productionCandidateCommit": PRODUCTION_COMMIT,
-        "productionAppMainTree": git(root, "rev-parse", f"{PRODUCTION_COMMIT}:app/src/main"),
+        "productionCandidateCommit": candidate,
+        "productionCandidateTree": git(root, "rev-parse", f"{candidate}^{{tree}}"),
+        "productionInputPaths": list(PRODUCTION_PATHS),
+        "productionInputTreeSHA256": hashlib.sha256(input_tree).hexdigest(),
+        "productionAppMainTree": git(root, "rev-parse", f"{candidate}:app/src/main"),
         "productionRootSources": files,
         "captureSources": {name: digest(root / name) for name in CAPTURE_PATHS},
         "capturedFromCommit": git(root, "rev-parse", "HEAD"),
@@ -109,7 +142,7 @@ def validate_environment(context: dict) -> dict:
     return context
 
 
-def create(root: Path, folder: Path, context: dict) -> dict:
+def create(root: Path, folder: Path, context: dict, production_candidate: str | None = None) -> dict:
     return {
         "schema": 1,
         "synthetic": True,
@@ -121,14 +154,14 @@ def create(root: Path, folder: Path, context: dict) -> dict:
         "systemBars": "visible; standard edge-to-edge; no per-scene contrast override",
         "review": "Lead visual review and explicit binding required; not evidence of transport or physical qualification",
         "environment": validate_environment(context),
-        **source_proof(root),
+        **source_proof(root, production_candidate),
         "screenshots": image_records(folder),
     }
 
 
-def verify(root: Path, folder: Path, require_reviewed: bool = False) -> dict:
+def verify(root: Path, folder: Path, require_reviewed: bool = False, production_candidate: str | None = None) -> dict:
     manifest = json.loads((folder / "manifest.json").read_text())
-    proof = source_proof(root)
+    proof = source_proof(root, production_candidate)
     for key, value in proof.items():
         if manifest.get(key) != value:
             raise ValueError(f"source/capture binding differs: {key}")
@@ -144,20 +177,27 @@ def verify(root: Path, folder: Path, require_reviewed: bool = False) -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=("create", "verify"))
+    parser.add_argument("operation", choices=("create", "verify", "verify-source"))
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[2])
-    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--production-commit", help="Exact production commit SHA; defaults to WESH_STORE_PRODUCTION_COMMIT")
     parser.add_argument("--require-reviewed", action="store_true")
     parser.add_argument("--context", type=Path)
     args = parser.parse_args()
+    if args.operation == "verify-source":
+        source_proof(args.root, args.production_commit)
+        print("Production candidate sources verified; no images or transport started")
+        return
+    if args.output is None:
+        parser.error("--output is required for create and verify")
     if args.operation == "create":
         if args.require_reviewed:
             parser.error("capture generation never approves its own pixels")
         if args.context is None:
             parser.error("capture creation requires the controlled synthetic context readback")
-        (args.output / "manifest.json").write_text(json.dumps(create(args.root, args.output, json.loads(args.context.read_text())), indent=2) + "\n")
+        (args.output / "manifest.json").write_text(json.dumps(create(args.root, args.output, json.loads(args.context.read_text()), args.production_commit), indent=2) + "\n")
     else:
-        verify(args.root, args.output, args.require_reviewed)
+        verify(args.root, args.output, args.require_reviewed, args.production_commit)
     print("Synthetic capture sources and fourteen sanitized images verified; review status remains explicit")
 
 

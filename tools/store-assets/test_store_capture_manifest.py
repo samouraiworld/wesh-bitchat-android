@@ -1,6 +1,7 @@
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -29,10 +30,7 @@ stability = load("wait_store_capture_stability")
 
 class CaptureEvidenceTests(unittest.TestCase):
     def test_candidate_binding_and_capture_require_explicit_dispatch(self):
-        self.assertEqual(
-            capture.PRODUCTION_COMMIT,
-            "753769a07fa9e62c87afead88ea10ef42b823788",
-        )
+        self.assertIn("WESH_STORE_PRODUCTION_COMMIT", (HERE / "store_capture_manifest.py").read_text())
         workflow = (HERE.parents[1] / ".github/workflows/store-capture.yml").read_text()
         for step in (
             "Prepare isolated CI emulator",
@@ -48,9 +46,20 @@ class CaptureEvidenceTests(unittest.TestCase):
             r"- name: Stop isolated emulator\n\s+if: \$\{\{ always\(\) && "
             r"github\.event_name == 'workflow_dispatch' \}\}",
         )
-        self.assertIn("name: android-store-candidate108-unbound", workflow)
-        self.assertIn("path: ${{ runner.temp }}/android-store-candidate108-unbound", workflow)
-        self.assertNotIn("android-store-candidate107-unbound", workflow)
+        self.assertIn("production_commit:", workflow)
+        self.assertIn("WESH_STORE_PRODUCTION_COMMIT:", workflow)
+        self.assertIn("store_capture_manifest.py verify-source", workflow)
+        self.assertIn("name: android-store-${{ env.WESH_STORE_PRODUCTION_COMMIT }}-${{ github.sha }}-unbound", workflow)
+        self.assertIn("path: ${{ runner.temp }}/android-store-captures", workflow)
+        self.assertNotIn("android-store-candidate108-unbound", workflow)
+
+    def test_about_uses_the_actual_variant_version_with_the_capture_suffix_removed(self):
+        fixture = (HERE.parents[1] / "app/src/storeScreenshot/java/com/bitchat/android/store/StoreScreenshotActivity.kt").read_text()
+        gradle = (HERE.parents[1] / "app/build.gradle.kts").read_text()
+        self.assertIn('versionNameSuffix = "-storecapture"', gradle)
+        self.assertIn('check(BuildConfig.VERSION_NAME.endsWith("-storecapture"))', fixture)
+        self.assertIn('AboutScreen(versionName = BuildConfig.VERSION_NAME.removeSuffix("-storecapture")', fixture)
+        self.assertNotRegex(fixture, r'AboutScreen\(versionName = "[0-9]')
 
     def test_sanitizer_removes_metadata_before_evidence_validation(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -115,11 +124,6 @@ class CaptureEvidenceTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "binding"):
                     capture.verify(folder, folder)
 
-    def test_production_drift_fails_before_capture_binding(self):
-        with patch.object(capture.subprocess, "run", side_effect=subprocess.CalledProcessError(1, "synthetic diff")):
-            with self.assertRaises(subprocess.CalledProcessError):
-                capture.source_proof(Path("."))
-
     def test_release_fixture_and_class_leaks_are_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             apk = Path(directory) / "synthetic.apk"
@@ -167,6 +171,146 @@ class CaptureEvidenceTests(unittest.TestCase):
             with self.assertRaises(TimeoutError):
                 stability.stable_frame(sample, timeout=1, interval=0.2, clock=lambda: elapsed[0], sleep=sleep)
         self.assertLessEqual(calls[0], 5)
+
+
+class ProductionCandidateBindingTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        self.git("init", "-q")
+        # Synthetic identity belongs only to this disposable test repository.
+        self.git("config", "user.name", "Synthetic Test")
+        self.git("config", "user.email", "synthetic@example.invalid")
+        paths = set(capture.ROOT_PATHS) | set(capture.CAPTURE_PATHS) | {
+            "app/gradle.lockfile", "settings-gradle.lockfile", "gradle/libs.versions.toml",
+            "gradle/verification-metadata.xml", "settings.gradle.kts", "build.gradle.kts",
+            "gradle.properties", "gradle/wrapper/gradle-wrapper.properties", "gradle/wrapper/gradle-wrapper.jar",
+            "gradlew", "gradlew.bat", "app/proguard-rules.pro",
+            "app/src/main/jniLibs/arm64-v8a/libarti_android.so", "tools/arti-build/Cargo.lock",
+            "tools/arti-build/provenance.sha256",
+        }
+        for name in paths:
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("synthetic committed input\n")
+        self.git("add", ".")
+        self.git("commit", "-qm", "Pin synthetic production inputs")
+        self.candidate = self.git("rev-parse", "HEAD")
+        # The capture commit can change its own fixture without changing product inputs.
+        fixture = self.root / "app/src/storeScreenshot/java/com/bitchat/android/store/StoreScreenshotActivity.kt"
+        fixture.write_text("synthetic capture-only change\n")
+        self.git("add", ".")
+        self.git("commit", "-qm", "Prepare synthetic captures")
+        self.capture_head = self.git("rev-parse", "HEAD")
+
+    def git(self, *args):
+        return subprocess.check_output(["git", "-C", str(self.root), *args], text=True, stderr=subprocess.DEVNULL).strip()
+
+    def test_capture_only_commit_binds_to_an_explicit_unchanged_product(self):
+        proof = capture.source_proof(self.root, self.candidate)
+        self.assertEqual(proof["productionCandidateCommit"], self.candidate)
+        self.assertEqual(proof["capturedFromCommit"], self.capture_head)
+        self.assertEqual(proof["productionCandidateTree"], self.git("rev-parse", f"{self.candidate}^{{tree}}"))
+        self.assertIn("app/gradle.lockfile", proof["productionInputPaths"])
+        self.assertIn("tools/arti-build", proof["productionInputPaths"])
+
+    def test_the_environment_pin_is_explicit_and_required(self):
+        with patch.dict(os.environ, {}, clear=True):
+            with self.assertRaisesRegex(ValueError, "production commit"):
+                capture.source_proof(self.root)
+        with patch.dict(os.environ, {"WESH_STORE_PRODUCTION_COMMIT": self.candidate}):
+            self.assertEqual(capture.source_proof(self.root)["productionCandidateCommit"], self.candidate)
+
+    def test_short_moving_and_invalid_pins_are_rejected(self):
+        for pin in ["HEAD", "main", "v1.0.1-android.110", self.candidate[:8], "-" * 40, "a" * 39 + "\n"]:
+            with self.subTest(pin=pin), self.assertRaisesRegex(ValueError, "full lowercase"):
+                capture.source_proof(self.root, pin)
+        with self.assertRaises((ValueError, subprocess.CalledProcessError)):
+            capture.source_proof(self.root, "f" * 40)
+
+    def test_a_wrong_existing_pin_cannot_bind_different_product_bytes(self):
+        target = self.root / "app/src/main/java/com/bitchat/android/ui/pave/WeshPaveApp.kt"
+        target.write_text("synthetic changed production input\n")
+        self.git("add", ".")
+        self.git("commit", "-qm", "Change synthetic product")
+        with self.assertRaises(subprocess.CalledProcessError):
+            capture.source_proof(self.root, self.candidate)
+
+    def test_native_locks_and_gradle_changes_are_not_capture_only(self):
+        for name in ["app/gradle.lockfile", "settings-gradle.lockfile", "gradle/libs.versions.toml",
+                     "gradle/verification-metadata.xml", "tools/arti-build/Cargo.lock",
+                     "app/src/main/jniLibs/arm64-v8a/libarti_android.so", "app/proguard-rules.pro"]:
+            with self.subTest(path=name):
+                target = self.root / name
+                original = target.read_bytes()
+                target.write_bytes(b"synthetic modified dependency or native input\n")
+                with self.assertRaisesRegex(ValueError, "uncommitted"):
+                    capture.source_proof(self.root, self.candidate)
+                target.write_bytes(original)
+
+    def test_committed_native_and_lock_changes_cannot_be_called_capture_only(self):
+        for name in ["app/gradle.lockfile", "gradle/verification-metadata.xml",
+                     "tools/arti-build/Cargo.lock", "app/src/main/jniLibs/arm64-v8a/libarti_android.so"]:
+            with self.subTest(path=name):
+                target = self.root / name
+                original = target.read_bytes()
+                target.write_bytes(b"synthetic committed dependency change\n")
+                self.git("add", name)
+                self.git("commit", "-qm", "Change synthetic dependency")
+                with self.assertRaises(subprocess.CalledProcessError):
+                    capture.source_proof(self.root, self.candidate)
+                target.write_bytes(original)
+                self.git("add", name)
+                self.git("commit", "-qm", "Restore synthetic dependency")
+
+    def test_staged_and_unstaged_product_or_fixture_changes_fail(self):
+        for name in ["app/build.gradle.kts", "app/src/main/java/com/bitchat/android/MainActivity.kt",
+                     "app/src/storeScreenshot/java/com/bitchat/android/store/StoreScreenshotActivity.kt"]:
+            with self.subTest(path=name):
+                target = self.root / name
+                original = target.read_bytes()
+                target.write_bytes(b"synthetic dirty input\n")
+                with self.assertRaisesRegex(ValueError, "uncommitted"):
+                    capture.source_proof(self.root, self.candidate)
+                self.git("add", name)
+                with self.assertRaisesRegex(ValueError, "uncommitted"):
+                    capture.source_proof(self.root, self.candidate)
+                target.write_bytes(original)
+                self.git("add", name)
+
+    def test_untracked_and_ignored_product_sources_fail(self):
+        path = self.root / "app/src/main/java/synthetic/Extra.kt"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("synthetic untracked input\n")
+        with self.assertRaisesRegex(ValueError, "uncommitted|untracked"):
+            capture.source_proof(self.root, self.candidate)
+        (self.root / ".git/info/exclude").write_text("Extra.kt\n")
+        with self.assertRaisesRegex(ValueError, "untracked"):
+            capture.source_proof(self.root, self.candidate)
+
+    def test_a_manifest_cannot_swap_the_candidate_during_verification(self):
+        folder = self.root / "synthetic-output"
+        folder.mkdir()
+        proof = capture.source_proof(self.root, self.candidate)
+        manifest = {**proof, "synthetic": True, "environment": capture.EXPECTED_ENVIRONMENT,
+                    "screenshots": [], "bindingStatus": "UNBOUND_REVIEW_REQUIRED", "captureCommit": None}
+        (folder / "manifest.json").write_text(json.dumps(manifest))
+        with patch.object(capture, "image_records", return_value=[]):
+            capture.verify(self.root, folder, production_candidate=self.candidate)
+            with self.assertRaisesRegex(ValueError, "binding differs: productionCandidateCommit"):
+                capture.verify(self.root, folder, production_candidate=self.capture_head)
+            manifest["productionInputTreeSHA256"] = "0" * 64
+            (folder / "manifest.json").write_text(json.dumps(manifest))
+            with self.assertRaisesRegex(ValueError, "binding differs: productionInputTreeSHA256"):
+                capture.verify(self.root, folder, production_candidate=self.candidate)
+
+    def test_verify_source_cli_does_not_require_images_or_start_an_emulator(self):
+        result = subprocess.run([sys.executable, str(HERE / "store_capture_manifest.py"), "verify-source",
+                                 "--root", str(self.root), "--production-commit", self.candidate],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Production candidate sources verified", result.stdout)
 
 
 if __name__ == "__main__":

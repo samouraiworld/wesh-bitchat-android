@@ -2,6 +2,12 @@ name: Synthetic product-view store capture
 
 on:
   workflow_dispatch:
+    inputs:
+      production_commit:
+        description: Exact full commit SHA of the unchanged production candidate
+        required: true
+        type: string
+        default: c9f6e84dc94e7064c4d94a9a0e0925567a4a2d31
   pull_request:
     paths:
       - '.github/workflows/store-capture.yml'
@@ -19,6 +25,7 @@ jobs:
     timeout-minutes: 45
     env:
       ANDROID_STORE_CAPTURE_SERIAL: emulator-5554
+      WESH_STORE_PRODUCTION_COMMIT: ${{ inputs.production_commit || 'c9f6e84dc94e7064c4d94a9a0e0925567a4a2d31' }}
     steps:
       - name: Checkout exact capture source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
@@ -41,6 +48,9 @@ jobs:
           python3 -m pip install -r tools/store-assets/requirements.txt
           python3 -m unittest discover -s tools/store-assets -p 'test_store_capture_manifest.py' -v
           bash -n tools/store-assets/capture_android_store_screenshots.sh
+
+      - name: Verify exact production candidate before building
+        run: python3 tools/store-assets/store_capture_manifest.py verify-source
 
       - name: Prepare isolated CI emulator
         if: ${{ github.event_name == 'workflow_dispatch' }}
@@ -85,7 +95,7 @@ jobs:
           [[ "$booted" == true ]] || { echo 'Synthetic emulator did not finish booting'; exit 1; }
           adb -s "$ANDROID_STORE_CAPTURE_SERIAL" shell wm size 1080x1920
           adb -s "$ANDROID_STORE_CAPTURE_SERIAL" shell wm density 420
-          export ANDROID_STORE_CAPTURE_OUTPUT="$RUNNER_TEMP/android-store-candidate108-unbound"
+          export ANDROID_STORE_CAPTURE_OUTPUT="$RUNNER_TEMP/android-store-captures"
           bash tools/store-assets/capture_android_store_screenshots.sh
 
       - name: Stop isolated emulator
@@ -96,7 +106,7 @@ jobs:
         if: ${{ github.event_name == 'workflow_dispatch' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: android-store-candidate108-unbound
-          path: ${{ runner.temp }}/android-store-candidate108-unbound
+          name: android-store-${{ env.WESH_STORE_PRODUCTION_COMMIT }}-${{ github.sha }}-unbound
+          path: ${{ runner.temp }}/android-store-captures
           if-no-files-found: error
           retention-days: 14
