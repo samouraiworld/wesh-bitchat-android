@@ -51,6 +51,7 @@ import org.json.JSONObject
 class StoreScreenshotActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         check(BuildConfig.STORE_SCREENSHOT_MODE) { "Store capture is disabled for this build" }
+        check(BuildConfig.VERSION_NAME.endsWith("-storecapture")) { "Unexpected store-capture version suffix" }
         applyFixtureLocale(intent.getStringExtra(EXTRA_LANGUAGE))
         super.onCreate(savedInstanceState)
 
@@ -230,7 +231,7 @@ private fun StoreScene(scene: String, f: StoreFixture) {
             )
         }
 
-        "about" -> AboutScreen(versionName = "1.0.0", onBack = {}, onOpenLicenses = {})
+        "about" -> AboutScreen(versionName = BuildConfig.VERSION_NAME.removeSuffix("-storecapture"), onBack = {}, onOpenLicenses = {})
     }
 }
 
