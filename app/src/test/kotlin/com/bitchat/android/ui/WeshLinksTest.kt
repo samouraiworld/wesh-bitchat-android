@@ -8,9 +8,9 @@ import org.junit.Test
 
 class WeshLinksTest {
     @Test
-    fun `internal candidate keeps version 1 0 0 and advances to code 109`() {
-        assertEquals("1.0.0", BuildConfig.VERSION_NAME)
-        assertEquals(109, BuildConfig.VERSION_CODE)
+    fun `release candidate is version 1 0 1 code 110`() {
+        assertEquals("1.0.1", BuildConfig.VERSION_NAME)
+        assertEquals(110, BuildConfig.VERSION_CODE)
     }
 
     @Test
