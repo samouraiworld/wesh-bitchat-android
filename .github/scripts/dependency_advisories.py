@@ -70,8 +70,9 @@ def build_summary(audit: dict, lockfile: str, pinned: str | None, latest: str | 
         lines += ["### Vulnerabilities", "", "| Advisory | Crate | Version | Patched | Title |", "| --- | --- | --- | --- | --- |"]
         for v in sorted(vulns, key=lambda x: x["advisory"]["id"]):
             a = v["advisory"]
-            patched = ", ".join(v.get("versions", {}).get("patched", [])) or "none"
-            lines.append(f"| {a['id']} | {v['package']['name']} | {v['package']['version']} | {patched} | {a['title']} |")
+            patched = " or ".join(f"`{r}`" for r in v.get("versions", {}).get("patched", [])) or "none"
+            title = a["title"].replace("|", "\\|")
+            lines.append(f"| {a['id']} | {v['package']['name']} | {v['package']['version']} | {patched} | {title} |")
         lines.append("")
     for label, items in (("Unsound", unsound), ("Unmaintained", unmaintained)):
         if items:
@@ -84,14 +85,18 @@ def build_summary(audit: dict, lockfile: str, pinned: str | None, latest: str | 
         "Accepted risks are tracked in the release decision records, not here. A finding listed above is not proof that the code path is reachable in the app; it is a prompt to check.",
     ]
     has_findings = bool(vulns or unsound or lagging)
-    return "\n".join(lines), has_findings
+    # Without both versions the lag is unknown, not absent: never report clean.
+    complete = bool(pinned and latest)
+    if not complete:
+        lines += ["", "**Incomplete check:** the Arti versions could not both be read, so the lag is unknown."]
+    return "\n".join(lines), has_findings, complete
 
 
 def gh(*args: str) -> str:
     return subprocess.run(["gh", *args], check=True, capture_output=True, text=True).stdout
 
 
-def sync_issue(body: str, has_findings: bool) -> None:
+def sync_issue(body: str, has_findings: bool, complete: bool) -> None:
     found = json.loads(gh("issue", "list", "--state", "open", "--search", f'in:title "{ISSUE_TITLE}"',
                           "--json", "number,title", "--limit", "20"))
     existing = next((i["number"] for i in found if i["title"] == ISSUE_TITLE), None)
@@ -101,6 +106,8 @@ def sync_issue(body: str, has_findings: bool) -> None:
             print(f"updated issue #{existing}")
         else:
             print(gh("issue", "create", "--title", ISSUE_TITLE, "--body", body).strip())
+    elif existing and not complete:
+        print(f"left issue #{existing} open: the check was incomplete")
     elif existing:
         gh("issue", "close", str(existing), "--comment", "Weekly check is clean.\n\n" + body)
         print(f"closed issue #{existing}")
@@ -115,14 +122,14 @@ def main() -> int:
 
     with open(args.audit_json, encoding="utf-8") as fh:
         audit = json.load(fh)
-    body, has_findings = build_summary(audit, args.lockfile, pinned_arti(args.lockfile), latest_arti())
+    body, has_findings, complete = build_summary(audit, args.lockfile, pinned_arti(args.lockfile), latest_arti())
     print(body)
     summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary_path:
         with open(summary_path, "a", encoding="utf-8") as fh:
             fh.write(body + "\n")
     if args.mode == "issue":
-        sync_issue(body, has_findings)
+        sync_issue(body, has_findings, complete)
     return 0
 
 
