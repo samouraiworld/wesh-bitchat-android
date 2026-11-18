@@ -1,0 +1,84 @@
+name: Dependency advisories
+
+# Weekly read-only watch of the vendored Arti lockfile: RustSec advisories and
+# how far arti-client lags upstream (Tor fixes ship as TROVE entries in the
+# Arti changelog, which RustSec does not carry). Scheduled and manual runs keep
+# one issue in sync; pull requests only print the report, with a read-only
+# token. Findings never fail the job, and this is not a required check.
+# While the vendored Arti trails upstream the issue stays open by design: the
+# lag is itself the finding. An incomplete check never closes it.
+on:
+  schedule:
+    - cron: "23 6 * * 1"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "tools/arti-build/Cargo.lock"
+      - ".github/workflows/dependency-advisories.yml"
+      - ".github/scripts/dependency_advisories.py"
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash --noprofile --norc -euo pipefail {0}
+
+jobs:
+  advisories:
+    name: Arti lockfile advisories
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      LOCKFILE: tools/arti-build/Cargo.lock
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked --version 0.22.2
+
+      - name: Audit the lockfile
+        # cargo audit exits 1 when it finds vulnerabilities; that is the
+        # expected case here, so only a missing or unreadable report fails.
+        run: |
+          cargo audit --file "$LOCKFILE" --json > audit.json || true
+          python3 -c 'import json; json.load(open("audit.json"))'
+
+      - name: Report
+        run: python3 .github/scripts/dependency_advisories.py --lockfile "$LOCKFILE" --audit-json audit.json --mode report
+
+  advisory-issue:
+    name: Arti lockfile advisory issue
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      issues: write
+    env:
+      LOCKFILE: tools/arti-build/Cargo.lock
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked --version 0.22.2
+
+      - name: Audit the lockfile
+        # cargo audit exits 1 when it finds vulnerabilities; that is the
+        # expected case here, so only a missing or unreadable report fails.
+        run: |
+          cargo audit --file "$LOCKFILE" --json > audit.json || true
+          python3 -c 'import json; json.load(open("audit.json"))'
+
+      - name: Report
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: python3 .github/scripts/dependency_advisories.py --lockfile "$LOCKFILE" --audit-json audit.json --mode issue
