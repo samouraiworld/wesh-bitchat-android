@@ -49,7 +49,8 @@ class BluetoothPacketBroadcaster(
     private val fragmentManager: FragmentManager?,
     private val myPeerID: String,
     private val gattCallbackTimeoutMs: Long = GATT_CALLBACK_TIMEOUT_MS,
-    private val afterGattApiResultForTesting: ((Boolean) -> Unit)? = null
+    private val afterGattApiResultForTesting: ((Boolean) -> Unit)? = null,
+    private val gattApiRefusalTimeoutMs: Long = gattCallbackTimeoutMs
 ) {
     
     companion object {
@@ -201,6 +202,8 @@ class BluetoothPacketBroadcaster(
         var operationGeneration = 0L
         var timeoutGeneration = 0L
         var operationTimeout: Job? = null
+        var apiRefusalTimeout: Job? = null
+        var apiRefusalGeneration = 0L
     }
 
     private val sendLock = Any()
@@ -771,6 +774,9 @@ class BluetoothPacketBroadcaster(
                 state.operationTimeout = null
                 deferredCallback = request.deferredCallbackStatus
                 request.deferredCallbackStatus = null
+                if (accepted) {
+                    cancelApiRefusalTimeoutLocked(state)
+                }
                 true
             }
         }
@@ -781,7 +787,39 @@ class BluetoothPacketBroadcaster(
             if (deferredCallback != null) completeSend(key, deferredCallback)
             else armGattOperationTimeout(key, request, operationGeneration)
         }
-        else if (request.accepted != null) failBoundHead(key, request) else rejectStart(key)
+        else if (request.accepted != null) failBoundHead(key, request)
+        else {
+            armApiRefusalTimeout(key, request)
+            rejectStart(key)
+        }
+    }
+
+    /** One deadline for a rejected control head, independent from subsequent retry/API progress. */
+    private fun armApiRefusalTimeout(key: SendKey, request: PendingSend) {
+        var refusalGeneration = 0L
+        val timeout = broadcasterScope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
+            delay(gattApiRefusalTimeoutMs)
+            invalidateRejectedHead(key, request, refusalGeneration)
+        }
+        synchronized(sendLock) {
+            val state = sendStates[key]
+            if (state == null || state.pending.peekFirst() !== request ||
+                request.apiState != GattApiState.REJECTED || state.apiRefusalTimeout != null) {
+                timeout.cancel()
+            } else {
+                state.apiRefusalGeneration += 1
+                refusalGeneration = state.apiRefusalGeneration
+                state.apiRefusalTimeout = timeout
+            }
+        }
+        timeout.start()
+    }
+
+    /** Caller holds sendLock; the token also fences a timer already waiting to acquire it. */
+    private fun cancelApiRefusalTimeoutLocked(state: LinkSendState) {
+        state.apiRefusalGeneration += 1
+        state.apiRefusalTimeout?.cancel()
+        state.apiRefusalTimeout = null
     }
 
     /**
@@ -826,9 +864,27 @@ class BluetoothPacketBroadcaster(
                 state.timeoutGeneration != timeoutGeneration
             ) return
             state.operationTimeout = null
+            cancelApiRefusalTimeoutLocked(state)
             sendStates.remove(key)?.pending?.toList().orEmpty()
         }
         Log.w(TAG, "BLE ${key.direction} operation timed out; invalidating exact link")
+        invalidateAbandonedLink(key, request, abandoned)
+    }
+
+    private fun invalidateRejectedHead(key: SendKey, request: PendingSend, refusalGeneration: Long) {
+        val abandoned = synchronized(sendLock) {
+            val state = sendStates[key] ?: return
+            if (state.pending.peekFirst() !== request || state.apiRefusalTimeout == null ||
+                state.apiRefusalGeneration != refusalGeneration) return
+            state.operationTimeout?.cancel()
+            cancelApiRefusalTimeoutLocked(state)
+            sendStates.remove(key)?.pending?.toList().orEmpty()
+        }
+        Log.w(TAG, "BLE ${key.direction} API refusal window expired; invalidating exact link")
+        invalidateAbandonedLink(key, request, abandoned)
+    }
+
+    private fun invalidateAbandonedLink(key: SendKey, request: PendingSend, abandoned: List<PendingSend>) {
         try {
             val timeoutHandler = linkTimeoutHandler
             var needsFallback = timeoutHandler == null
@@ -894,6 +950,7 @@ class BluetoothPacketBroadcaster(
             val state = sendStates[key] ?: return
             if (state.pending.peekFirst() !== request) return
             state.operationTimeout?.cancel(); state.operationTimeout = null
+            cancelApiRefusalTimeoutLocked(state)
             state.pending.removeFirst(); state.pendingBytes -= request.data.size; state.inFlight = false
             if (state.pending.isEmpty()) { sendStates.remove(key); false }
             else { state.inFlight = true; true }
@@ -962,6 +1019,7 @@ class BluetoothPacketBroadcaster(
                 if (status != BluetoothGatt.GATT_SUCCESS) {
                     Log.w(TAG, "BLE ${key.direction} failed with status $status after retries")
                 }
+                cancelApiRefusalTimeoutLocked(state)
                 state.pending.removeFirst()
                 state.pendingBytes -= head.data.size
                 completed = head
@@ -988,6 +1046,7 @@ class BluetoothPacketBroadcaster(
             sendStates.keys.filter { key -> key.deviceAddress == deviceAddress && (linkID == null || key.linkID == linkID) }
                 .forEach { key -> sendStates.remove(key)?.let { state ->
                     state.operationTimeout?.cancel()
+                    cancelApiRefusalTimeoutLocked(state)
                     state.pending.forEach { it.accepted?.complete(it.failureResult()) }
                 } }
         }
@@ -1017,6 +1076,7 @@ class BluetoothPacketBroadcaster(
         synchronized(sendLock) {
             sendStates.values.forEach { state ->
                 state.operationTimeout?.cancel()
+                cancelApiRefusalTimeoutLocked(state)
                 state.pending.forEach { it.accepted?.complete(it.failureResult()) }
             }
             sendStates.clear()
