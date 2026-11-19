@@ -75,6 +75,19 @@ internal enum class PaveRoute(val parent: PaveRoute?) {
     About(Settings), Licenses(About), Erase(Settings),
 }
 
+internal enum class PavePanicPresentation { Erasing, RecoveryRequired, Erased, Content }
+
+internal fun pavePanicPresentation(
+    inProgress: Boolean,
+    recoveryRequired: Boolean,
+    erased: Boolean
+): PavePanicPresentation = when {
+    inProgress -> PavePanicPresentation.Erasing
+    recoveryRequired -> PavePanicPresentation.RecoveryRequired
+    erased -> PavePanicPresentation.Erased
+    else -> PavePanicPresentation.Content
+}
+
 internal fun meetingNoteEditCallback(
     preferences: WeshPreferences,
     capturedEpoch: Long,
@@ -235,20 +248,23 @@ private fun PaveNavHost(viewModel: ChatViewModel, appearance: WeshAppearance, on
     }
 
     // Erase states come first: nothing else may show while data is being wiped or must be recovered.
-    if (panicInProgress) {
-        ErasingScreen()
-        return
-    }
-    if (panicRecoveryRequired) {
-        com.bitchat.android.startup.StartupScreen(
-            failed = true, onRetry = {}, draftWipeRequired = true, recovery = panicRecovery,
-            onEraseAll = { com.bitchat.android.startup.WeshRuntime.clearInterruptedPanic(context) },
-        )
-        return
-    }
-    if (erased) {
-        EraseResultScreen(succeeded = true, onRestart = { erased = false }, onRetry = {})
-        return
+    when (pavePanicPresentation(panicInProgress, panicRecoveryRequired, erased)) {
+        PavePanicPresentation.Erasing -> {
+            ErasingScreen()
+            return
+        }
+        PavePanicPresentation.RecoveryRequired -> {
+            com.bitchat.android.startup.StartupScreen(
+                failed = true, onRetry = {}, draftWipeRequired = true, recovery = panicRecovery,
+                onEraseAll = { com.bitchat.android.startup.WeshRuntime.clearInterruptedPanic(context) },
+            )
+            return
+        }
+        PavePanicPresentation.Erased -> {
+            EraseResultScreen(succeeded = true, onRestart = { erased = false }, onRetry = {})
+            return
+        }
+        PavePanicPresentation.Content -> Unit
     }
 
     val privatePeer = selectedPrivate
