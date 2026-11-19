@@ -142,7 +142,7 @@ class StoreScreenshotContractTest {
         val verifier = File("../tools/store-assets/verify_store_assets.sh").readText()
         val workflow = File("../.github/workflows/android-build.yml").readText()
         assertTrue(dockerfile.contains("python:3.12.12-slim-bookworm@sha256:"))
-        assertTrue(dockerfile.contains("PIL.__version__ == \"12.2.0\""))
+        assertTrue(dockerfile.contains("PIL.__version__ == \"13.0.0\""))
         assertTrue(runner.contains("--platform linux/amd64"))
         assertTrue(runner.contains("--network none"))
         assertTrue(verifier.contains("run_in_container.sh"))

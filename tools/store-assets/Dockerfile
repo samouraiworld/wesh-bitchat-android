@@ -11,7 +11,7 @@ RUN python3 -m pip install \
         --disable-pip-version-check \
         --no-cache-dir \
         --requirement /tmp/store-assets-requirements.txt \
-    && python3 -c 'import PIL; assert PIL.__version__ == "12.2.0"'
+    && python3 -c 'import PIL; assert PIL.__version__ == "13.0.0"'
 
 WORKDIR /workspace
 ENTRYPOINT ["python3"]

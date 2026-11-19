@@ -3,7 +3,7 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 project_root="$(cd "$script_dir/../.." && pwd)"
-image_name="wesh-android-store-assets:python3.12.12-pillow12.2.0"
+image_name="wesh-android-store-assets:python3.12.12-pillow13.0.0"
 
 if ! command -v docker >/dev/null 2>&1; then
   echo "error: Docker is required for canonical store-asset rendering" >&2
